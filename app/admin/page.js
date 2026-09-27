@@ -87,7 +87,8 @@ export default function AdminPage() {
     >
       <h1 style={{ marginBottom: 4 }}>Quản lý sản phẩm</h1>
       <p style={{ color: "#666", marginTop: 0 }}>
-        Bot sẽ tự động dùng đúng danh sách này để trả lời khách trên Messenger.
+        Bot sẽ tự động dùng đúng danh sách này để trả lời khách trên Messenger.{" "}
+        <a href="/admin/chat">Xem hộp thoại khách hàng →</a>
       </p>
 
       <form

@@ -4,6 +4,8 @@
 //   https://your-domain.com/api/webhook
 
 import { getProducts, formatProductsForPrompt } from "@/lib/products";
+import { addMessage } from "@/lib/conversations";
+import { getSettings } from "@/lib/settings";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
@@ -40,7 +42,16 @@ export async function POST(req) {
       if (!senderId || !text || event.message?.is_echo) continue;
 
       try {
+        await addMessage(senderId, "customer", text);
+
+        const settings = await getSettings();
+        if (settings.botEnabled === false) {
+          // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
+          continue;
+        }
+
         const reply = await generateReply(text);
+        await addMessage(senderId, "bot", reply);
         await sendMessage(senderId, reply);
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
