@@ -184,6 +184,16 @@ export default function AdminPage() {
   const [promptSaved, setPromptSaved] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
   const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
+  const [copyFromId, setCopyFromId] = useState("");
+  const [copyParts, setCopyParts] = useState({
+    description: true,
+    notes: true,
+    openingScript: true,
+    triggerQuestions: false,
+    sampleImages: true,
+    realImages: true,
+  });
+  const [copyNotice, setCopyNotice] = useState("");
 
   async function load() {
     setLoading(true);
@@ -250,6 +260,51 @@ export default function AdminPage() {
       imageLabels: p.imageLabels || {},
     });
     setEditingId(p.id);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Lấy dữ liệu từ 1 sản phẩm có sẵn đổ vào form (chữ thì thay thế, ảnh thì cộng thêm)
+  function applyCopy(src, parts) {
+    setForm((f) => {
+      const next = { ...f, imageLabels: { ...f.imageLabels } };
+      for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
+        if (parts[key]) next[key] = src[key] || "";
+      }
+      for (const key of ["sampleImages", "realImages"]) {
+        if (parts[key]) {
+          const add = (src[key] || []).filter((u) => !next[key].includes(u));
+          next[key] = [...next[key], ...add];
+          for (const u of add) if (src.imageLabels?.[u]) next.imageLabels[u] = src.imageLabels[u];
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleCopyFrom() {
+    const src = products.find((x) => x.id === copyFromId);
+    if (!src) return;
+    applyCopy(src, copyParts);
+    setCopyNotice(`Đã lấy dữ liệu từ “${src.name}” vào form. Kiểm tra lại rồi bấm nút lưu ở cuối form.`);
+    setTimeout(() => setCopyNotice(""), 6000);
+  }
+
+  // Nhân bản: mở form "Thêm sản phẩm mới" đã điền sẵn dữ liệu của sản phẩm này
+  function handleDuplicate(p) {
+    setForm({
+      name: (p.name || "") + " (bản sao)",
+      stock: p.stock || "Còn hàng",
+      description: p.description || "",
+      notes: p.notes || "",
+      openingScript: p.openingScript || "",
+      triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
+      sampleImages: p.sampleImages || [],
+      realImages: p.realImages || [],
+      imageLabels: p.imageLabels || {},
+    });
+    setEditingId(null);
+    setCopyNotice(`Đã tạo dữ liệu từ “${p.name}”. Sửa tên và nội dung cho Page mới rồi bấm “Thêm sản phẩm”.`);
+    setTimeout(() => setCopyNotice(""), 8000);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -325,6 +380,67 @@ export default function AdminPage() {
         }}
       >
         <strong>{editingId ? "Sửa sản phẩm" : "Thêm sản phẩm mới"}</strong>
+        {copyNotice && (
+          <div style={{ padding: "8px 12px", background: "#ecfdf3", border: "1px solid #b7ebc6", color: "#15803d", borderRadius: 8, fontSize: 13 }}>
+            {copyNotice}
+          </div>
+        )}
+        {products.length > 0 && (
+          <div style={{ border: "1px dashed #b9c2ff", background: "#f5f7ff", borderRadius: 8, padding: 12 }}>
+            <strong style={{ fontSize: 14 }}>📋 Tạo dữ liệu từ sản phẩm có sẵn</strong>
+            <div style={{ color: "#777", fontSize: 12, margin: "2px 0 8px" }}>
+              Chọn sản phẩm, tick phần muốn lấy, rồi bấm “Lấy dữ liệu”. Không phải gõ lại hay tải ảnh lại.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <select
+                value={copyFromId}
+                onChange={(e) => setCopyFromId(e.target.value)}
+                style={{ ...inputStyle, flex: 1, minWidth: 180, padding: "8px 10px", fontSize: 14 }}
+              >
+                <option value="">— Chọn sản phẩm để lấy dữ liệu —</option>
+                {products
+                  .filter((x) => x.id !== editingId)
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleCopyFrom}
+                disabled={!copyFromId}
+                style={{ ...btn, background: copyFromId ? "#4f46e5" : "#c7c7c7", color: "#fff", border: "none", padding: "8px 16px" }}
+              >
+                Lấy dữ liệu
+              </button>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 8, fontSize: 13 }}>
+              {[
+                ["description", "Nội dung"],
+                ["notes", "Lưu ý cho bot"],
+                ["openingScript", "Câu mở đầu"],
+                ["triggerQuestions", "Câu hỏi có sẵn"],
+                ["sampleImages", "Ảnh mẫu"],
+                ["realImages", "Ảnh thực tế"],
+              ].map(([key, label]) => (
+                <label key={key} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={copyParts[key]}
+                    onChange={(e) => setCopyParts((c) => ({ ...c, [key]: e.target.checked }))}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {copyParts.triggerQuestions && (
+              <div style={{ color: "#b45309", fontSize: 12, marginTop: 6 }}>
+                Nhớ sửa “Câu hỏi có sẵn” cho khác sản phẩm cũ. Nếu trùng, bot sẽ nhầm sang sản phẩm cũ.
+              </div>
+            )}
+          </div>
+        )}
         <input
           style={inputStyle}
           placeholder="Tên sản phẩm (vd: Chân váy 3 tầng)"
@@ -516,6 +632,9 @@ export default function AdminPage() {
                     <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                       <button onClick={() => handleEdit(p)} style={btn}>
                         Sửa
+                      </button>
+                      <button onClick={() => handleDuplicate(p)} style={{ ...btn, border: "1px solid #b9c2ff", background: "#f5f7ff", color: "#4338ca" }}>
+                        📋 Tạo dữ liệu (nhân bản)
                       </button>
                       <button
                         onClick={() => handleDelete(p.id)}
