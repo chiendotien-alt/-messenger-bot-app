@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { getProducts, formatProductsForPrompt } from "@/lib/products";
-import { addMessage } from "@/lib/conversations";
+import { addMessage, ensureProfile } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
@@ -43,6 +43,7 @@ export async function POST(req) {
 
       try {
         await addMessage(senderId, "customer", text);
+        await ensureProfile(senderId).catch((e) => console.error("Lỗi hồ sơ khách:", e));
 
         const settings = await getSettings();
         if (settings.botEnabled === false) {

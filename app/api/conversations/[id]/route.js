@@ -5,25 +5,44 @@ import { NextResponse } from "next/server";
 import { getConversation, addMessage } from "@/lib/conversations";
 
 export async function GET(req, { params }) {
-  const conv = await getConversation(params.id);
-  return NextResponse.json(conv || { name: params.id, messages: [] });
+  try {
+    const conv = await getConversation(params.id);
+    return NextResponse.json(conv, { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    console.error("Lỗi đọc hội thoại:", err);
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
 }
 
-// Chủ shop tự gửi trả lời (hữu ích khi bot đang tắt)
+// Chủ shop tự gửi trả lời (dùng được cả khi bot đang bật hoặc tắt)
 export async function POST(req, { params }) {
   const { text } = await req.json();
-  await addMessage(params.id, "admin", text);
+  if (!text || !text.trim()) {
+    return NextResponse.json({ error: "Tin nhắn trống" }, { status: 400 });
+  }
 
   const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
-  await fetch(`https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: params.id },
-      message: { text },
-      messaging_type: "RESPONSE",
-    }),
-  });
+  const fbRes = await fetch(
+    `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: params.id },
+        message: { text },
+        messaging_type: "RESPONSE",
+      }),
+    }
+  );
 
+  const fbData = await fbRes.json();
+  if (!fbRes.ok || fbData.error) {
+    return NextResponse.json(
+      { error: fbData.error?.message || "Facebook từ chối gửi tin nhắn" },
+      { status: 502 }
+    );
+  }
+
+  await addMessage(params.id, "admin", text);
   return NextResponse.json({ ok: true });
 }
