@@ -6,6 +6,7 @@ const EMPTY_FORM = {
   name: "",
   stock: "Còn hàng",
   description: "",
+  notes: "",
   openingScript: "",
   triggerQuestions: "",
   sampleImages: [],
@@ -241,6 +242,7 @@ export default function AdminPage() {
       name: p.name || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
+      notes: p.notes || "",
       openingScript: p.openingScript || "",
       triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
@@ -354,6 +356,22 @@ export default function AdminPage() {
             Dọn ký tự "|" thừa ở cuối dòng
           </button>
         )}
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Lưu ý cho bot (không bắt buộc)
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Dặn riêng bot về sản phẩm này: đối tượng khách, cách xưng hô, điều nên/không nên nói... Bot sẽ tuân theo khi
+            tư vấn sản phẩm này.
+          </div>
+          <textarea
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
+            rows={3}
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            placeholder={"Ví dụ:\nKhách của sản phẩm này toàn là nữ, gọi khách là chị.\nKhông tự giảm giá, chỉ báo giá theo bảng."}
+          />
+        </div>
         <div>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
             Câu thoại mở đầu (chạy quảng cáo)
@@ -475,6 +493,12 @@ export default function AdminPage() {
                     >
                       {p.description || "(chưa có nội dung)"}
                     </p>
+                    {p.notes && (
+                      <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f1faf1", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
+                        <div style={{ color: "#575", fontSize: 12, marginBottom: 2 }}>Lưu ý cho bot</div>
+                        {p.notes}
+                      </div>
+                    )}
                     {p.openingScript && (
                       <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f4f7ff", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
                         <div style={{ color: "#667", fontSize: 12, marginBottom: 2 }}>Câu mở đầu quảng cáo</div>

@@ -15,11 +15,12 @@ import {
   releaseOpening,
   getCurrentProduct,
   setCurrentProduct,
+  getCustomerName,
 } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
+import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
-const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 // Vercel cho hàm chạy tối đa 60s (mặc định có thể chỉ 10-15s → dễ bị cắt giữa chừng khi AI chậm)
 export const maxDuration = 60;
@@ -70,6 +71,9 @@ export async function POST(req) {
   }
 
   for (const entry of body.entry ?? []) {
+    // entry.id = ID của Fanpage nhận tin → dùng đúng token của Page đó để trả lời
+    const pageId = entry.id ? String(entry.id) : null;
+    const pageToken = await getPageToken(pageId);
     for (const event of entry.messaging ?? []) {
       const senderId = event.sender?.id;
       // Khách gõ chữ, hoặc bấm câu hỏi có sẵn/nút (Facebook gửi dạng postback, "title" chính là câu hỏi)
@@ -90,16 +94,20 @@ export async function POST(req) {
 
         // Lưu lịch sử chỉ để xem lại; nếu kho dữ liệu lỗi thì bot vẫn phải trả lời khách
         const savedImages = await persistCustomerImages(senderId, fbImages);
-        const messageId = await addMessage(senderId, "customer", text, savedImages).catch((e) =>
+        const messageId = await addMessage(senderId, "customer", text, savedImages, pageId).catch((e) =>
           console.error("Không lưu được tin của khách:", e.message)
         );
-        await ensureProfile(senderId).catch((e) =>
+        await ensureProfile(senderId, pageToken).catch((e) =>
           console.error("Lỗi hồ sơ khách:", e.message)
         );
 
         const settings = await getSettings();
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
+          continue;
+        }
+        if (!(await isPageBotEnabled(pageId))) {
+          // Bot của riêng Page này đang tắt — chỉ lưu tin nhắn
           continue;
         }
 
@@ -113,8 +121,8 @@ export async function POST(req) {
           continue;
         }
 
-        await fbAction(senderId, "mark_seen");
-        await fbAction(senderId, "typing_on");
+        await fbAction(senderId, "mark_seen", pageToken);
+        await fbAction(senderId, "typing_on", pageToken);
 
         const reply = await generateReply(senderId, text, savedImages, settings);
         if (reply.skip) continue;
@@ -123,26 +131,27 @@ export async function POST(req) {
 
         for (let i = 0; i < messages.length; i++) {
           if (i > 0) {
-            await fbAction(senderId, "typing_on");
+            await fbAction(senderId, "typing_on", pageToken);
           }
           await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
-          await sendMessage(senderId, messages[i]);
-          await addMessage(senderId, "bot", messages[i]).catch((e) =>
+          await sendMessage(senderId, messages[i], pageToken);
+          await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
             console.error("Không lưu được tin của bot:", e.message)
           );
         }
 
         if (images.length) {
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
-          await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })));
-          await addMessage(senderId, "bot", imageNote, images).catch(() => {});
+          await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
+          await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
         }
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
         if (openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
         await sendMessage(
           senderId,
-          "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!"
+          "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!",
+          pageToken
         ).catch(() => {});
       }
     }
@@ -204,16 +213,26 @@ const MAX_IMAGES = 4;
 const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
 const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
 
-function buildSystemPrompt(catalogText, shopInfo, currentProduct) {
+function buildSystemPrompt(catalogText, shopInfo, currentProduct, customerName) {
   return `Bạn là nhân viên tư vấn bán hàng của shop, đang nhắn tin với khách qua Messenger.
 Mục tiêu: tư vấn đúng nhu cầu và giúp khách chốt đơn, nhưng cảm giác như một người thật nhắn tin, không phải máy trả lời tự động.
 
 CÁCH NHẮN TIN
-- Xưng "shop", gọi khách là "anh/chị" (nếu tên hoặc cách khách xưng hô cho biết giới tính thì gọi "anh" hoặc "chị").
+- Xưng "shop". Cách gọi khách (anh hay chị) xem mục XƯNG HÔ bên dưới.
 - Mỗi tin ngắn 1-3 câu. Được tách thành tối đa 2 tin nhắn liên tiếp khi tự nhiên, không viết một khối văn dài.
 - Chữ thường như nhắn tin: không markdown, không gạch đầu dòng, không in đậm. Tối đa 1 emoji mỗi lượt, có thể không dùng.
 - Không mở đầu mọi câu bằng "Dạ". Không lặp lại lời chào nếu cuộc trò chuyện đã chào rồi. Không lặp lại câu đã nói ở tin trước.
 - Hiểu tiếng Việt viết tắt, không dấu, sai chính tả (vd: "sp", "k", "dc", "bn", "ship"). Dựa vào các tin trước để đoán khách đang nói về sản phẩm nào.
+
+XƯNG HÔ (anh hay chị)
+Tên khách trên Facebook: ${customerName ? `"${customerName}"` : "(không có)"}
+Chọn cách gọi theo thứ tự ưu tiên:
+1. Khách tự nói ra: xưng "chị", "c", "cô", "mẹ", "vợ", "mình là nữ"... → gọi "chị". Xưng "anh", "a", "chú", "bố", "chồng", "mình là nam"... → gọi "anh". Khách đính chính xưng hô thì đổi ngay, không xin lỗi dài dòng.
+2. Cách shop đã gọi khách ở các tin trước trong cuộc trò chuyện: giữ nguyên, không đổi giữa chừng khi khách không đính chính.
+3. Đoán từ tên khách: tên đệm "Thị" hoặc tên nữ quen thuộc (Lan, Hoa, Linh, Hương, Trang, Ngọc, Mai...) → "chị"; tên đệm "Văn" hoặc tên nam quen thuộc (Hùng, Minh, Tuấn, Nam, Đức, Long...) → "anh". Tên trung tính, biệt danh, tên nước ngoài, tên cửa hàng/không phải tên người → không đoán.
+4. Nếu phần "LƯU Ý CỦA CHỦ SHOP" của sản phẩm khách đang hỏi nêu rõ đối tượng khách hoặc cách xưng hô (vd: khách toàn là nữ) thì làm theo, trừ khi khách tự nói khác ở mục 1.
+5. Chưa chắc chắn: tin đầu tiên dùng "anh/chị", các tin sau ưu tiên gọi là "mình" (vd: "shop gửi mình xem ảnh nhé") thay vì đoán bừa. Chỉ chuyển sang "anh" hoặc "chị" khi đã có căn cứ ở trên.
+Khách xưng "em" thì đoán giới tính qua tên/ngữ cảnh; không rõ thì dùng "mình" hoặc "bạn". Không lặp "anh/chị" ở mọi câu, được bỏ bớt cho tự nhiên.
 
 CÁCH TƯ VẤN
 - Trả lời đúng câu khách vừa hỏi trước, rồi mới gợi ý thêm. Khách hỏi giá thì báo giá luôn.
@@ -221,6 +240,7 @@ CÁCH TƯ VẤN
 - Chỉ nói "chưa rõ ý" khi thật sự không đoán được từ ngữ cảnh; khi đó hỏi lại đúng 1 điểm cụ thể.
 - Khi khách có dấu hiệu muốn mua, xin nhẹ nhàng số điện thoại, địa chỉ, số lượng để lên đơn. Không ép mua.
 - Giá bán, size, màu, ưu đãi nằm trong phần "Nội dung" của từng sản phẩm; đọc kỹ để báo đúng giá theo số lượng khách hỏi.
+- Mỗi sản phẩm có thể có dòng "LƯU Ý CỦA CHỦ SHOP": đó là chỉ dẫn riêng của chủ shop cho sản phẩm đó, luôn tuân theo.
 - Chỉ dùng thông tin trong danh sách sản phẩm và thông tin shop bên dưới. Không bịa giá, tính năng, khuyến mãi, thời gian giao hàng. Nếu chưa có thông tin thì nói shop sẽ kiểm tra lại và mời khách để lại số điện thoại.
 
 ẢNH KHÁCH GỬI
@@ -373,7 +393,13 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
-  const systemPrompt = buildSystemPrompt(formatProductsForPrompt(products), settings.botPrompt, currentProduct);
+  const customerName = await getCustomerName(senderId).catch(() => null);
+  const systemPrompt = buildSystemPrompt(
+    formatProductsForPrompt(products),
+    settings.botPrompt,
+    currentProduct,
+    customerName
+  );
   const contents = await buildContents(history, customerMessage, customerImages);
 
   const deadline = Date.now() + REPLY_BUDGET_MS;
@@ -619,10 +645,10 @@ async function persistCustomerImages(senderId, urls) {
 
 // ---- Gửi qua Facebook Send API ----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const FB_URL = () => `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`;
+const FB_URL = (token) => `https://graph.facebook.com/v21.0/me/messages?access_token=${token}`;
 
-async function fbPost(payload) {
-  const res = await fetch(FB_URL(), {
+async function fbPost(payload, token) {
+  const res = await fetch(FB_URL(token), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -635,24 +661,24 @@ async function fbPost(payload) {
   return true;
 }
 
-async function fbAction(recipientId, action) {
-  await fbPost({ recipient: { id: recipientId }, sender_action: action }).catch(() => {});
+async function fbAction(recipientId, action, token) {
+  await fbPost({ recipient: { id: recipientId }, sender_action: action }, token).catch(() => {});
 }
 
-async function sendMessage(recipientId, text) {
+async function sendMessage(recipientId, text, token) {
   await fbPost({
     recipient: { id: recipientId },
     message: { text },
     messaging_type: "RESPONSE",
-  });
+  }, token);
 }
 
-async function sendImage(recipientId, imageUrl) {
+async function sendImage(recipientId, imageUrl, token) {
   await fbPost({
     recipient: { id: recipientId },
     message: { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } },
     messaging_type: "RESPONSE",
-  });
+  }, token);
 }
 
 /**
@@ -660,8 +686,8 @@ async function sendImage(recipientId, imageUrl) {
  * (carousel vuốt ngang, tối đa 10 thẻ/tin). Chỉ 1 ảnh → gửi ảnh thường.
  * Nếu Facebook từ chối carousel thì tự quay về gửi từng ảnh theo thứ tự.
  */
-async function sendImagesGrouped(recipientId, items) {
-  if (items.length === 1) return void (await sendImage(recipientId, items[0].url));
+async function sendImagesGrouped(recipientId, items, token) {
+  if (items.length === 1) return void (await sendImage(recipientId, items[0].url, token));
 
   for (let i = 0; i < items.length; i += 10) {
     const chunk = items.slice(i, i + 10);
@@ -681,9 +707,9 @@ async function sendImagesGrouped(recipientId, items) {
         },
       },
       messaging_type: "RESPONSE",
-    });
+    }, token);
     if (!ok) {
-      for (const it of chunk) await sendImage(recipientId, it.url);
+      for (const it of chunk) await sendImage(recipientId, it.url, token);
     }
   }
 }

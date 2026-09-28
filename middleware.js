@@ -22,5 +22,5 @@ export function middleware(req) {
 }
 
 export const config = {
-  matcher: ["/admin/:path*", "/api/products/:path*", "/api/conversations/:path*", "/api/settings/:path*", "/api/upload"],
+  matcher: ["/admin/:path*", "/api/products/:path*", "/api/conversations/:path*", "/api/settings/:path*", "/api/pages/:path*", "/api/upload"],
 };
