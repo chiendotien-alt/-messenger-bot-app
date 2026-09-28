@@ -42,8 +42,13 @@ export async function POST(req) {
       if (!senderId || !text || event.message?.is_echo) continue;
 
       try {
-        await addMessage(senderId, "customer", text);
-        await ensureProfile(senderId).catch((e) => console.error("Lỗi hồ sơ khách:", e));
+        // Lưu lịch sử chỉ để xem lại; nếu kho dữ liệu lỗi thì bot vẫn phải trả lời khách
+        await addMessage(senderId, "customer", text).catch((e) =>
+          console.error("Không lưu được tin của khách:", e.message)
+        );
+        await ensureProfile(senderId).catch((e) =>
+          console.error("Lỗi hồ sơ khách:", e.message)
+        );
 
         const settings = await getSettings();
         if (settings.botEnabled === false) {
@@ -52,8 +57,10 @@ export async function POST(req) {
         }
 
         const reply = await generateReply(text);
-        await addMessage(senderId, "bot", reply);
         await sendMessage(senderId, reply);
+        await addMessage(senderId, "bot", reply).catch((e) =>
+          console.error("Không lưu được tin của bot:", e.message)
+        );
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
         await sendMessage(
