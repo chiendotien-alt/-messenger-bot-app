@@ -1,7 +1,148 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-const EMPTY_FORM = { name: "", price: "", stock: "Còn hàng", description: "" };
+const EMPTY_FORM = {
+  name: "",
+  price: "",
+  stock: "Còn hàng",
+  description: "",
+  sampleImages: [],
+  realImages: [],
+};
+
+// Nén ảnh về tối đa 1600px, JPEG — nhẹ để upload nhanh và Messenger tải nhanh
+async function compressImage(file, maxSize = 1600, quality = 0.85) {
+  if (!file.type.startsWith("image/") || file.type === "image/gif") return file;
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, maxSize / Math.max(bitmap.width, bitmap.height));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(bitmap.width * scale);
+  canvas.height = Math.round(bitmap.height * scale);
+  canvas.getContext("2d").drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  const blob = await new Promise((r) => canvas.toBlob(r, "image/jpeg", quality));
+  const name = file.name.replace(/\.[^.]+$/, "") + ".jpg";
+  return new File([blob], name, { type: "image/jpeg" });
+}
+
+async function uploadImage(file) {
+  const small = await compressImage(file);
+  const fd = new FormData();
+  fd.append("file", small);
+  const res = await fetch("/api/upload", { method: "POST", body: fd });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Upload thất bại");
+  return data.url;
+}
+
+function ImagePicker({ title, hint, urls, onChange }) {
+  const inputRef = useRef(null);
+  const [busy, setBusy] = useState(0);
+  const [error, setError] = useState("");
+
+  async function handleFiles(fileList) {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    setError("");
+    setBusy(files.length);
+    const added = [];
+    for (const f of files) {
+      try {
+        added.push(await uploadImage(f));
+      } catch (e) {
+        setError(`${f.name}: ${e.message}`);
+      }
+      setBusy((n) => n - 1);
+    }
+    if (added.length) onChange([...urls, ...added]);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  return (
+    <div style={{ border: "1px dashed #cfcfcf", borderRadius: 8, padding: 12, background: "#fff" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+        <div>
+          <strong style={{ fontSize: 14 }}>{title}</strong>
+          <div style={{ color: "#888", fontSize: 12 }}>{hint}</div>
+        </div>
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy > 0}
+          style={{
+            padding: "7px 12px",
+            border: "1px solid #ccc",
+            borderRadius: 6,
+            background: "#fff",
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {busy > 0 ? `Đang tải ${busy}...` : "+ Thêm ảnh"}
+        </button>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          hidden
+          onChange={(e) => handleFiles(e.target.files)}
+        />
+      </div>
+      {error && <div style={{ color: "#c0392b", fontSize: 13, marginTop: 6 }}>{error}</div>}
+      {urls.length > 0 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+          {urls.map((u, i) => (
+            <div key={u} style={{ position: "relative" }}>
+              <img
+                src={u}
+                alt=""
+                style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 6, border: "1px solid #eee" }}
+              />
+              <button
+                type="button"
+                onClick={() => onChange(urls.filter((_, j) => j !== i))}
+                aria-label="Xóa ảnh"
+                style={{
+                  position: "absolute",
+                  top: -6,
+                  right: -6,
+                  width: 22,
+                  height: 22,
+                  borderRadius: "50%",
+                  border: "none",
+                  background: "#c0392b",
+                  color: "#fff",
+                  cursor: "pointer",
+                  lineHeight: "22px",
+                  padding: 0,
+                }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Thumbs({ label, urls }) {
+  if (!urls?.length) return null;
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
+        {label} ({urls.length})
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {urls.slice(0, 6).map((u) => (
+          <img key={u} src={u} alt="" style={{ width: 56, height: 56, objectFit: "cover", borderRadius: 4 }} />
+        ))}
+        {urls.length > 6 && <span style={{ alignSelf: "center", color: "#888", fontSize: 12 }}>+{urls.length - 6}</span>}
+      </div>
+    </div>
+  );
+}
 
 export default function AdminPage() {
   const [products, setProducts] = useState([]);
@@ -9,6 +150,9 @@ export default function AdminPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [editingId, setEditingId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [botPrompt, setBotPrompt] = useState("");
+  const [promptSaved, setPromptSaved] = useState("");
+  const [promptStatus, setPromptStatus] = useState("");
 
   async function load() {
     setLoading(true);
@@ -19,24 +163,39 @@ export default function AdminPage() {
 
   useEffect(() => {
     load();
+    fetch("/api/settings", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((s) => {
+        setBotPrompt(s.botPrompt || "");
+        setPromptSaved(s.botPrompt || "");
+      })
+      .catch(() => {});
   }, []);
+
+  async function savePrompt() {
+    setPromptStatus("Đang lưu...");
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ botPrompt }),
+    });
+    if (res.ok) {
+      setPromptSaved(botPrompt);
+      setPromptStatus("Đã lưu ✓");
+    } else {
+      setPromptStatus("Lưu thất bại, thử lại nhé");
+    }
+    setTimeout(() => setPromptStatus(""), 2500);
+  }
 
   async function handleSubmit(e) {
     e.preventDefault();
     setSaving(true);
-    if (editingId) {
-      await fetch("/api/products", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: editingId, ...form }),
-      });
-    } else {
-      await fetch("/api/products", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-    }
+    await fetch("/api/products", {
+      method: editingId ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editingId ? { id: editingId, ...form } : form),
+    });
     setForm(EMPTY_FORM);
     setEditingId(null);
     setSaving(false);
@@ -49,6 +208,8 @@ export default function AdminPage() {
       price: p.price || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
+      sampleImages: p.sampleImages || [],
+      realImages: p.realImages || [],
     });
     setEditingId(p.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -69,27 +230,44 @@ export default function AdminPage() {
     setEditingId(null);
   }
 
-  const inputStyle = {
-    padding: "10px 12px",
-    border: "1px solid #ddd",
-    borderRadius: 6,
-    fontSize: 15,
-  };
+  const inputStyle = { padding: "10px 12px", border: "1px solid #ddd", borderRadius: 6, fontSize: 15 };
+  const btn = { padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" };
 
   return (
-    <main
-      style={{
-        fontFamily: "sans-serif",
-        padding: 24,
-        maxWidth: 720,
-        margin: "0 auto",
-      }}
-    >
+    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 760, margin: "0 auto" }}>
       <h1 style={{ marginBottom: 4 }}>Quản lý sản phẩm</h1>
       <p style={{ color: "#666", marginTop: 0 }}>
-        Bot sẽ tự động dùng đúng danh sách này để trả lời khách trên Messenger.{" "}
+        Bot dùng đúng danh sách này (nội dung và ảnh) để tư vấn khách trên Messenger.{" "}
         <a href="/admin/chat">Xem hộp thoại khách hàng →</a>
       </p>
+
+      <details
+        style={{ border: "1px solid #e2e2e2", borderRadius: 10, padding: "12px 16px", marginBottom: 20, background: "#fafafa" }}
+      >
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Thông tin & quy tắc của shop cho bot</summary>
+        <p style={{ color: "#666", fontSize: 13 }}>
+          Ghi những gì bot cần biết để tư vấn giống người thật: phí ship, thời gian giao, bảo hành, đổi trả, khuyến mãi,
+          SĐT/Zalo, giờ làm việc, cách xưng hô riêng...
+        </p>
+        <textarea
+          style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
+          rows={6}
+          value={botPrompt}
+          onChange={(e) => setBotPrompt(e.target.value)}
+          placeholder={"Ví dụ:\n- Freeship đơn từ 500.000đ, dưới đó phí ship 30.000đ\n- Giao 2-3 ngày, được kiểm tra hàng trước khi thanh toán\n- Bảo hành 12 tháng, đổi mới trong 7 ngày nếu lỗi"}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+          <button
+            type="button"
+            onClick={savePrompt}
+            disabled={botPrompt === promptSaved}
+            style={{ ...btn, background: "#111", color: "#fff", border: "none", opacity: botPrompt === promptSaved ? 0.5 : 1 }}
+          >
+            Lưu
+          </button>
+          <span style={{ color: "#2d7a3a", fontSize: 13 }}>{promptStatus}</span>
+        </div>
+      </details>
 
       <form
         onSubmit={handleSubmit}
@@ -107,7 +285,7 @@ export default function AdminPage() {
         <strong>{editingId ? "Sửa sản phẩm" : "Thêm sản phẩm mới"}</strong>
         <input
           style={inputStyle}
-          placeholder="Tên sản phẩm (vd: Nồi chiên không dầu 5L)"
+          placeholder="Tên sản phẩm (vd: Chân váy 3 tầng)"
           value={form.name}
           onChange={(e) => setForm({ ...form, name: e.target.value })}
           required
@@ -127,38 +305,33 @@ export default function AdminPage() {
         />
         <textarea
           style={{ ...inputStyle, resize: "vertical" }}
-          placeholder="Mô tả sản phẩm (tính năng, ưu đãi, cách dùng...)"
+          placeholder="Nội dung sản phẩm: chất liệu, màu sắc, size, tính năng, ưu đãi, cách dùng, câu hỏi khách hay hỏi..."
           value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })}
-          rows={3}
+          rows={7}
+        />
+        <ImagePicker
+          title="Ảnh sản phẩm mẫu"
+          hint="Ảnh giới thiệu, ảnh đẹp của sản phẩm"
+          urls={form.sampleImages}
+          onChange={(urls) => setForm((f) => ({ ...f, sampleImages: urls }))}
+        />
+        <ImagePicker
+          title="Ảnh sản phẩm thực tế"
+          hint="Ảnh chụp hàng thật, khách hàng thật, feedback"
+          urls={form.realImages}
+          onChange={(urls) => setForm((f) => ({ ...f, realImages: urls }))}
         />
         <div style={{ display: "flex", gap: 8 }}>
           <button
             type="submit"
             disabled={saving}
-            style={{
-              padding: "10px 18px",
-              background: "#111",
-              color: "#fff",
-              border: "none",
-              borderRadius: 6,
-              cursor: "pointer",
-            }}
+            style={{ padding: "10px 18px", background: "#111", color: "#fff", border: "none", borderRadius: 6, cursor: "pointer" }}
           >
             {saving ? "Đang lưu..." : editingId ? "Lưu thay đổi" : "Thêm sản phẩm"}
           </button>
           {editingId && (
-            <button
-              type="button"
-              onClick={handleCancelEdit}
-              style={{
-                padding: "10px 18px",
-                background: "#fff",
-                border: "1px solid #ccc",
-                borderRadius: 6,
-                cursor: "pointer",
-              }}
-            >
+            <button type="button" onClick={handleCancelEdit} style={{ ...btn, padding: "10px 18px" }}>
               Hủy
             </button>
           )}
@@ -171,43 +344,22 @@ export default function AdminPage() {
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {products.length === 0 && <p>Chưa có sản phẩm nào — thêm sản phẩm đầu tiên ở form trên.</p>}
           {products.map((p) => (
-            <div
-              key={p.id}
-              style={{
-                border: "1px solid #eee",
-                borderRadius: 10,
-                padding: 14,
-              }}
-            >
+            <div key={p.id} style={{ border: "1px solid #eee", borderRadius: 10, padding: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <strong>{p.name}</strong>
                 <span>{p.price}</span>
               </div>
               <div style={{ color: "#888", fontSize: 13, margin: "4px 0" }}>{p.stock}</div>
-              <p style={{ margin: "6px 0", color: "#444" }}>{p.description}</p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button
-                  onClick={() => handleEdit(p)}
-                  style={{
-                    padding: "6px 12px",
-                    border: "1px solid #ccc",
-                    borderRadius: 6,
-                    background: "#fff",
-                    cursor: "pointer",
-                  }}
-                >
+              <p style={{ margin: "6px 0", color: "#444", whiteSpace: "pre-wrap" }}>{p.description}</p>
+              <Thumbs label="Ảnh mẫu" urls={p.sampleImages} />
+              <Thumbs label="Ảnh thực tế" urls={p.realImages} />
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button onClick={() => handleEdit(p)} style={btn}>
                   Sửa
                 </button>
                 <button
                   onClick={() => handleDelete(p.id)}
-                  style={{
-                    padding: "6px 12px",
-                    border: "1px solid #f3c0c0",
-                    borderRadius: 6,
-                    background: "#fff5f5",
-                    color: "#c0392b",
-                    cursor: "pointer",
-                  }}
+                  style={{ ...btn, border: "1px solid #f3c0c0", background: "#fff5f5", color: "#c0392b" }}
                 >
                   Xóa
                 </button>
