@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChatIcon, navButtonStyle } from "../icons";
 
 const EMPTY_FORM = {
+  pageId: "", // "" = dùng chung cho mọi Page
   name: "",
   stock: "Còn hàng",
   description: "",
@@ -194,6 +195,8 @@ export default function AdminPage() {
     realImages: true,
   });
   const [copyNotice, setCopyNotice] = useState("");
+  const [pages, setPages] = useState([]); // danh sách Fanpage
+  const [filterPage, setFilterPage] = useState("all"); // lọc danh sách sản phẩm theo Page
 
   async function load() {
     setLoading(true);
@@ -204,6 +207,10 @@ export default function AdminPage() {
 
   useEffect(() => {
     load();
+    fetch("/api/pages", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setPages(d))
+      .catch(() => {});
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => r.json())
       .then((s) => {
@@ -249,6 +256,7 @@ export default function AdminPage() {
 
   function handleEdit(p) {
     setForm({
+      pageId: p.pageId || "",
       name: p.name || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
@@ -292,6 +300,7 @@ export default function AdminPage() {
   // Nhân bản: mở form "Thêm sản phẩm mới" đã điền sẵn dữ liệu của sản phẩm này
   function handleDuplicate(p) {
     setForm({
+      pageId: p.pageId || "",
       name: (p.name || "") + " (bản sao)",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
@@ -441,6 +450,26 @@ export default function AdminPage() {
             )}
           </div>
         )}
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Áp dụng cho Page
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Chọn 1 Page để chỉ Page đó bán và tư vấn sản phẩm này. Chọn “Tất cả Page” nếu sản phẩm dùng chung.
+          </div>
+          <select
+            value={form.pageId || ""}
+            onChange={(e) => setForm({ ...form, pageId: e.target.value })}
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+          >
+            <option value="">Tất cả Page (dùng chung)</option>
+            {pages.map((pg) => (
+              <option key={pg.id} value={pg.id}>
+                {pg.name}
+              </option>
+            ))}
+          </select>
+        </div>
         <input
           style={inputStyle}
           placeholder="Tên sản phẩm (vd: Chân váy 3 tầng)"
@@ -556,8 +585,27 @@ export default function AdminPage() {
         <p>Đang tải...</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {pages.length > 0 && products.length > 0 && (
+            <select
+              value={filterPage}
+              onChange={(e) => setFilterPage(e.target.value)}
+              style={{ ...inputStyle, padding: "8px 10px", fontSize: 14 }}
+            >
+              <option value="all">Xem tất cả sản phẩm</option>
+              <option value="shared">Chỉ sản phẩm dùng chung</option>
+              {pages.map((pg) => (
+                <option key={pg.id} value={pg.id}>
+                  Page: {pg.name}
+                </option>
+              ))}
+            </select>
+          )}
           {products.length === 0 && <p>Chưa có sản phẩm nào — thêm sản phẩm đầu tiên ở form trên.</p>}
-          {products.map((p) => {
+          {products
+            .filter((p) =>
+              filterPage === "all" ? true : filterPage === "shared" ? !p.pageId : p.pageId === filterPage
+            )
+            .map((p) => {
             const open = openId === p.id;
             const thumb = (p.sampleImages || [])[0] || (p.realImages || [])[0];
             const nImg = (p.sampleImages || []).length + (p.realImages || []).length;
@@ -587,6 +635,7 @@ export default function AdminPage() {
                       {p.name}
                     </strong>
                     <span style={{ color: "#888", fontSize: 13 }}>
+                      {p.pageId ? `📄 ${pages.find((pg) => pg.id === p.pageId)?.name || "Page đã gỡ"} · ` : "🌐 Tất cả Page · "}
                       {p.stock}
                       {nImg > 0 ? ` · ${nImg} ảnh` : ""}
                       {p.openingScript ? " · có câu mở đầu" : ""}

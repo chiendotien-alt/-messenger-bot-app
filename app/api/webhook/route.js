@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, formatProductsForPrompt, norm, matchProduct } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, matchProduct } from "@/lib/products";
 import {
   addMessage,
   ensureProfile,
@@ -124,7 +124,7 @@ export async function POST(req) {
         await fbAction(senderId, "mark_seen", pageToken);
         await fbAction(senderId, "typing_on", pageToken);
 
-        const reply = await generateReply(senderId, text, savedImages, settings);
+        const reply = await generateReply(senderId, text, savedImages, settings, pageId);
         if (reply.skip) continue;
         const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
@@ -353,10 +353,11 @@ function parseModelJson(raw) {
   }
 }
 
-async function generateReply(senderId, customerMessage, customerImages, settings) {
+async function generateReply(senderId, customerMessage, customerImages, settings, pageId) {
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
-  const products = await getProducts();
+  // Chỉ lấy sản phẩm của đúng Page đang nhận tin (+ sản phẩm dùng chung cho mọi Page)
+  const products = filterProductsForPage(await getProducts(), pageId);
 
   let history = [];
   try {
