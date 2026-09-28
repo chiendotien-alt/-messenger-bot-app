@@ -21,7 +21,32 @@ import { getSettings } from "@/lib/settings";
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-const GEMINI_MODEL = "gemini-3.8-flash";
+// Vercel cho hàm chạy tối đa 60s (mặc định có thể chỉ 10-15s → dễ bị cắt giữa chừng khi AI chậm)
+export const maxDuration = 60;
+
+// ---- Chọn model Gemini ổn định ----
+// Thứ tự thử: model chính (đặt qua biến môi trường GEMINI_MODEL nếu muốn đổi mà không sửa code)
+// → các model dự phòng. Model nào lỗi (hết quota, quá tải, không tồn tại) sẽ tự chuyển sang model kế tiếp.
+// Thêm/bớt model dự phòng bằng GEMINI_FALLBACK_MODELS="model-a,model-b" (không bắt buộc).
+const DEFAULT_MODEL_CHAIN = [
+  "gemini-3.8-flash", // mới nhất
+  "gemini-3.6-flash", // bản stable
+  "gemini-3.5-flash", // bản stable
+  "gemini-3.5-flash-lite", // nhẹ, quota rộng — chốt chặn cuối
+];
+const MODEL_CHAIN = [
+  ...new Set(
+    [
+      process.env.GEMINI_MODEL,
+      ...(process.env.GEMINI_FALLBACK_MODELS ? process.env.GEMINI_FALLBACK_MODELS.split(",") : DEFAULT_MODEL_CHAIN),
+    ]
+      .map((m) => (m || "").trim().replace(/^models\//, ""))
+      .filter(Boolean)
+  ),
+];
+const GEMINI_TIMEOUT_MS = 15000; // mỗi lần gọi chờ tối đa 15s
+const REPLY_BUDGET_MS = 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
+const modelCooldown = new Map(); // model → thời điểm được thử lại (bỏ qua model vừa lỗi để khỏi mất thời gian)
 
 // ---- 1. Facebook gọi GET để xác minh webhook khi bạn cấu hình trên Meta ----
 export async function GET(req) {
@@ -93,7 +118,7 @@ export async function POST(req) {
 
         const reply = await generateReply(senderId, text, savedImages, settings);
         if (reply.skip) continue;
-        const { messages, images, imageNote } = reply;
+        const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
 
         for (let i = 0; i < messages.length; i++) {
@@ -108,9 +133,8 @@ export async function POST(req) {
         }
 
         if (images.length) {
-          for (const url of images) {
-            await sendImage(senderId, url);
-          }
+          // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
+          await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })));
           await addMessage(senderId, "bot", imageNote, images).catch(() => {});
         }
       } catch (err) {
@@ -164,9 +188,11 @@ function openingAlreadySent(history, p) {
 function openingReply(p) {
   // Mở đầu chỉ gửi ảnh mẫu. Ảnh thực tế để dành, khách hỏi mới gửi.
   const images = (p.sampleImages || []).slice(0, MAX_OPENING_IMAGES);
+  const labels = p.imageLabels || {};
   return {
     messages: splitScript(p.openingScript),
     images,
+    imageItems: images.map((url) => ({ url, title: labels[url] || p.name })),
     imageNote: images.length ? `📷 [Bot đã gửi ${images.length} ảnh mẫu của "${p.name}" cùng câu mở đầu]` : "",
     openingProductId: p.id,
   };
@@ -202,7 +228,12 @@ CÁCH TƯ VẤN
 - Nếu khách chỉ gửi ảnh mà chưa hỏi gì, xác nhận đã nhận ảnh bằng 1 câu ngắn và hỏi khách muốn biết gì về mẫu này.
 
 CÂU MỞ ĐẦU QUẢNG CÁO
-- Một số sản phẩm có "câu mở đầu quảng cáo soạn sẵn" (ghi CÓ trong danh sách). Khi khách nhắn lần đầu kiểu hỏi giá hoặc xin tư vấn chung về sản phẩm đó (vd: "giá sản phẩm bao nhiêu", "giá sao shop", "tư vấn giúp mình") và câu mở đầu chưa được gửi trong cuộc trò chuyện, hãy đặt use_opening_product là id sản phẩm và để messages là mảng rỗng. Hệ thống sẽ tự gửi đúng câu mở đầu kèm ảnh mẫu (không kèm ảnh thực tế).
+- Một số sản phẩm có "câu mở đầu quảng cáo soạn sẵn" (ghi CÓ trong danh sách). Khi khách nhắn lần đầu kiểu hỏi giá hoặc xin tư vấn chung về sản phẩm đó (vd: "giá sản phẩm bao nhiêu", "giá sao shop", "tư vấn giúp mình") và câu mở đầu chưa được gửi trong cuộc trò chuyện, hãy đặt use_opening_product là id sản phẩm và để messages là mảng rỗng. Hệ thống sẽ tự gửi đúng câu mở đầu kèm ảnh mẫu (không kèm ảnh thực tế). Nếu câu mở đầu ĐÃ được gửi rồi thì tuyệt đối không dùng use_opening_product, phải tự trả lời bằng chữ trong messages.
+
+KHÁCH XIN GIẢM GIÁ / MẶC CẢ (vd: "giảm k", "bớt đi shop", "rẻ hơn dc ko")
+- Đây KHÔNG phải câu hỏi giá lần đầu → không dùng use_opening_product, phải trả lời bằng chữ.
+- Chỉ dùng ưu đãi có trong phần "Nội dung" của sản phẩm (vd: mua nhiều giá tốt hơn, miễn phí ship). Không tự bịa mức giảm.
+- Nếu không có ưu đãi nào, nói nhẹ nhàng giá shop đã là giá tốt, gợi ý mua 2 cái để có giá tốt hơn (nếu Nội dung có bảng giá theo số lượng), rồi hỏi 1 câu để chốt (số lượng/size).
 
 GỬI ẢNH
 - Không tự gửi ảnh thực tế khi khách chưa hỏi. Chỉ gửi ảnh khi khách xin xem ảnh, hình, "xem hàng", "ảnh thật", "ảnh feedback" — khi đó hãy đặt send_images.
@@ -303,7 +334,7 @@ function parseModelJson(raw) {
 }
 
 async function generateReply(senderId, customerMessage, customerImages, settings) {
-  const fallback = { messages: [FALLBACK_TEXT], images: [], imageNote: "" };
+  const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
   const products = await getProducts();
 
@@ -345,41 +376,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const systemPrompt = buildSystemPrompt(formatProductsForPrompt(products), settings.botPrompt, currentProduct);
   const contents = await buildContents(history, customerMessage, customerImages);
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GOOGLE_API_KEY}`;
+  const deadline = Date.now() + REPLY_BUDGET_MS;
 
-  // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản nhất.
+  // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản hơn.
+  // Mỗi lần thử đều tự chạy qua danh sách model dự phòng (xem callGemini).
   const attempts = [
     { maxOutputTokens: 2048, temperature: 0.8, responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "low" } },
-    { maxOutputTokens: 4096, temperature: 0.8 },
+    { maxOutputTokens: 4096, temperature: 0.8, thinkingConfig: { thinkingLevel: "low" } },
   ];
 
   let raw = "";
+  let usedModel = null;
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          generationConfig: attempts[i],
-        }),
-      });
-      const data = await response.json();
-      if (data.error) console.error(`Lỗi Gemini API (lần ${i + 1}):`, JSON.stringify(data.error));
-      const cand = data.candidates?.[0];
-      raw = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
-      if (!raw.trim()) {
-        console.warn(
-          `Gemini không trả nội dung (lần ${i + 1}). finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
-        );
-      }
-    } catch (e) {
-      console.error(`Lỗi gọi Gemini (lần ${i + 1}):`, e.message);
-    }
+    const r = await callGemini(systemPrompt, contents, attempts[i], deadline);
+    raw = r.text;
+    usedModel = r.model;
   }
   console.log("---- Khách hỏi:", customerMessage);
-  console.log("---- Bot trả lời:", raw || "(không có nội dung)");
+  console.log(`---- Bot trả lời (${usedModel || "không có model nào trả lời"}):`, raw || "(không có nội dung)");
 
   const parsed = parseModelJson(raw);
 
@@ -390,6 +404,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
   else if (!parsed && raw.trim()) list = [raw.trim()];
   let messages = list.map((m) => String(m).trim()).filter(Boolean).slice(0, 2);
+  const openingRequested = !!parsed?.use_opening_product;
 
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")
   if (parsed?.use_opening_product) {
@@ -399,6 +414,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   // Chọn ảnh cần gửi
   let images = [];
+  let imageItems = [];
   let imageNote = "";
   const req = parsed?.send_images;
   if (req?.product_id) {
@@ -432,6 +448,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
       picked = picked.slice(0, MAX_IMAGES);
       images = picked.map((x) => x.url);
+      imageItems = picked.map((x) => ({ url: x.url, title: x.label || p.name }));
       if (images.length) {
         const names = picked.map((x) => x.label).filter(Boolean);
         imageNote = `📷 [Bot đã gửi ${images.length} ảnh của "${p.name}"${names.length ? ": " + names.join(", ") : ""}]`;
@@ -442,9 +459,138 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
     if (images.length) messages = ["Dạ shop gửi anh/chị xem ảnh nhé ạ."];
-    else return fallback;
+    else {
+      // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
+      // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
+      console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
+      const retried = await retryForcedText(systemPrompt, contents, deadline);
+      if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
+      return fallback;
+    }
   }
-  return { messages, images, imageNote };
+  return { messages, images, imageItems, imageNote };
+}
+
+/**
+ * Gọi Gemini với cơ chế dự phòng:
+ *  - 429 (hết quota) / 404 (model không tồn tại) / 400 khác → chuyển ngay sang model kế tiếp
+ *  - 500/503/timeout (quá tải) → thử lại model đó 1 lần rồi mới chuyển
+ *  - 400 do thinkingConfig (model không hỗ trợ) → gọi lại chính model đó không kèm thinkingConfig
+ *  - 401/403 (sai/khoá API key) → dừng luôn vì đổi model cũng vô ích
+ * Trả về { text, model }; text rỗng nếu tất cả đều lỗi.
+ */
+async function callGemini(systemPrompt, contents, generationConfig, deadline) {
+  const now = Date.now();
+  let chain = MODEL_CHAIN.filter((m) => (modelCooldown.get(m) || 0) <= now);
+  if (!chain.length) chain = MODEL_CHAIN; // tất cả đang "nghỉ" thì thử lại hết
+
+  for (const model of chain) {
+    let config = generationConfig;
+    let stripped = false;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining < 3000) {
+        console.warn("Hết thời gian dành cho AI, dừng thử model.");
+        return { text: "", model: null };
+      }
+
+      let res;
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": GOOGLE_API_KEY || "" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig: config,
+          }),
+          signal: AbortSignal.timeout(Math.min(GEMINI_TIMEOUT_MS, remaining)),
+        });
+      } catch (e) {
+        console.error(`Gemini ${model} timeout/lỗi mạng (lần ${attempt + 1}):`, e.message);
+        if (attempt === 0) {
+          await sleep(600);
+          continue;
+        }
+        modelCooldown.set(model, Date.now() + 30 * 1000);
+        break;
+      }
+
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const err = data.error || {};
+        console.error(`Lỗi Gemini API [${model}] HTTP ${res.status}:`, JSON.stringify(err));
+
+        if (res.status === 401 || res.status === 403) {
+          console.error("GOOGLE_API_KEY sai, hết hạn hoặc bị khoá — đổi model không giải quyết được.");
+          return { text: "", model: null };
+        }
+        if (res.status === 400 && config.thinkingConfig && !stripped && /think/i.test(err.message || "")) {
+          const { thinkingConfig, ...rest } = config; // model này không nhận thinkingConfig
+          config = rest;
+          stripped = true;
+          attempt--; // không tính là 1 lần thử
+          continue;
+        }
+        if (res.status === 404) {
+          modelCooldown.set(model, Date.now() + 30 * 60 * 1000); // tên model sai/đã tắt
+          break;
+        }
+        if (res.status === 429) {
+          modelCooldown.set(model, Date.now() + 60 * 1000); // hết quota/phút → nghỉ 1 phút
+          break;
+        }
+        if (res.status >= 500) {
+          if (attempt === 0) {
+            await sleep(600);
+            continue;
+          }
+          modelCooldown.set(model, Date.now() + 30 * 1000);
+          break;
+        }
+        break; // 400 khác → sang model kế tiếp
+      }
+
+      const cand = data.candidates?.[0];
+      const text = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
+      if (text.trim()) return { text, model };
+
+      console.warn(
+        `Gemini ${model} không trả nội dung. finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
+      );
+      break; // rỗng → thử model kế tiếp
+    }
+  }
+  return { text: "", model: null };
+}
+
+/** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
+async function retryForcedText(systemPrompt, contents, deadline) {
+  try {
+    const extra =
+      "\n\nLƯU Ý BẮT BUỘC: mảng messages KHÔNG được rỗng. Câu mở đầu quảng cáo đã gửi rồi nên use_opening_product phải là null. " +
+      "Hãy trả lời trực tiếp câu vừa rồi của khách bằng chữ (1-2 câu).";
+    const { text: raw, model } = await callGemini(
+      systemPrompt + extra,
+      contents,
+      {
+        maxOutputTokens: 2048,
+        temperature: 0.8,
+        responseMimeType: "application/json",
+        thinkingConfig: { thinkingLevel: "low" },
+      },
+      Math.max(deadline, Date.now() + 15000) // luôn chừa ít nhất 15s cho lần thử lại này
+    );
+    console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
+    const parsed = parseModelJson(raw);
+    const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
+    return list.map((m) => String(m).trim()).filter(Boolean).slice(0, 2);
+  } catch (e) {
+    console.error("Lỗi thử lại Gemini:", e.message);
+    return [];
+  }
 }
 
 // ---- Lưu ảnh khách gửi vào Blob (link Facebook sẽ hết hạn) ----
@@ -484,7 +630,9 @@ async function fbPost(payload) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     console.error("Facebook từ chối:", JSON.stringify(err.error || err));
+    return false;
   }
+  return true;
 }
 
 async function fbAction(recipientId, action) {
@@ -505,4 +653,37 @@ async function sendImage(recipientId, imageUrl) {
     message: { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } },
     messaging_type: "RESPONSE",
   });
+}
+
+/**
+ * Gửi nhiều ảnh trong 1 tin nhắn: Messenger chỉ cho 1 attachment/tin nên dùng template "generic"
+ * (carousel vuốt ngang, tối đa 10 thẻ/tin). Chỉ 1 ảnh → gửi ảnh thường.
+ * Nếu Facebook từ chối carousel thì tự quay về gửi từng ảnh theo thứ tự.
+ */
+async function sendImagesGrouped(recipientId, items) {
+  if (items.length === 1) return void (await sendImage(recipientId, items[0].url));
+
+  for (let i = 0; i < items.length; i += 10) {
+    const chunk = items.slice(i, i + 10);
+    const ok = await fbPost({
+      recipient: { id: recipientId },
+      message: {
+        attachment: {
+          type: "template",
+          payload: {
+            template_type: "generic",
+            image_aspect_ratio: "square",
+            elements: chunk.map((it) => ({
+              title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
+              image_url: it.url,
+            })),
+          },
+        },
+      },
+      messaging_type: "RESPONSE",
+    });
+    if (!ok) {
+      for (const it of chunk) await sendImage(recipientId, it.url);
+    }
+  }
 }
