@@ -118,6 +118,20 @@ export default function ChatAdminPage() {
     });
   }
 
+  async function deleteChat(id, name) {
+    if (!confirm(`Xóa toàn bộ cuộc trò chuyện với ${name}?\nBot cũng sẽ quên khách này. Không thể khôi phục.`)) return;
+    const res = await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      alert("Không xóa được, thử lại nhé.");
+      return;
+    }
+    setConversations((list) => list.filter((c) => c.id !== id));
+    if (selectedId === id) {
+      setSelectedId(null);
+      setCurrent({ name: null, avatar: null, messages: [] });
+    }
+  }
+
   async function handleSend(e) {
     e.preventDefault();
     if (!replyText.trim() || !selectedId) return;
@@ -225,6 +239,17 @@ export default function ChatAdminPage() {
                   {c.lastMessage}
                 </div>
               </div>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  deleteChat(c.id, displayName(c.name, c.id));
+                }}
+                title="Xóa cuộc trò chuyện"
+                aria-label="Xóa cuộc trò chuyện"
+                style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 15, opacity: 0.45 }}
+              >
+                🗑
+              </button>
             </div>
           ))}
         </aside>
@@ -245,7 +270,7 @@ export default function ChatAdminPage() {
                 }}
               >
                 <Avatar src={headAvatar} name={headName} size={40} />
-                <div style={{ minWidth: 0 }}>
+                <div style={{ minWidth: 0, flex: 1 }}>
                   <strong>{headName}</strong>
                   {!current.name && current.profileError && (
                     <div style={{ fontSize: 11, color: "#b45309" }}>
@@ -253,6 +278,20 @@ export default function ChatAdminPage() {
                     </div>
                   )}
                 </div>
+                <button
+                  onClick={() => deleteChat(selectedId, headName)}
+                  style={{
+                    padding: "7px 14px",
+                    borderRadius: 8,
+                    border: "1px solid #f3c0c0",
+                    background: "#fff5f5",
+                    color: "#c0392b",
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  Xóa chat
+                </button>
               </div>
 
               <div style={{ flex: 1, overflowY: "auto", padding: 20, background: "#f8f9fb" }}>

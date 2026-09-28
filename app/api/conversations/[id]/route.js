@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { getConversation, addMessage } from "@/lib/conversations";
+import { getConversation, addMessage, deleteConversation } from "@/lib/conversations";
 
 export async function GET(req, { params }) {
   try {
@@ -45,4 +45,15 @@ export async function POST(req, { params }) {
 
   await addMessage(params.id, "admin", text);
   return NextResponse.json({ ok: true });
+}
+
+// Xóa cuộc trò chuyện (để test lại từ đầu hoặc ẩn khách không tiềm năng)
+export async function DELETE(req, { params }) {
+  try {
+    await deleteConversation(params.id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("Lỗi xóa hội thoại:", err);
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
 }

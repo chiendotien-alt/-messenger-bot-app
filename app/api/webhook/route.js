@@ -94,6 +94,9 @@ export async function POST(req) {
 
 // ---- Gọi Google Gemini API: soạn câu trả lời + quyết định có gửi ảnh không ----
 const MAX_IMAGES = 4;
+// Câu dùng khi AI lỗi — không được đưa vào lịch sử để model không bắt chước
+const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
+const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
 
 function buildSystemPrompt(catalogText, shopInfo) {
   return `Bạn là nhân viên tư vấn bán hàng của shop, đang nhắn tin với khách qua Messenger.
@@ -111,6 +114,7 @@ CÁCH TƯ VẤN
 - Mỗi lượt chỉ hỏi lại tối đa 1 câu, và là câu cụ thể giúp tư vấn (vd: nhà mấy người, dùng để làm gì, cần màu/size nào).
 - Chỉ nói "chưa rõ ý" khi thật sự không đoán được từ ngữ cảnh; khi đó hỏi lại đúng 1 điểm cụ thể.
 - Khi khách có dấu hiệu muốn mua, xin nhẹ nhàng số điện thoại, địa chỉ, số lượng để lên đơn. Không ép mua.
+- Giá bán, size, màu, ưu đãi nằm trong phần "Nội dung" của từng sản phẩm; đọc kỹ để báo đúng giá theo số lượng khách hỏi.
 - Chỉ dùng thông tin trong danh sách sản phẩm và thông tin shop bên dưới. Không bịa giá, tính năng, khuyến mãi, thời gian giao hàng. Nếu chưa có thông tin thì nói shop sẽ kiểm tra lại và mời khách để lại số điện thoại.
 
 GỬI ẢNH
@@ -140,6 +144,7 @@ function toGeminiContents(history, latestText) {
     else contents.push({ role, parts: [{ text }] });
   };
   for (const m of history) {
+    if (m.from !== "customer" && (m.text.startsWith(OLD_FALLBACK) || m.text === FALLBACK_TEXT)) continue;
     push(m.from === "customer" ? "user" : "model", m.text);
   }
   const last = history[history.length - 1];
@@ -167,11 +172,7 @@ function parseModelJson(raw) {
 }
 
 async function generateReply(senderId, customerMessage, settings) {
-  const fallback = {
-    messages: ["Dạ shop chưa rõ ý anh/chị lắm, anh/chị nói rõ hơn giúp shop được không ạ?"],
-    images: [],
-    imageNote: "",
-  };
+  const fallback = { messages: [FALLBACK_TEXT], images: [], imageNote: "" };
 
   const products = await getProducts();
   const systemPrompt = buildSystemPrompt(formatProductsForPrompt(products), settings.botPrompt);
@@ -185,27 +186,37 @@ async function generateReply(senderId, customerMessage, settings) {
   const contents = toGeminiContents(history, customerMessage);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GOOGLE_API_KEY}`;
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-      contents,
-      generationConfig: {
-        maxOutputTokens: 1500, // đủ chỗ cho cả phần "suy nghĩ" của model, tránh bị cắt cụt câu
-        temperature: 0.8,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
 
-  const data = await response.json();
-  if (data.error) console.error("Lỗi Gemini API:", data.error);
+  // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản nhất.
+  const attempts = [
+    { maxOutputTokens: 2048, temperature: 0.8, responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "low" } },
+    { maxOutputTokens: 4096, temperature: 0.8 },
+  ];
 
-  const cand = data.candidates?.[0];
-  const raw = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
-  if (cand?.finishReason && cand.finishReason !== "STOP") {
-    console.warn("Gemini kết thúc bất thường:", cand.finishReason);
+  let raw = "";
+  for (let i = 0; i < attempts.length && !raw.trim(); i++) {
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents,
+          generationConfig: attempts[i],
+        }),
+      });
+      const data = await response.json();
+      if (data.error) console.error(`Lỗi Gemini API (lần ${i + 1}):`, JSON.stringify(data.error));
+      const cand = data.candidates?.[0];
+      raw = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
+      if (!raw.trim()) {
+        console.warn(
+          `Gemini không trả nội dung (lần ${i + 1}). finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
+        );
+      }
+    } catch (e) {
+      console.error(`Lỗi gọi Gemini (lần ${i + 1}):`, e.message);
+    }
   }
   console.log("---- Khách hỏi:", customerMessage);
   console.log("---- Bot trả lời:", raw || "(không có nội dung)");

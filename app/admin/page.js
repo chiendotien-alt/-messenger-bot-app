@@ -3,7 +3,6 @@ import { useEffect, useRef, useState } from "react";
 
 const EMPTY_FORM = {
   name: "",
-  price: "",
   stock: "Còn hàng",
   description: "",
   sampleImages: [],
@@ -153,6 +152,7 @@ export default function AdminPage() {
   const [botPrompt, setBotPrompt] = useState("");
   const [promptSaved, setPromptSaved] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
+  const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
 
   async function load() {
     setLoading(true);
@@ -205,7 +205,6 @@ export default function AdminPage() {
   function handleEdit(p) {
     setForm({
       name: p.name || "",
-      price: p.price || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       sampleImages: p.sampleImages || [],
@@ -292,24 +291,28 @@ export default function AdminPage() {
         />
         <input
           style={inputStyle}
-          placeholder="Giá (vd: 890.000đ)"
-          value={form.price}
-          onChange={(e) => setForm({ ...form, price: e.target.value })}
-          required
-        />
-        <input
-          style={inputStyle}
           placeholder="Tình trạng (vd: Còn hàng / Hết hàng)"
           value={form.stock}
           onChange={(e) => setForm({ ...form, stock: e.target.value })}
         />
         <textarea
           style={{ ...inputStyle, resize: "vertical" }}
-          placeholder="Nội dung sản phẩm: chất liệu, màu sắc, size, tính năng, ưu đãi, cách dùng, câu hỏi khách hay hỏi..."
+          placeholder="Nội dung sản phẩm: giá bán (theo số lượng nếu có), chất liệu, màu sắc, size, ưu đãi, giao hàng, câu hỏi khách hay hỏi..."
           value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })}
           rows={7}
         />
+        {/\|/.test(form.description) && (
+          <button
+            type="button"
+            onClick={() =>
+              setForm((f) => ({ ...f, description: f.description.replace(/[ \t]*(\|[ \t]*)+$/gm, "") }))
+            }
+            style={{ ...btn, alignSelf: "flex-start", fontSize: 13 }}
+          >
+            Dọn ký tự "|" thừa ở cuối dòng
+          </button>
+        )}
         <ImagePicker
           title="Ảnh sản phẩm mẫu"
           hint="Ảnh giới thiệu, ảnh đẹp của sản phẩm"
@@ -343,29 +346,75 @@ export default function AdminPage() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {products.length === 0 && <p>Chưa có sản phẩm nào — thêm sản phẩm đầu tiên ở form trên.</p>}
-          {products.map((p) => (
-            <div key={p.id} style={{ border: "1px solid #eee", borderRadius: 10, padding: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <strong>{p.name}</strong>
-                <span>{p.price}</span>
-              </div>
-              <div style={{ color: "#888", fontSize: 13, margin: "4px 0" }}>{p.stock}</div>
-              <p style={{ margin: "6px 0", color: "#444", whiteSpace: "pre-wrap" }}>{p.description}</p>
-              <Thumbs label="Ảnh mẫu" urls={p.sampleImages} />
-              <Thumbs label="Ảnh thực tế" urls={p.realImages} />
-              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-                <button onClick={() => handleEdit(p)} style={btn}>
-                  Sửa
-                </button>
-                <button
-                  onClick={() => handleDelete(p.id)}
-                  style={{ ...btn, border: "1px solid #f3c0c0", background: "#fff5f5", color: "#c0392b" }}
+          {products.map((p) => {
+            const open = openId === p.id;
+            const thumb = (p.sampleImages || [])[0] || (p.realImages || [])[0];
+            const nImg = (p.sampleImages || []).length + (p.realImages || []).length;
+            return (
+              <div key={p.id} style={{ border: "1px solid #eee", borderRadius: 10, overflow: "hidden" }}>
+                <div
+                  onClick={() => setOpenId(open ? null : p.id)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && setOpenId(open ? null : p.id)}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "10px 14px",
+                    cursor: "pointer",
+                    background: open ? "#fafafa" : "#fff",
+                  }}
                 >
-                  Xóa
-                </button>
+                  {thumb ? (
+                    <img src={thumb} alt="" style={{ width: 44, height: 44, objectFit: "cover", borderRadius: 6 }} />
+                  ) : (
+                    <div style={{ width: 44, height: 44, borderRadius: 6, background: "#f0f0f0" }} />
+                  )}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {p.name}
+                    </strong>
+                    <span style={{ color: "#888", fontSize: 13 }}>
+                      {p.stock}
+                      {nImg > 0 ? ` · ${nImg} ảnh` : ""}
+                    </span>
+                  </div>
+                  <span style={{ color: "#888", width: 16, textAlign: "center" }}>{open ? "▲" : "▼"}</span>
+                </div>
+
+                {open && (
+                  <div style={{ padding: "4px 14px 14px", borderTop: "1px solid #eee" }}>
+                    <p
+                      style={{
+                        margin: "10px 0",
+                        color: "#444",
+                        whiteSpace: "pre-wrap",
+                        maxHeight: 320,
+                        overflowY: "auto",
+                        fontSize: 14,
+                      }}
+                    >
+                      {p.description || "(chưa có nội dung)"}
+                    </p>
+                    <Thumbs label="Ảnh mẫu" urls={p.sampleImages} />
+                    <Thumbs label="Ảnh thực tế" urls={p.realImages} />
+                    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                      <button onClick={() => handleEdit(p)} style={btn}>
+                        Sửa
+                      </button>
+                      <button
+                        onClick={() => handleDelete(p.id)}
+                        style={{ ...btn, border: "1px solid #f3c0c0", background: "#fff5f5", color: "#c0392b" }}
+                      >
+                        Xóa
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </main>
