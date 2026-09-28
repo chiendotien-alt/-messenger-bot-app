@@ -9,14 +9,82 @@ export async function addMessage(senderId, from, text, images = []) {
   const sql = await getSql();
   const imgs = images.length ? JSON.stringify(images) : null;
   const preview = text || (images.length ? "📷 Ảnh" : "");
-  await sql`INSERT INTO messages (conversation_id, sender, text, images)
-            VALUES (${senderId}, ${from}, ${text || ""}, ${imgs}::jsonb)`;
+  const inserted = await sql`INSERT INTO messages (conversation_id, sender, text, images)
+            VALUES (${senderId}, ${from}, ${text || ""}, ${imgs}::jsonb)
+            RETURNING id`;
   await sql`INSERT INTO conversations (id, last_message, last_from, last_time)
             VALUES (${senderId}, ${preview}, ${from}, now())
             ON CONFLICT (id) DO UPDATE
             SET last_message = EXCLUDED.last_message,
                 last_from = EXCLUDED.last_from,
                 last_time = now()`;
+  return inserted[0]?.id ?? null;
+}
+
+/**
+ * Đánh dấu đã xử lý sự kiện Facebook (mid). Trả về false nếu sự kiện này đã được xử lý rồi
+ * (Facebook gửi lại khi webhook phản hồi chậm).
+ */
+export async function claimEvent(mid) {
+  if (!mid) return true;
+  const sql = await getSql();
+  const rows = await sql`INSERT INTO processed_events (mid) VALUES (${mid})
+                         ON CONFLICT (mid) DO NOTHING RETURNING mid`;
+  if (Math.random() < 0.02) {
+    await sql`DELETE FROM processed_events WHERE created_at < now() - interval '2 days'`.catch(() => {});
+  }
+  return rows.length > 0;
+}
+
+/**
+ * Khách bấm/gửi lại đúng câu đó trong vài phút? Chỉ tính khi đã có tin GIỐNG HỆT, gửi TRƯỚC tin này
+ * (so theo id nên khi 2 tin đến cùng lúc, chỉ tin thứ 2 bị coi là trùng, tin đầu vẫn được trả lời).
+ * Tin quá ngắn ("ok", "có") không tính vì có thể là câu trả lời hợp lệ cho 2 câu hỏi khác nhau.
+ */
+export async function isRepeatedMessage(senderId, text, messageId, windowSec = 120) {
+  if (!messageId || !text || text.trim().length < 8) return false;
+  const sql = await getSql();
+  const rows = await sql`SELECT 1 FROM messages
+                         WHERE conversation_id = ${senderId} AND sender = 'customer'
+                           AND text = ${text} AND id < ${messageId}
+                           AND created_at > now() - (${windowSec}::int * interval '1 second')
+                         LIMIT 1`;
+  return rows.length > 0;
+}
+
+/**
+ * Giữ chỗ để gửi câu mở đầu của 1 sản phẩm cho 1 khách (an toàn khi 2 tin đến cùng lúc).
+ * claimed=true → được phép gửi. claimed=false → đã gửi từ ageMs mili giây trước.
+ */
+export async function claimOpening(senderId, productId) {
+  const sql = await getSql();
+  const rows = await sql`INSERT INTO opening_sent (conversation_id, product_id)
+                         VALUES (${senderId}, ${String(productId)})
+                         ON CONFLICT DO NOTHING RETURNING sent_at`;
+  if (rows.length) return { claimed: true, ageMs: 0 };
+  const cur = await sql`SELECT EXTRACT(EPOCH FROM (now() - sent_at)) * 1000 AS age
+                        FROM opening_sent
+                        WHERE conversation_id = ${senderId} AND product_id = ${String(productId)}`;
+  return { claimed: false, ageMs: Number(cur[0]?.age ?? Infinity) };
+}
+
+/** Trả lại chỗ đã giữ khi gửi thất bại, để lần sau còn gửi lại được. */
+export async function releaseOpening(senderId, productId) {
+  const sql = await getSql();
+  await sql`DELETE FROM opening_sent
+            WHERE conversation_id = ${senderId} AND product_id = ${String(productId)}`;
+}
+
+/** Sản phẩm khách đang quan tâm (nhớ từ câu hỏi quảng cáo họ bấm). */
+export async function getCurrentProduct(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT current_product_id AS id FROM conversations WHERE id = ${senderId}`;
+  return rows[0]?.id || null;
+}
+
+export async function setCurrentProduct(senderId, productId) {
+  const sql = await getSql();
+  await sql`UPDATE conversations SET current_product_id = ${String(productId)} WHERE id = ${senderId}`;
 }
 
 /** Lấy tên + ảnh đại diện của khách từ Facebook (thử nhiều cách, ghi lại lý do nếu thất bại). */
@@ -152,5 +220,6 @@ export async function deleteConversation(senderId) {
     console.error("Không dọn được ảnh khách:", e.message);
   }
   await sql`DELETE FROM messages WHERE conversation_id = ${senderId}`;
+  await sql`DELETE FROM opening_sent WHERE conversation_id = ${senderId}`;
   await sql`DELETE FROM conversations WHERE id = ${senderId}`;
 }

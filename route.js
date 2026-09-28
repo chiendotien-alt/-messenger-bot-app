@@ -4,8 +4,18 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, formatProductsForPrompt } from "@/lib/products";
-import { addMessage, ensureProfile, getRecentMessages } from "@/lib/conversations";
+import { getProducts, formatProductsForPrompt, norm, matchProduct } from "@/lib/products";
+import {
+  addMessage,
+  ensureProfile,
+  getRecentMessages,
+  claimEvent,
+  isRepeatedMessage,
+  claimOpening,
+  releaseOpening,
+  getCurrentProduct,
+  setCurrentProduct,
+} from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
@@ -37,19 +47,25 @@ export async function POST(req) {
   for (const entry of body.entry ?? []) {
     for (const event of entry.messaging ?? []) {
       const senderId = event.sender?.id;
-      const text = event.message?.text || "";
+      // Khách gõ chữ, hoặc bấm câu hỏi có sẵn/nút (Facebook gửi dạng postback, "title" chính là câu hỏi)
+      const text = event.message?.text || event.postback?.title || "";
+      const mid = event.message?.mid || event.postback?.mid || "";
       // Ảnh khách gửi (bỏ qua sticker/like)
       const fbImages = (event.message?.attachments || [])
         .filter((a) => a.type === "image" && a.payload?.url && !a.payload?.sticker_id)
         .map((a) => a.payload.url);
 
-      // Bỏ qua echo, postback, tin nhắn không có chữ lẫn ảnh, v.v.
+      // Bỏ qua echo, tin nhắn không có chữ lẫn ảnh, v.v.
       if (!senderId || event.message?.is_echo || (!text && !fbImages.length)) continue;
 
+      let openedProductId = null; // sản phẩm vừa giữ chỗ gửi câu mở đầu (để trả lại nếu gửi lỗi)
       try {
+        // Facebook có thể gửi lại đúng sự kiện này (khi webhook chậm) → chỉ xử lý 1 lần
+        if (!(await claimEvent(mid).catch(() => true))) continue;
+
         // Lưu lịch sử chỉ để xem lại; nếu kho dữ liệu lỗi thì bot vẫn phải trả lời khách
         const savedImages = await persistCustomerImages(senderId, fbImages);
-        await addMessage(senderId, "customer", text, savedImages).catch((e) =>
+        const messageId = await addMessage(senderId, "customer", text, savedImages).catch((e) =>
           console.error("Không lưu được tin của khách:", e.message)
         );
         await ensureProfile(senderId).catch((e) =>
@@ -62,10 +78,23 @@ export async function POST(req) {
           continue;
         }
 
+        // Khách bấm câu hỏi có sẵn nhiều lần / gửi trùng trong vài phút → chỉ trả lời 1 lần
+        if (
+          text &&
+          !fbImages.length &&
+          (await isRepeatedMessage(senderId, text, messageId).catch(() => false))
+        ) {
+          console.log("Bỏ qua tin trùng của khách:", text);
+          continue;
+        }
+
         await fbAction(senderId, "mark_seen");
         await fbAction(senderId, "typing_on");
 
-        const { messages, images, imageNote } = await generateReply(senderId, text, savedImages, settings);
+        const reply = await generateReply(senderId, text, savedImages, settings);
+        if (reply.skip) continue;
+        const { messages, images, imageNote } = reply;
+        openedProductId = reply.openingProductId || null;
 
         for (let i = 0; i < messages.length; i++) {
           if (i > 0) {
@@ -86,6 +115,7 @@ export async function POST(req) {
         }
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
+        if (openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
         await sendMessage(
           senderId,
           "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!"
@@ -98,22 +128,15 @@ export async function POST(req) {
   return new Response("EVENT_RECEIVED", { status: 200 });
 }
 
-// ---- Câu mở đầu quảng cáo: khách hỏi giá lần đầu → gửi câu soạn sẵn + toàn bộ ảnh ----
+// ---- Câu mở đầu quảng cáo: khách hỏi giá lần đầu → gửi câu soạn sẵn + ẢNH MẪU (không gửi ảnh thực tế) ----
 const MAX_OPENING_IMAGES = 10;
-
-const norm = (t) =>
-  String(t || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d")
-    .replace(/\s+/g, " ")
-    .trim();
+const QUIET_AFTER_OPENING_MS = 2 * 60 * 1000; // vừa gửi mở đầu xong, khách hỏi giá tiếp → im lặng, khỏi trả lời trùng
+const QUIET_AFTER_PRESET_MS = 10 * 60 * 1000; // khách bấm lại đúng câu hỏi quảng cáo có sẵn → im lặng lâu hơn
 
 /** Tin ngắn hỏi giá kiểu "Giá sản phẩm bao nhiêu?", "giá sao shop", "bn vậy"... */
-function isPriceInquiry(text) {
+function isPriceInquiry(text, maxLen = 50) {
   const t = norm(text);
-  if (!t || t.length > 50) return false;
+  if (!t || t.length > maxLen) return false;
   if (/gia dinh|gia toc|gia dung/.test(t)) return false;
   return /\b(gia|bao nhieu|bao nhiu|bn|bao tien|nhieu tien|price)\b/.test(t);
 }
@@ -139,11 +162,13 @@ function openingAlreadySent(history, p) {
 }
 
 function openingReply(p) {
-  const images = [...(p.sampleImages || []), ...(p.realImages || [])].slice(0, MAX_OPENING_IMAGES);
+  // Mở đầu chỉ gửi ảnh mẫu. Ảnh thực tế để dành, khách hỏi mới gửi.
+  const images = (p.sampleImages || []).slice(0, MAX_OPENING_IMAGES);
   return {
     messages: splitScript(p.openingScript),
     images,
-    imageNote: images.length ? `📷 [Bot đã gửi ${images.length} ảnh của "${p.name}" cùng câu mở đầu]` : "",
+    imageNote: images.length ? `📷 [Bot đã gửi ${images.length} ảnh mẫu của "${p.name}" cùng câu mở đầu]` : "",
+    openingProductId: p.id,
   };
 }
 
@@ -153,7 +178,7 @@ const MAX_IMAGES = 4;
 const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
 const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
 
-function buildSystemPrompt(catalogText, shopInfo) {
+function buildSystemPrompt(catalogText, shopInfo, currentProduct) {
   return `Bạn là nhân viên tư vấn bán hàng của shop, đang nhắn tin với khách qua Messenger.
 Mục tiêu: tư vấn đúng nhu cầu và giúp khách chốt đơn, nhưng cảm giác như một người thật nhắn tin, không phải máy trả lời tự động.
 
@@ -177,10 +202,10 @@ CÁCH TƯ VẤN
 - Nếu khách chỉ gửi ảnh mà chưa hỏi gì, xác nhận đã nhận ảnh bằng 1 câu ngắn và hỏi khách muốn biết gì về mẫu này.
 
 CÂU MỞ ĐẦU QUẢNG CÁO
-- Một số sản phẩm có "câu mở đầu quảng cáo soạn sẵn" (ghi CÓ trong danh sách). Khi khách nhắn lần đầu kiểu hỏi giá hoặc xin tư vấn chung về sản phẩm đó (vd: "giá sản phẩm bao nhiêu", "giá sao shop", "tư vấn giúp mình") và câu mở đầu chưa được gửi trong cuộc trò chuyện, hãy đặt use_opening_product là id sản phẩm và để messages là mảng rỗng. Hệ thống sẽ tự gửi đúng câu mở đầu kèm toàn bộ ảnh.
+- Một số sản phẩm có "câu mở đầu quảng cáo soạn sẵn" (ghi CÓ trong danh sách). Khi khách nhắn lần đầu kiểu hỏi giá hoặc xin tư vấn chung về sản phẩm đó (vd: "giá sản phẩm bao nhiêu", "giá sao shop", "tư vấn giúp mình") và câu mở đầu chưa được gửi trong cuộc trò chuyện, hãy đặt use_opening_product là id sản phẩm và để messages là mảng rỗng. Hệ thống sẽ tự gửi đúng câu mở đầu kèm ảnh mẫu (không kèm ảnh thực tế).
 
 GỬI ẢNH
-- Khi khách xin xem ảnh, hình, "xem hàng", "ảnh thật", "ảnh feedback", hãy đặt send_images.
+- Không tự gửi ảnh thực tế khi khách chưa hỏi. Chỉ gửi ảnh khi khách xin xem ảnh, hình, "xem hàng", "ảnh thật", "ảnh feedback" — khi đó hãy đặt send_images.
 - type "sample" = ảnh mẫu/giới thiệu sản phẩm; "real" = ảnh thực tế (chụp hàng thật, khách hàng thật); "both" = khi khách chỉ nói chung "ảnh".
 - Mỗi ảnh có mã (S1, S2 là ảnh mẫu; R1, R2 là ảnh thực tế) và có thể có tên. Khi khách hỏi một mẫu/màu/kiểu cụ thể (vd "váy trắng", "mẫu trắng", "màu đen"), hãy chọn các ảnh có tên khớp nhất và điền image_ids (danh sách mã ảnh). Nếu không ảnh nào có tên khớp, nói thật là shop chưa có ảnh mẫu đó và hỏi khách muốn xem loại nào; không gửi ảnh không liên quan.
 - product_id lấy đúng từ danh sách. Nếu chưa biết khách hỏi sản phẩm nào và shop có nhiều sản phẩm, đặt send_images là null và hỏi khách muốn xem sản phẩm nào.
@@ -191,6 +216,13 @@ GỬI ẢNH
 {"messages": ["tin 1", "tin 2 (nếu cần)"], "send_images": null, "use_opening_product": null}
 hoặc {"messages": ["..."], "send_images": {"product_id": "id sản phẩm", "type": "sample" | "real" | "both", "image_ids": ["S1"]}, "use_opening_product": null}
 (image_ids chỉ điền khi khách hỏi mẫu/màu cụ thể; use_opening_product là id sản phẩm hoặc null)
+
+SẢN PHẨM KHÁCH ĐANG QUAN TÂM
+${
+  currentProduct
+    ? `Khách đang hỏi về sản phẩm [id: ${currentProduct.id}] ${currentProduct.name} (xác định từ câu hỏi quảng cáo khách bấm hoặc từ tên khách nhắc). Khi khách hỏi chung chung (giá, ảnh, còn hàng, size...) mà không nêu tên sản phẩm thì hiểu là hỏi sản phẩm này và dùng đúng id này cho send_images / use_opening_product. Chỉ chuyển sang sản phẩm khác khi khách nhắc rõ.`
+    : "Chưa xác định được khách hỏi sản phẩm nào."
+}
 
 THÔNG TIN & QUY TẮC CỦA SHOP (do chủ shop cung cấp):
 ${shopInfo?.trim() || "(chủ shop chưa cung cấp thêm)"}
@@ -282,17 +314,35 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     console.error("Không đọc được lịch sử chat:", e.message);
   }
 
-  // Đường tắt (không cần gọi AI): khách hỏi giá → câu mở đầu + toàn bộ ảnh
-  const withScript = products.filter((p) => (p.openingScript || "").trim());
-  if (withScript.length && !customerImages.length && isPriceInquiry(customerMessage)) {
-    const target =
-      withScript.length === 1
-        ? withScript[0]
-        : withScript.find((p) => norm(customerMessage).includes(norm(p.name)));
-    if (target && !openingAlreadySent(history, target)) return openingReply(target);
+  // Suy ra sản phẩm khách đang hỏi: từ câu quảng cáo/tên sản phẩm trong tin nhắn → nhớ lại cho các tin sau
+  const match = matchProduct(customerMessage, products);
+  if (match) await setCurrentProduct(senderId, match.product.id).catch(() => {});
+  let currentId = match?.product.id || (await getCurrentProduct(senderId).catch(() => null));
+  if (!currentId && products.length === 1) currentId = products[0].id;
+  const currentProduct = products.find((p) => String(p.id) === String(currentId)) || null;
+
+  // Đường tắt (không cần gọi AI): khách bấm câu hỏi quảng cáo có sẵn, hoặc hỏi giá → câu mở đầu + ảnh mẫu
+  if (!customerImages.length) {
+    const isPreset = !!match?.exact;
+    const target = isPreset
+      ? match.product
+      : isPriceInquiry(customerMessage, match ? 120 : 50)
+        ? match?.product || currentProduct
+        : null;
+
+    if (target && (target.openingScript || "").trim()) {
+      // Cuộc trò chuyện cũ (trước khi có bảng theo dõi) thì dò trong lịch sử xem đã gửi mở đầu chưa
+      const sentBefore = openingAlreadySent(history, target);
+      const claim = await claimOpening(senderId, target.id).catch(() => ({ claimed: true, ageMs: 0 }));
+      if (claim.claimed && !sentBefore) return openingReply(target);
+      // Đã gửi mở đầu rồi: khách bấm lại/hỏi lại ngay sau đó thì im lặng, hết khoảng đó mới để AI trả lời
+      if (!claim.claimed && claim.ageMs < (isPreset ? QUIET_AFTER_PRESET_MS : QUIET_AFTER_OPENING_MS)) {
+        return { skip: true };
+      }
+    }
   }
 
-  const systemPrompt = buildSystemPrompt(formatProductsForPrompt(products), settings.botPrompt);
+  const systemPrompt = buildSystemPrompt(formatProductsForPrompt(products), settings.botPrompt, currentProduct);
   const contents = await buildContents(history, customerMessage, customerImages);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GOOGLE_API_KEY}`;

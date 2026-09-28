@@ -35,6 +35,52 @@ export async function saveProducts(products) {
   });
 }
 
+/** Bỏ dấu, chữ thường, gọn khoảng trắng — để so khớp tiếng Việt không phân biệt dấu. */
+export const norm = (t) =>
+  String(t || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/đ/g, "d")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/** Như norm nhưng bỏ luôn dấu câu/emoji — để so câu hỏi sẵn không bị lệch vì "?" hay emoji. */
+export const normKey = (t) => norm(t).replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+
+/** Các câu hỏi quảng cáo soạn sẵn của 1 sản phẩm (mỗi dòng 1 câu). */
+function triggerList(p) {
+  return String(p.triggerQuestions || "")
+    .split(/\n+/)
+    .map(normKey)
+    .filter((x) => x.length >= 4);
+}
+
+/**
+ * Đoán khách đang hỏi sản phẩm nào từ nội dung tin nhắn.
+ *  - exact=true : tin khớp đúng 1 câu hỏi quảng cáo soạn sẵn của sản phẩm (khách bấm câu hỏi có sẵn)
+ *  - exact=false: tin có nhắc tên sản phẩm (hoặc chứa nguyên câu hỏi soạn sẵn)
+ * Không khớp sản phẩm nào → null.
+ */
+export function matchProduct(text, products) {
+  const t = normKey(text);
+  if (!t || !products?.length) return null;
+
+  for (const p of products) {
+    if (triggerList(p).includes(t)) return { product: p, exact: true };
+  }
+
+  let best = null;
+  for (const p of products) {
+    const names = [normKey(p.name), ...triggerList(p).filter((x) => x.length >= 8 && t.includes(x))];
+    for (const n of names) {
+      if (n.length < 3) continue;
+      if (` ${t} `.includes(` ${n} `) && (!best || n.length > best.len)) best = { product: p, len: n.length };
+    }
+  }
+  return best ? { product: best.product, exact: false } : null;
+}
+
 function describeImages(urls, prefix, labels) {
   if (!urls?.length) return "không có";
   return urls

@@ -7,6 +7,7 @@ const EMPTY_FORM = {
   stock: "Còn hàng",
   description: "",
   openingScript: "",
+  triggerQuestions: "",
   sampleImages: [],
   realImages: [],
   imageLabels: {},
@@ -241,6 +242,7 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       openingScript: p.openingScript || "",
+      triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
       imageLabels: p.imageLabels || {},
@@ -357,8 +359,8 @@ export default function AdminPage() {
             Câu thoại mở đầu (chạy quảng cáo)
           </label>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
-            Khi khách nhắn lần đầu kiểu "Giá sản phẩm bao nhiêu?", bot gửi đúng câu này kèm toàn bộ ảnh của sản phẩm.
-            Để trống nếu không dùng.
+            Khi khách nhắn lần đầu kiểu "Giá sản phẩm bao nhiêu?", bot gửi đúng câu này kèm ảnh mẫu của sản phẩm
+            (ảnh thực tế chỉ gửi khi khách hỏi). Để trống nếu không dùng.
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
@@ -366,6 +368,22 @@ export default function AdminPage() {
             value={form.openingScript}
             onChange={(e) => setForm({ ...form, openingScript: e.target.value })}
             placeholder={"Ví dụ:\nDạ chào anh/chị, chân váy 3 tầng bên shop giá 199.000đ/chiếc, mua 2 chiếc chỉ 380.000đ, freeship toàn quốc ạ.\nAnh/chị xem ảnh mẫu bên dưới rồi cho shop biết mình thích màu nào nhé!"}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Câu hỏi có sẵn của quảng cáo (không bắt buộc)
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Mỗi dòng 1 câu, gõ giống hệt câu hỏi sẵn bạn cài ở quảng cáo. Khách bấm câu nào, bot biết ngay khách đang
+            hỏi sản phẩm này và gửi câu mở đầu. Nếu câu hỏi đã có sẵn tên sản phẩm ở trên thì có thể bỏ trống.
+          </div>
+          <textarea
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
+            rows={3}
+            value={form.triggerQuestions}
+            onChange={(e) => setForm({ ...form, triggerQuestions: e.target.value })}
+            placeholder={"Ví dụ:\nGiá chân váy 3 tầng bao nhiêu?\nTư vấn giúp mình chân váy 3 tầng"}
           />
         </div>
         <ImagePicker
@@ -461,6 +479,12 @@ export default function AdminPage() {
                       <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f4f7ff", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
                         <div style={{ color: "#667", fontSize: 12, marginBottom: 2 }}>Câu mở đầu quảng cáo</div>
                         {p.openingScript}
+                      </div>
+                    )}
+                    {p.triggerQuestions && (
+                      <div style={{ margin: "10px 0", padding: "8px 10px", background: "#fff8ec", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
+                        <div style={{ color: "#876", fontSize: 12, marginBottom: 2 }}>Câu hỏi có sẵn của quảng cáo</div>
+                        {p.triggerQuestions}
                       </div>
                     )}
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
