@@ -1,3 +1,6 @@
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 // app/api/products/route.js
 import { NextResponse } from "next/server";
 import { getProducts, saveProducts } from "@/lib/products";

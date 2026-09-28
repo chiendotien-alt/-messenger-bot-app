@@ -10,19 +10,19 @@ export default function ChatAdminPage() {
   const [sending, setSending] = useState(false);
 
   const loadConversations = useCallback(async () => {
-    const res = await fetch("/api/conversations");
+    const res = await fetch("/api/conversations", { cache: "no-store" });
     setConversations(await res.json());
   }, []);
 
   const loadSettings = useCallback(async () => {
-    const res = await fetch("/api/settings");
+    const res = await fetch("/api/settings", { cache: "no-store" });
     const data = await res.json();
     setBotEnabled(data.botEnabled !== false);
   }, []);
 
   const loadMessages = useCallback(async (id) => {
     if (!id) return;
-    const res = await fetch(`/api/conversations/${id}`);
+    const res = await fetch(`/api/conversations/${id}`, { cache: "no-store" });
     const data = await res.json();
     setMessages(data.messages || []);
   }, []);

@@ -12,7 +12,7 @@ export default function AdminPage() {
 
   async function load() {
     setLoading(true);
-    const res = await fetch("/api/products");
+    const res = await fetch("/api/products", { cache: "no-store" });
     setProducts(await res.json());
     setLoading(false);
   }
