@@ -317,6 +317,17 @@ export default function AdminPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
+  // Chuyển nhanh 1 sản phẩm sang Page khác (hoặc về "Tất cả Page") ngay tại danh sách, không cần mở form Sửa
+  async function handleMovePage(p, newPageId) {
+    const updated = { ...p, pageId: newPageId || "" };
+    await fetch("/api/products", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updated),
+    });
+    load();
+  }
+
   async function handleDelete(id) {
     if (!confirm("Xóa sản phẩm này?")) return;
     await fetch("/api/products", {
@@ -336,7 +347,7 @@ export default function AdminPage() {
   const btn = { padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" };
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 760, margin: "0 auto" }}>
+    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 1180, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Quản lý sản phẩm</h1>
         <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
@@ -375,17 +386,24 @@ export default function AdminPage() {
         </div>
       </details>
 
+      <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
       <form
         onSubmit={handleSubmit}
         style={{
           display: "flex",
           flexDirection: "column",
           gap: 10,
-          marginBottom: 32,
+          width: 400,
+          flexShrink: 0,
+          position: "sticky",
+          top: 20,
+          maxHeight: "calc(100vh - 40px)",
+          overflowY: "auto",
           border: "1px solid #e2e2e2",
           padding: 20,
           borderRadius: 10,
           background: "#fafafa",
+          boxSizing: "border-box",
         }}
       >
         <strong>{editingId ? "Sửa sản phẩm" : "Thêm sản phẩm mới"}</strong>
@@ -581,6 +599,7 @@ export default function AdminPage() {
         </div>
       </form>
 
+      <div style={{ flex: 1, minWidth: 0 }}>
       {loading ? (
         <p>Đang tải...</p>
       ) : (
@@ -678,6 +697,23 @@ export default function AdminPage() {
                     )}
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
                     <Thumbs label="Ảnh thực tế" urls={p.realImages} labels={p.imageLabels} />
+                    {pages.length > 0 && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
+                        <span style={{ fontSize: 13, color: "#666" }}>Chuyển sang Page:</span>
+                        <select
+                          value={p.pageId || ""}
+                          onChange={(e) => handleMovePage(p, e.target.value)}
+                          style={{ ...inputStyle, padding: "6px 10px", fontSize: 13 }}
+                        >
+                          <option value="">Tất cả Page (dùng chung)</option>
+                          {pages.map((pg) => (
+                            <option key={pg.id} value={pg.id}>
+                              {pg.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                       <button onClick={() => handleEdit(p)} style={btn}>
                         Sửa
@@ -699,6 +735,8 @@ export default function AdminPage() {
           })}
         </div>
       )}
+      </div>
+      </div>
     </main>
   );
 }

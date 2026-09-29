@@ -19,9 +19,10 @@ import {
 } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
+import { getAllRawKeys } from "@/lib/apiKeys";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+// GOOGLE_API_KEY (biến môi trường) + các key thêm bằng nút 🔑 trên trang quản trị — xem lib/apiKeys.js
 // Vercel cho hàm chạy tối đa 60s (mặc định có thể chỉ 10-15s → dễ bị cắt giữa chừng khi AI chậm)
 export const maxDuration = 60;
 
@@ -30,8 +31,7 @@ export const maxDuration = 60;
 // → các model dự phòng. Model nào lỗi (hết quota, quá tải, không tồn tại) sẽ tự chuyển sang model kế tiếp.
 // Thêm/bớt model dự phòng bằng GEMINI_FALLBACK_MODELS="model-a,model-b" (không bắt buộc).
 const DEFAULT_MODEL_CHAIN = [
-  "gemini-3.8-flash", // mới nhất
-  "gemini-3.6-flash", // bản stable
+  "gemini-3.6-flash", // bản stable — thử đầu tiên (bỏ gemini-3.8-flash vì hạn mức thấp)
   "gemini-3.5-flash", // bản stable
   "gemini-3.5-flash-lite", // nhẹ, quota rộng — chốt chặn cuối
 ];
@@ -45,9 +45,9 @@ const MODEL_CHAIN = [
       .filter(Boolean)
   ),
 ];
-const GEMINI_TIMEOUT_MS = 15000; // mỗi lần gọi chờ tối đa 15s
-const REPLY_BUDGET_MS = 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
-const modelCooldown = new Map(); // model → thời điểm được thử lại (bỏ qua model vừa lỗi để khỏi mất thời gian)
+const GEMINI_TIMEOUT_MS = 9000; // mỗi lần gọi chờ tối đa 9s (giảm từ 15s để khách đỡ chờ lâu)
+const REPLY_BUDGET_MS = 25000; // tổng thời gian dành cho AI trong 1 tin nhắn (giảm từ 45s)
+const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
 // ---- 1. Facebook gọi GET để xác minh webhook khi bạn cấu hình trên Meta ----
 export async function GET(req) {
@@ -404,6 +404,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const contents = await buildContents(history, customerMessage, customerImages);
 
   const deadline = Date.now() + REPLY_BUDGET_MS;
+  const apiKeys = await getAllRawKeys();
 
   // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản hơn.
   // Mỗi lần thử đều tự chạy qua danh sách model dự phòng (xem callGemini).
@@ -415,7 +416,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let raw = "";
   let usedModel = null;
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    const r = await callGemini(systemPrompt, contents, attempts[i], deadline);
+    const r = await callGemini(systemPrompt, contents, attempts[i], deadline, apiKeys);
     raw = r.text;
     usedModel = r.model;
   }
@@ -490,7 +491,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
       // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
       console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
-      const retried = await retryForcedText(systemPrompt, contents, deadline);
+      const retried = await retryForcedText(systemPrompt, contents, deadline, apiKeys);
       if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
       return fallback;
     }
@@ -499,26 +500,30 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 }
 
 /**
- * Gọi Gemini với cơ chế dự phòng:
- *  - 429 (hết quota) / 404 (model không tồn tại) / 400 khác → chuyển ngay sang model kế tiếp
- *  - 500/503/timeout (quá tải) → thử lại model đó 1 lần rồi mới chuyển
- *  - 400 do thinkingConfig (model không hỗ trợ) → gọi lại chính model đó không kèm thinkingConfig
- *  - 401/403 (sai/khoá API key) → dừng luôn vì đổi model cũng vô ích
- * Trả về { text, model }; text rỗng nếu tất cả đều lỗi.
+ * Gọi Gemini, thử lần lượt: mỗi model × mỗi API key (nhiều key = nhiều hạn mức/phút cộng lại).
+ *  - 429 (hết quota key này) → thử NGAY key khác với cùng model đó (không đổi model vội, giữ chất lượng)
+ *  - 404 (model không tồn tại) → bỏ hẳn model đó, sang model kế tiếp
+ *  - 401/403 (key này sai/bị khoá) → bỏ hẳn key đó, thử key khác
+ *  - 500/503/timeout (quá tải) → nghỉ ngắn rồi thử key khác của model đó
+ *  - 400 do thinkingConfig (model không hỗ trợ) → gọi lại không kèm thinkingConfig
+ * Trả về { text, model }; text rỗng nếu tất cả model + key đều lỗi.
  */
-async function callGemini(systemPrompt, contents, generationConfig, deadline) {
-  const now = Date.now();
-  let chain = MODEL_CHAIN.filter((m) => (modelCooldown.get(m) || 0) <= now);
-  if (!chain.length) chain = MODEL_CHAIN; // tất cả đang "nghỉ" thì thử lại hết
+async function callGemini(systemPrompt, contents, generationConfig, deadline, apiKeys) {
+  const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
 
-  for (const model of chain) {
+  for (const model of MODEL_CHAIN) {
     let config = generationConfig;
     let stripped = false;
 
-    for (let attempt = 0; attempt < 2; attempt++) {
+    const now = Date.now();
+    let keyChain = keys.filter((k) => (modelCooldown.get(`${model}::${k.id}`) || 0) <= now);
+    if (!keyChain.length) keyChain = keys; // toàn bộ key đang "nghỉ" với model này thì thử lại hết
+
+    for (const keyObj of keyChain) {
+      const cooldownKey = `${model}::${keyObj.id}`;
       const remaining = deadline - Date.now();
       if (remaining < 3000) {
-        console.warn("Hết thời gian dành cho AI, dừng thử model.");
+        console.warn("Hết thời gian dành cho AI, dừng thử.");
         return { text: "", model: null };
       }
 
@@ -526,7 +531,7 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline) {
       try {
         res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": GOOGLE_API_KEY || "" },
+          headers: { "Content-Type": "application/json", "x-goog-api-key": keyObj.key || "" },
           body: JSON.stringify({
             systemInstruction: { parts: [{ text: systemPrompt }] },
             contents,
@@ -535,49 +540,42 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline) {
           signal: AbortSignal.timeout(Math.min(GEMINI_TIMEOUT_MS, remaining)),
         });
       } catch (e) {
-        console.error(`Gemini ${model} timeout/lỗi mạng (lần ${attempt + 1}):`, e.message);
-        if (attempt === 0) {
-          await sleep(600);
-          continue;
-        }
-        modelCooldown.set(model, Date.now() + 30 * 1000);
-        break;
+        console.error(`Gemini ${model} (key ${keyObj.id}) timeout/lỗi mạng:`, e.message);
+        modelCooldown.set(cooldownKey, Date.now() + 20 * 1000);
+        continue; // thử key khác cùng model
       }
 
       const data = await res.json().catch(() => ({}));
 
       if (!res.ok) {
         const err = data.error || {};
-        console.error(`Lỗi Gemini API [${model}] HTTP ${res.status}:`, JSON.stringify(err));
+        console.error(`Lỗi Gemini API [${model}] (key ${keyObj.id}) HTTP ${res.status}:`, JSON.stringify(err));
 
         if (res.status === 401 || res.status === 403) {
-          console.error("GOOGLE_API_KEY sai, hết hạn hoặc bị khoá — đổi model không giải quyết được.");
-          return { text: "", model: null };
+          // Key này sai/bị khoá — nghỉ lâu, thử key khác
+          modelCooldown.set(cooldownKey, Date.now() + 30 * 60 * 1000);
+          continue;
         }
         if (res.status === 400 && config.thinkingConfig && !stripped && /think/i.test(err.message || "")) {
           const { thinkingConfig, ...rest } = config; // model này không nhận thinkingConfig
           config = rest;
           stripped = true;
-          attempt--; // không tính là 1 lần thử
-          continue;
+          continue; // thử lại đúng key này với cấu hình mới, không tính là lỗi
         }
         if (res.status === 404) {
-          modelCooldown.set(model, Date.now() + 30 * 60 * 1000); // tên model sai/đã tắt
+          // Tên model sai/đã tắt — không liên quan tới key, nghỉ hẳn model này rồi sang model kế tiếp
+          for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 30 * 60 * 1000);
           break;
         }
         if (res.status === 429) {
-          modelCooldown.set(model, Date.now() + 60 * 1000); // hết quota/phút → nghỉ 1 phút
-          break;
+          modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút → nghỉ 1 phút, thử key khác
+          continue;
         }
         if (res.status >= 500) {
-          if (attempt === 0) {
-            await sleep(600);
-            continue;
-          }
-          modelCooldown.set(model, Date.now() + 30 * 1000);
-          break;
+          modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
+          continue; // quá tải → thử key khác luôn cho nhanh
         }
-        break; // 400 khác → sang model kế tiếp
+        continue; // 400 khác → thử key khác của model này
       }
 
       const cand = data.candidates?.[0];
@@ -585,16 +583,16 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline) {
       if (text.trim()) return { text, model };
 
       console.warn(
-        `Gemini ${model} không trả nội dung. finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
+        `Gemini ${model} (key ${keyObj.id}) không trả nội dung. finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
       );
-      break; // rỗng → thử model kế tiếp
+      break; // rỗng → thử model kế tiếp (không phải lỗi key, đổi key không ích gì)
     }
   }
   return { text: "", model: null };
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
-async function retryForcedText(systemPrompt, contents, deadline) {
+async function retryForcedText(systemPrompt, contents, deadline, apiKeys) {
   try {
     const extra =
       "\n\nLƯU Ý BẮT BUỘC: mảng messages KHÔNG được rỗng. Câu mở đầu quảng cáo đã gửi rồi nên use_opening_product phải là null. " +
@@ -608,7 +606,8 @@ async function retryForcedText(systemPrompt, contents, deadline) {
         responseMimeType: "application/json",
         thinkingConfig: { thinkingLevel: "low" },
       },
-      Math.max(deadline, Date.now() + 15000) // luôn chừa ít nhất 15s cho lần thử lại này
+      Math.max(deadline, Date.now() + 15000), // luôn chừa ít nhất 15s cho lần thử lại này
+      apiKeys
     );
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
