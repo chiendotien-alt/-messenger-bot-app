@@ -608,18 +608,24 @@ export default function ChatAdminPage() {
   const [showSettings, setShowSettings] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
   const pageFilterRef = useRef("all");
+  const [phoneOnly, setPhoneOnly] = useState(false); // chỉ hiện khách đã để lại số điện thoại
+  const phoneOnlyRef = useRef(false);
 
   const loadConversations = useCallback(async () => {
     const filter = pageFilter;
+    const onlyPhone = phoneOnly;
     try {
-      const qs = filter !== "all" ? `?pageId=${encodeURIComponent(filter)}` : "";
+      const params = [];
+      if (filter !== "all") params.push(`pageId=${encodeURIComponent(filter)}`);
+      if (onlyPhone) params.push("phone=1");
+      const qs = params.length ? "?" + params.join("&") : "";
       const res = await fetch("/api/conversations" + qs, { cache: "no-store" });
       if (!res.ok) return; // lỗi tạm thời: giữ nguyên danh sách cũ
       const data = await res.json();
       // Bỏ kết quả về muộn của Page đã đổi đi (tránh nhảy lẫn danh sách)
-      if (Array.isArray(data) && pageFilterRef.current === filter) setConversations(data);
+      if (Array.isArray(data) && pageFilterRef.current === filter && phoneOnlyRef.current === onlyPhone) setConversations(data);
     } catch {}
-  }, [pageFilter]);
+  }, [pageFilter, phoneOnly]);
 
   const loadPages = useCallback(async () => {
     try {
@@ -662,6 +668,10 @@ export default function ChatAdminPage() {
         pageFilterRef.current = saved;
         setPageFilter(saved);
       }
+      if (localStorage.getItem("adminPhoneOnly") === "1") {
+        phoneOnlyRef.current = true;
+        setPhoneOnly(true);
+      }
     } catch {}
   }, [loadSettings, loadPages]);
 
@@ -687,6 +697,16 @@ export default function ChatAdminPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [current.messages.length, selectedId]);
+
+  function togglePhoneOnly() {
+    const next = !phoneOnly;
+    phoneOnlyRef.current = next;
+    setPhoneOnly(next);
+    setConversations([]);
+    try {
+      localStorage.setItem("adminPhoneOnly", next ? "1" : "0");
+    } catch {}
+  }
 
   function changePage(id) {
     pageFilterRef.current = id;
@@ -831,9 +851,28 @@ export default function ChatAdminPage() {
             onToggleBot={togglePageBot}
             globalBotEnabled={botEnabled}
           />
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0" }}>
+            <button
+              onClick={togglePhoneOnly}
+              aria-pressed={phoneOnly}
+              style={{
+                border: phoneOnly ? "1px solid #16a34a" : "1px solid #ddd",
+                background: phoneOnly ? "#e8f7ee" : "#fff",
+                color: phoneOnly ? "#166534" : "#555",
+                borderRadius: 999,
+                padding: "5px 12px",
+                fontSize: 13,
+                cursor: "pointer",
+              }}
+            >
+              📞 Chỉ khách có số điện thoại{phoneOnly ? " ✓" : ""}
+            </button>
+          </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
           {conversations.length === 0 && (
-            <p style={{ padding: 16, color: "#888" }}>Chưa có khách nào nhắn tin.</p>
+            <p style={{ padding: 16, color: "#888" }}>
+              {phoneOnly ? "Chưa có khách nào để lại số điện thoại." : "Chưa có khách nào nhắn tin."}
+            </p>
           )}
           {conversations.map((c) => (
             <div
@@ -888,6 +927,9 @@ export default function ChatAdminPage() {
                   {c.lastFrom === "bot" ? "🤖 " : c.lastFrom === "admin" ? "Bạn: " : ""}
                   {c.lastMessage}
                 </div>
+                {c.phone && (
+                  <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>📞 {c.phone}</div>
+                )}
               </div>
               <button
                 onClick={(e) => {
