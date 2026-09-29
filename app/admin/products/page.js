@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChatIcon, navButtonStyle } from "../icons";
 
 const EMPTY_FORM = {
-  pageId: "", // "" = dùng chung cho mọi Page
+  pageIds: [], // [] = dùng chung cho mọi Page; nhiều ID = chỉ các Page đó
   name: "",
   stock: "Còn hàng",
   description: "",
@@ -14,6 +14,50 @@ const EMPTY_FORM = {
   realImages: [],
   imageLabels: {},
 };
+
+// Các Page mà sản phẩm áp dụng ([] = tất cả). Đọc được cả dữ liệu cũ chỉ có pageId.
+function pageIdsOf(p) {
+  if (Array.isArray(p?.pageIds)) return p.pageIds.map(String).filter(Boolean);
+  return p?.pageId ? [String(p.pageId)] : [];
+}
+
+// Ô chọn nhiều Page: tick những Page muốn dùng sản phẩm này; không tick Page nào = dùng chung tất cả
+function PageChecklist({ pages, value, onChange, compact = false }) {
+  const selected = value || [];
+  const allShared = selected.length === 0;
+  const rowStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: compact ? "4px 0" : "6px 2px",
+    fontSize: compact ? 13 : 14,
+    cursor: "pointer",
+  };
+  function toggle(id) {
+    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+  }
+  return (
+    <div style={{ border: "1px solid #e2e2e2", borderRadius: 8, padding: "6px 10px", background: "#fff" }}>
+      <label style={rowStyle}>
+        <input type="checkbox" checked={allShared} onChange={() => onChange([])} />
+        <span>🌐 Tất cả Page (dùng chung)</span>
+      </label>
+      {pages.map((pg) => (
+        <label key={pg.id} style={rowStyle}>
+          <input type="checkbox" checked={selected.includes(String(pg.id))} onChange={() => toggle(String(pg.id))} />
+          <span>{pg.name}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// Tên các Page của 1 sản phẩm để hiện trong danh sách
+function pageLabel(p, pages) {
+  const ids = pageIdsOf(p);
+  if (ids.length === 0) return "🌐 Tất cả Page";
+  return "📄 " + ids.map((id) => pages.find((pg) => String(pg.id) === id)?.name || "Page đã gỡ").join(", ");
+}
 
 // Nén ảnh về tối đa 1600px, JPEG — nhẹ để upload nhanh và Messenger tải nhanh
 async function compressImage(file, maxSize = 1600, quality = 0.85) {
@@ -256,7 +300,7 @@ export default function AdminPage() {
 
   function handleEdit(p) {
     setForm({
-      pageId: p.pageId || "",
+      pageIds: pageIdsOf(p),
       name: p.name || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
@@ -300,7 +344,7 @@ export default function AdminPage() {
   // Nhân bản: mở form "Thêm sản phẩm mới" đã điền sẵn dữ liệu của sản phẩm này
   function handleDuplicate(p) {
     setForm({
-      pageId: p.pageId || "",
+      pageIds: pageIdsOf(p),
       name: (p.name || "") + " (bản sao)",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
@@ -317,9 +361,10 @@ export default function AdminPage() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
-  // Chuyển nhanh 1 sản phẩm sang Page khác (hoặc về "Tất cả Page") ngay tại danh sách, không cần mở form Sửa
-  async function handleMovePage(p, newPageId) {
-    const updated = { ...p, pageId: newPageId || "" };
+  // Đổi nhanh các Page áp dụng của 1 sản phẩm ngay tại danh sách, không cần mở form Sửa
+  async function handleMovePage(p, newPageIds) {
+    const { pageId: _old, ...rest } = p;
+    const updated = { ...rest, pageIds: newPageIds };
     await fetch("/api/products", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -473,20 +518,9 @@ export default function AdminPage() {
             Áp dụng cho Page
           </label>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
-            Chọn 1 Page để chỉ Page đó bán và tư vấn sản phẩm này. Chọn “Tất cả Page” nếu sản phẩm dùng chung.
+            Tick các Page muốn bán và tư vấn sản phẩm này (chọn được nhiều Page). Không tick Page nào (hoặc tick “Tất cả Page”) nếu sản phẩm dùng chung.
           </div>
-          <select
-            value={form.pageId || ""}
-            onChange={(e) => setForm({ ...form, pageId: e.target.value })}
-            style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
-          >
-            <option value="">Tất cả Page (dùng chung)</option>
-            {pages.map((pg) => (
-              <option key={pg.id} value={pg.id}>
-                {pg.name}
-              </option>
-            ))}
-          </select>
+          <PageChecklist pages={pages} value={form.pageIds} onChange={(ids) => setForm({ ...form, pageIds: ids })} />
         </div>
         <input
           style={inputStyle}
@@ -622,7 +656,11 @@ export default function AdminPage() {
           {products.length === 0 && <p>Chưa có sản phẩm nào — thêm sản phẩm đầu tiên ở form trên.</p>}
           {products
             .filter((p) =>
-              filterPage === "all" ? true : filterPage === "shared" ? !p.pageId : p.pageId === filterPage
+              filterPage === "all"
+                ? true
+                : filterPage === "shared"
+                ? pageIdsOf(p).length === 0
+                : pageIdsOf(p).includes(filterPage)
             )
             .map((p) => {
             const open = openId === p.id;
@@ -654,7 +692,7 @@ export default function AdminPage() {
                       {p.name}
                     </strong>
                     <span style={{ color: "#888", fontSize: 13 }}>
-                      {p.pageId ? `📄 ${pages.find((pg) => pg.id === p.pageId)?.name || "Page đã gỡ"} · ` : "🌐 Tất cả Page · "}
+                      {pageLabel(p, pages)} · 
                       {p.stock}
                       {nImg > 0 ? ` · ${nImg} ảnh` : ""}
                       {p.openingScript ? " · có câu mở đầu" : ""}
@@ -698,20 +736,9 @@ export default function AdminPage() {
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
                     <Thumbs label="Ảnh thực tế" urls={p.realImages} labels={p.imageLabels} />
                     {pages.length > 0 && (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
-                        <span style={{ fontSize: 13, color: "#666" }}>Chuyển sang Page:</span>
-                        <select
-                          value={p.pageId || ""}
-                          onChange={(e) => handleMovePage(p, e.target.value)}
-                          style={{ ...inputStyle, padding: "6px 10px", fontSize: 13 }}
-                        >
-                          <option value="">Tất cả Page (dùng chung)</option>
-                          {pages.map((pg) => (
-                            <option key={pg.id} value={pg.id}>
-                              {pg.name}
-                            </option>
-                          ))}
-                        </select>
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>Áp dụng cho Page (tick để bật/tắt ngay):</div>
+                        <PageChecklist compact pages={pages} value={pageIdsOf(p)} onChange={(ids) => handleMovePage(p, ids)} />
                       </div>
                     )}
                     <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

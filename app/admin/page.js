@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BoxIcon, SettingsIcon, navButtonStyle } from "./icons";
+import { BoxIcon, KeyIcon, SettingsIcon, navButtonStyle } from "./icons";
 
 function displayName(name, id) {
   return name || `Khách ${String(id || "").slice(-4)}`;
@@ -417,6 +417,183 @@ function SettingsModal({ pages, onClose, onChanged }) {
   );
 }
 
+// Hộp thoại API key AI (Gemini): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
+function ApiKeysModal({ onClose }) {
+  const [keys, setKeys] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [keyValue, setKeyValue] = useState("");
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    try {
+      const res = await fetch("/api/keys", { cache: "no-store" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setError(data.error || "Không tải được danh sách key");
+      else setKeys(data.keys || []);
+    } catch {
+      setError("Lỗi mạng, thử lại nhé.");
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    if (!keyValue.trim() || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const res = await fetch("/api/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: keyValue, label }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) setError(data.error || "Không thêm được key");
+      else {
+        setKeys(data.keys || []);
+        setKeyValue("");
+        setLabel("");
+      }
+    } catch {
+      setError("Lỗi mạng, thử lại nhé.");
+    }
+    setBusy(false);
+  }
+
+  async function handleRemove(k) {
+    if (!confirm(`Xóa API key ${k.masked}?`)) return;
+    setError("");
+    const res = await fetch("/api/keys", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: k.id }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) setError(data.error || "Không xóa được key");
+    else setKeys(data.keys || []);
+  }
+
+  return (
+    <div
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.4)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 14,
+          width: "100%",
+          maxWidth: 520,
+          maxHeight: "90vh",
+          overflowY: "auto",
+          padding: 22,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <strong style={{ fontSize: 18 }}>API key AI (Gemini)</strong>
+          <button
+            onClick={onClose}
+            aria-label="Đóng"
+            style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: "#666" }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Các key đang dùng ({keys.length})</div>
+        <div style={{ border: "1px solid #eee", borderRadius: 10, marginBottom: 20 }}>
+          {loading && <div style={{ padding: 14, color: "#888", fontSize: 14 }}>Đang tải...</div>}
+          {!loading && keys.length === 0 && (
+            <div style={{ padding: 14, color: "#888", fontSize: 14 }}>Chưa có key nào.</div>
+          )}
+          {keys.map((k, i) => (
+            <div
+              key={k.id}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderTop: i ? "1px solid #f0f0f0" : "none" }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, fontFamily: "monospace" }}>{k.masked}</div>
+                {k.label && <div style={{ fontSize: 11, color: "#999" }}>{k.label}</div>}
+              </div>
+              {k.removable && (
+                <button
+                  onClick={() => handleRemove(k)}
+                  style={{
+                    padding: "6px 12px",
+                    borderRadius: 8,
+                    border: "1px solid #f3c0c0",
+                    background: "#fff5f5",
+                    color: "#c0392b",
+                    cursor: "pointer",
+                    fontSize: 13,
+                  }}
+                >
+                  Xóa
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <form onSubmit={handleAdd}>
+          <label style={{ fontSize: 13, color: "#666", display: "block", marginBottom: 6 }}>Thêm API key mới</label>
+          <input
+            type="password"
+            autoComplete="off"
+            value={keyValue}
+            onChange={(e) => setKeyValue(e.target.value)}
+            placeholder="AIza..."
+            style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", marginBottom: 8 }}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="Ghi chú (không bắt buộc)"
+              style={{ flex: 1, padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", minWidth: 0 }}
+            />
+            <button
+              type="submit"
+              disabled={busy || !keyValue.trim()}
+              style={{
+                padding: "10px 18px",
+                borderRadius: 8,
+                border: "none",
+                background: busy || !keyValue.trim() ? "#9ca3af" : "#111",
+                color: "#fff",
+                cursor: busy || !keyValue.trim() ? "default" : "pointer",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {busy ? "Đang lưu..." : "Thêm"}
+            </button>
+          </div>
+          <p style={{ fontSize: 12, color: "#888", margin: "8px 0 0" }}>
+            Lấy key miễn phí tại Google AI Studio. Có nhiều key thì bot tự chuyển sang key khác khi 1 key hết hạn mức.
+          </p>
+          {error && <p style={{ fontSize: 13, color: "#c0392b", margin: "10px 0 0" }}>{error}</p>}
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatAdminPage() {
   const [conversations, setConversations] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -429,6 +606,7 @@ export default function ChatAdminPage() {
   const [pagesLoaded, setPagesLoaded] = useState(false);
   const [pageFilter, setPageFilter] = useState("all"); // "all" hoặc ID của 1 Page
   const [showSettings, setShowSettings] = useState(false);
+  const [showKeys, setShowKeys] = useState(false);
   const pageFilterRef = useRef("all");
 
   const loadConversations = useCallback(async () => {
@@ -613,6 +791,14 @@ export default function ChatAdminPage() {
           style={{ ...navButtonStyle, cursor: "pointer" }}
         >
           <SettingsIcon />
+        </button>
+        <button
+          onClick={() => setShowKeys(true)}
+          title="API key AI"
+          aria-label="API key AI"
+          style={{ ...navButtonStyle, cursor: "pointer" }}
+        >
+          <KeyIcon />
         </button>
         <a href="/admin/products" title="Quản lý sản phẩm" aria-label="Quản lý sản phẩm" style={navButtonStyle}>
           <BoxIcon />
@@ -843,6 +1029,7 @@ export default function ChatAdminPage() {
           )}
         </section>
       </div>
+      {showKeys && <ApiKeysModal onClose={() => setShowKeys(false)} />}
       {showSettings && (
         <SettingsModal pages={pages} onClose={() => setShowSettings(false)} onChanged={handlePagesChanged} />
       )}
