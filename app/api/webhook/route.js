@@ -21,6 +21,7 @@ import {
   getLatestCustomerMessageId,
   getPendingCustomerMessages,
   getLastOpeningAgeMs,
+  getFirstPendingCustomerAgeMs,
   hasAdminMessage,
 } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
@@ -55,10 +56,12 @@ const MODEL_CHAIN = [
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 18000; // mỗi lần gọi chờ tối đa 18s (Gemini đang chậm thì 9s là quá ngắn)
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
-// Khách mới (chưa ai trả lời) → chờ ngần này ms để gom cả loạt tin liền nhau, rồi chỉ trả lời 1 lần bằng câu mở đầu.
-const FIRST_CONTACT_WAIT_MS = process.env.FIRST_CONTACT_WAIT_MS !== undefined ? Number(process.env.FIRST_CONTACT_WAIT_MS) : 5000;
-// Trong ngần này ms kể từ lúc bắt đầu gửi câu mở đầu, mọi tin khách gõ thêm coi như thuộc loạt tin đầu → không trả lời riêng.
-const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(process.env.OPENING_BURST_MS) : 25000;
+// Khách mới (chưa ai trả lời) → chờ ngần này ms KỂ TỪ TIN ĐẦU TIÊN (12s), hết giờ mới gửi ảnh mẫu + câu mở đầu.
+// Mọi tin khách gõ trong lúc chờ đều bỏ qua (AI không đọc), bot chỉ gửi mở đầu 1 lần.
+const FIRST_CONTACT_WAIT_MS = process.env.FIRST_CONTACT_WAIT_MS !== undefined ? Number(process.env.FIRST_CONTACT_WAIT_MS) : 12000;
+// Chốt an toàn: trong ngần này ms (5s) kể từ lúc bắt đầu gửi câu mở đầu, tin khách gõ thêm không trả lời riêng
+// (tránh AI trả lời chồng lên lúc ảnh + mở đầu đang gửi). Hết thời gian này bot hoạt động bình thường.
+const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(process.env.OPENING_BURST_MS) : 5000;
 // Khách mới mà bot chưa đoán được họ hỏi sản phẩm nào → vẫn chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm đầu tiên có câu mở đầu
 // (thay vì để AI trả lời dài dòng). Đặt FIRST_CONTACT_DEFAULT_OPENING=0 để tắt.
 const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
@@ -137,9 +140,14 @@ export async function POST(req) {
         // Khách MỚI nhắn liền mấy tin: chờ một chút cho khách gõ xong, chỉ tin CUỐI CÙNG của loạt mới đi tiếp
         // (các tin trước tự dừng) → bot chỉ trả lời 1 lần duy nhất.
         const firstContact =
-          FIRST_CONTACT_WAIT_MS > 0 && !!messageId && !(await hasOutgoingMessage(senderId).catch(() => true));
+          FIRST_CONTACT_WAIT_MS > 0 &&
+          !!messageId &&
+          !(await hasOutgoingMessage(senderId).catch(() => true)) &&
+          (await getLastOpeningAgeMs(senderId).catch(() => 0)) === null;
         if (firstContact) {
-          await sleep(FIRST_CONTACT_WAIT_MS);
+          // Chờ đủ FIRST_CONTACT_WAIT_MS tính từ tin ĐẦU TIÊN của khách (không phải từ tin vừa nhận)
+          const firstAge = (await getFirstPendingCustomerAgeMs(senderId).catch(() => 0)) || 0;
+          await sleep(Math.max(0, FIRST_CONTACT_WAIT_MS - firstAge));
           const latestId = await getLatestCustomerMessageId(senderId).catch(() => messageId);
           if (latestId && Number(latestId) > Number(messageId)) {
             console.log("Khách mới nhắn liền nhiều tin → để tin cuối cùng trả lời:", text);
@@ -257,8 +265,8 @@ async function handleEcho(event, pageId) {
 
 // ---- Câu mở đầu quảng cáo: khách hỏi giá lần đầu → gửi câu soạn sẵn + ẢNH MẪU (không gửi ảnh thực tế) ----
 const MAX_OPENING_IMAGES = 10;
-const QUIET_AFTER_OPENING_MS = 2 * 60 * 1000; // vừa gửi mở đầu xong, khách hỏi giá tiếp → im lặng, khỏi trả lời trùng
-const QUIET_AFTER_PRESET_MS = 10 * 60 * 1000; // khách bấm lại đúng câu hỏi quảng cáo có sẵn → im lặng lâu hơn
+const QUIET_AFTER_OPENING_MS = OPENING_BURST_MS; // hết thời gian chốt an toàn sau câu mở đầu thì khách hỏi giá tiếp → AI trả lời bình thường (trong 15s đầu thì im lặng)
+const QUIET_AFTER_PRESET_MS = OPENING_BURST_MS; // giống trên: chỉ im lặng trong khoảng chốt an toàn ngắn, sau đó khách nhắn gì AI cũng trả lời
 
 /** Tin ngắn hỏi giá kiểu "Giá sản phẩm bao nhiêu?", "giá sao shop", "bn vậy"... */
 function isPriceInquiry(text, maxLen = 50) {
@@ -455,7 +463,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   let history = [];
   try {
-    history = await getRecentMessages(senderId, 22);
+    // Bộ nhớ 22 tin gần nhất, nhưng bỏ các tin khách gõ trong loạt tin đầu (chỉ để kích hoạt ảnh + câu mở đầu)
+    history = await getRecentMessages(senderId, 22, OPENING_BURST_MS);
+    // Lịch sử bắt đầu bằng tin của bot (câu mở đầu) → thêm 1 dòng giữ chỗ để AI biết bot đã gửi mở đầu rồi
+    if (history.length && history[0].from !== "customer") {
+      history.unshift({ from: "customer", text: "(khách mới nhắn hỏi thông tin sản phẩm)", images: [] });
+    }
   } catch (e) {
     console.error("Không đọc được lịch sử chat:", e.message);
   }
