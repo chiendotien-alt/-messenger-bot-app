@@ -45,8 +45,10 @@ const MODEL_CHAIN = [
       .filter(Boolean)
   ),
 ];
-const GEMINI_TIMEOUT_MS = 9000; // mỗi lần gọi chờ tối đa 9s (giảm từ 15s để khách đỡ chờ lâu)
-const REPLY_BUDGET_MS = 25000; // tổng thời gian dành cho AI trong 1 tin nhắn (giảm từ 45s)
+// Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 18000; // mỗi lần gọi chờ tối đa 18s (Gemini đang chậm thì 9s là quá ngắn)
+const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
+const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
 const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
 // ---- 1. Facebook gọi GET để xác minh webhook khi bạn cấu hình trên Meta ----
@@ -525,6 +527,9 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
   const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
 
   for (const model of MODEL_CHAIN) {
+    // Model vừa báo quá tải (503) → nhảy thẳng sang model kế tiếp; riêng model cuối luôn được thử
+    if ((modelDown.get(model) || 0) > Date.now() && model !== MODEL_CHAIN[MODEL_CHAIN.length - 1]) continue;
+
     let config = generationConfig;
     let stripped = false;
 
@@ -584,9 +589,14 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
           modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút → nghỉ 1 phút, thử key khác
           continue;
         }
+        if (res.status === 503) {
+          // "Model đang quá tải" là lỗi của CẢ model (đổi key không giúp) → nghỉ model này 45s, sang model kế tiếp ngay
+          modelDown.set(model, Date.now() + 45 * 1000);
+          break;
+        }
         if (res.status >= 500) {
           modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
-          continue; // quá tải → thử key khác luôn cho nhanh
+          continue; // lỗi máy chủ khác → thử key khác
         }
         continue; // 400 khác → thử key khác của model này
       }
