@@ -35,6 +35,25 @@ export async function saveProducts(products) {
   });
 }
 
+/** Các Page mà sản phẩm áp dụng. Rỗng = dùng chung cho mọi Page. (Vẫn đọc được dữ liệu cũ chỉ có pageId.) */
+export function productPageIds(p) {
+  if (Array.isArray(p?.pageIds)) return p.pageIds.map(String).filter(Boolean);
+  return p?.pageId ? [String(p.pageId)] : [];
+}
+
+/**
+ * Lọc sản phẩm theo Fanpage.
+ *  - Sản phẩm có chọn Page (1 hoặc nhiều) → chỉ dùng cho đúng các Page đó.
+ *  - Sản phẩm không chọn Page nào (dữ liệu cũ / "Tất cả Page") → dùng chung cho mọi Page.
+ */
+export function filterProductsForPage(products, pageId) {
+  const pid = pageId ? String(pageId) : "";
+  return (products || []).filter((p) => {
+    const ids = productPageIds(p);
+    return ids.length === 0 || ids.includes(pid);
+  });
+}
+
 /** Bỏ dấu, chữ thường, gọn khoảng trắng — để so khớp tiếng Việt không phân biệt dấu. */
 export const norm = (t) =>
   String(t || "")
@@ -103,6 +122,7 @@ export function formatProductsForPrompt(products) {
       return (
         `${i + 1}. [id: ${p.id}] ${p.name} — Tình trạng: ${p.stock || "Còn hàng"}\n` +
         `   Nội dung: ${p.description || "(chưa có)"}\n` +
+        ((p.notes || "").trim() ? `   LƯU Ý CỦA CHỦ SHOP về sản phẩm này (bắt buộc tuân theo): ${p.notes.trim()}\n` : "") +
         `   Ảnh mẫu: ${describeImages(p.sampleImages, "S", labels)}\n` +
         `   Ảnh thực tế: ${describeImages(p.realImages, "R", labels)}\n` +
         `   Câu mở đầu quảng cáo soạn sẵn: ${(p.openingScript || "").trim() ? "CÓ" : "không"}`

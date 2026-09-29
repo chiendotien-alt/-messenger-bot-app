@@ -5,19 +5,21 @@ import { getSql } from "./db";
 const PROFILE_REFRESH_MS = 6 * 60 * 60 * 1000; // làm mới tên/ảnh mỗi 6 giờ (link ảnh có hạn)
 
 /** from: "customer" | "bot" | "admin" */
-export async function addMessage(senderId, from, text, images = []) {
+export async function addMessage(senderId, from, text, images = [], pageId = null) {
   const sql = await getSql();
   const imgs = images.length ? JSON.stringify(images) : null;
   const preview = text || (images.length ? "📷 Ảnh" : "");
   const inserted = await sql`INSERT INTO messages (conversation_id, sender, text, images)
             VALUES (${senderId}, ${from}, ${text || ""}, ${imgs}::jsonb)
             RETURNING id`;
-  await sql`INSERT INTO conversations (id, last_message, last_from, last_time)
-            VALUES (${senderId}, ${preview}, ${from}, now())
+  const pid = pageId ? String(pageId) : null;
+  await sql`INSERT INTO conversations (id, last_message, last_from, last_time, page_id)
+            VALUES (${senderId}, ${preview}, ${from}, now(), ${pid})
             ON CONFLICT (id) DO UPDATE
             SET last_message = EXCLUDED.last_message,
                 last_from = EXCLUDED.last_from,
-                last_time = now()`;
+                last_time = now(),
+                page_id = COALESCE(EXCLUDED.page_id, conversations.page_id)`;
   return inserted[0]?.id ?? null;
 }
 
@@ -87,9 +89,16 @@ export async function setCurrentProduct(senderId, productId) {
   await sql`UPDATE conversations SET current_product_id = ${String(productId)} WHERE id = ${senderId}`;
 }
 
+/** Tên khách đã lưu (từ hồ sơ Facebook) — để bot đoán cách xưng hô anh/chị. */
+export async function getCustomerName(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT name FROM conversations WHERE id = ${senderId}`;
+  return rows[0]?.name || null;
+}
+
 /** Lấy tên + ảnh đại diện của khách từ Facebook (thử nhiều cách, ghi lại lý do nếu thất bại). */
-export async function ensureProfile(senderId) {
-  const token = process.env.FB_PAGE_ACCESS_TOKEN;
+export async function ensureProfile(senderId, pageToken) {
+  const token = pageToken || process.env.FB_PAGE_ACCESS_TOKEN;
   if (!token) return;
 
   const sql = await getSql();
@@ -166,20 +175,24 @@ export async function ensureProfile(senderId) {
             WHERE id = ${senderId}`;
 }
 
-export async function listConversations() {
+/** pageId để trống → lấy hội thoại của tất cả các Page. */
+export async function listConversations(pageId = null) {
   const sql = await getSql();
+  const pid = pageId ? String(pageId) : null;
   return await sql`SELECT id, name, avatar,
+                          page_id AS "pageId",
                           last_message AS "lastMessage",
                           last_from AS "lastFrom",
                           last_time AS "lastTime"
                    FROM conversations
+                   WHERE (${pid}::text IS NULL OR page_id = ${pid})
                    ORDER BY last_time DESC
                    LIMIT 100`;
 }
 
 export async function getConversation(senderId) {
   const sql = await getSql();
-  const info = await sql`SELECT name, avatar, profile_error AS "profileError" FROM conversations WHERE id = ${senderId}`;
+  const info = await sql`SELECT name, avatar, page_id AS "pageId", profile_error AS "profileError" FROM conversations WHERE id = ${senderId}`;
   const messages = await sql`SELECT sender AS "from", text, images, created_at AS time
                              FROM (
                                SELECT id, sender, text, images, created_at
@@ -191,8 +204,16 @@ export async function getConversation(senderId) {
     name: info[0]?.name || null,
     avatar: info[0]?.avatar || null,
     profileError: info[0]?.profileError || null,
+    pageId: info[0]?.pageId || null,
     messages,
   };
+}
+
+/** Cuộc trò chuyện này thuộc Page nào (để biết dùng token nào khi chủ shop tự trả lời). */
+export async function getConversationPageId(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT page_id AS "pageId" FROM conversations WHERE id = ${senderId}`;
+  return rows[0]?.pageId || null;
 }
 
 /** Lấy N tin gần nhất của một khách (cũ → mới) để bot nhớ ngữ cảnh. */

@@ -3,15 +3,61 @@ import { useEffect, useRef, useState } from "react";
 import { ChatIcon, navButtonStyle } from "../icons";
 
 const EMPTY_FORM = {
+  pageIds: [], // [] = dùng chung cho mọi Page; nhiều ID = chỉ các Page đó
   name: "",
   stock: "Còn hàng",
   description: "",
+  notes: "",
   openingScript: "",
   triggerQuestions: "",
   sampleImages: [],
   realImages: [],
   imageLabels: {},
 };
+
+// Các Page mà sản phẩm áp dụng ([] = tất cả). Đọc được cả dữ liệu cũ chỉ có pageId.
+function pageIdsOf(p) {
+  if (Array.isArray(p?.pageIds)) return p.pageIds.map(String).filter(Boolean);
+  return p?.pageId ? [String(p.pageId)] : [];
+}
+
+// Ô chọn nhiều Page: tick những Page muốn dùng sản phẩm này; không tick Page nào = dùng chung tất cả
+function PageChecklist({ pages, value, onChange, compact = false }) {
+  const selected = value || [];
+  const allShared = selected.length === 0;
+  const rowStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: compact ? "4px 0" : "6px 2px",
+    fontSize: compact ? 13 : 14,
+    cursor: "pointer",
+  };
+  function toggle(id) {
+    onChange(selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id]);
+  }
+  return (
+    <div style={{ border: "1px solid #e2e2e2", borderRadius: 8, padding: "6px 10px", background: "#fff" }}>
+      <label style={rowStyle}>
+        <input type="checkbox" checked={allShared} onChange={() => onChange([])} />
+        <span>🌐 Tất cả Page (dùng chung)</span>
+      </label>
+      {pages.map((pg) => (
+        <label key={pg.id} style={rowStyle}>
+          <input type="checkbox" checked={selected.includes(String(pg.id))} onChange={() => toggle(String(pg.id))} />
+          <span>{pg.name}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// Tên các Page của 1 sản phẩm để hiện trong danh sách
+function pageLabel(p, pages) {
+  const ids = pageIdsOf(p);
+  if (ids.length === 0) return "🌐 Tất cả Page";
+  return "📄 " + ids.map((id) => pages.find((pg) => String(pg.id) === id)?.name || "Page đã gỡ").join(", ");
+}
 
 // Nén ảnh về tối đa 1600px, JPEG — nhẹ để upload nhanh và Messenger tải nhanh
 async function compressImage(file, maxSize = 1600, quality = 0.85) {
@@ -183,6 +229,18 @@ export default function AdminPage() {
   const [promptSaved, setPromptSaved] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
   const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
+  const [copyFromId, setCopyFromId] = useState("");
+  const [copyParts, setCopyParts] = useState({
+    description: true,
+    notes: true,
+    openingScript: true,
+    triggerQuestions: false,
+    sampleImages: true,
+    realImages: true,
+  });
+  const [copyNotice, setCopyNotice] = useState("");
+  const [pages, setPages] = useState([]); // danh sách Fanpage
+  const [filterPage, setFilterPage] = useState("all"); // lọc danh sách sản phẩm theo Page
 
   async function load() {
     setLoading(true);
@@ -193,6 +251,10 @@ export default function AdminPage() {
 
   useEffect(() => {
     load();
+    fetch("/api/pages", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => Array.isArray(d) && setPages(d))
+      .catch(() => {});
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => r.json())
       .then((s) => {
@@ -238,9 +300,11 @@ export default function AdminPage() {
 
   function handleEdit(p) {
     setForm({
+      pageIds: pageIdsOf(p),
       name: p.name || "",
       stock: p.stock || "Còn hàng",
       description: p.description || "",
+      notes: p.notes || "",
       openingScript: p.openingScript || "",
       triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
@@ -249,6 +313,64 @@ export default function AdminPage() {
     });
     setEditingId(p.id);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Lấy dữ liệu từ 1 sản phẩm có sẵn đổ vào form (chữ thì thay thế, ảnh thì cộng thêm)
+  function applyCopy(src, parts) {
+    setForm((f) => {
+      const next = { ...f, imageLabels: { ...f.imageLabels } };
+      for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
+        if (parts[key]) next[key] = src[key] || "";
+      }
+      for (const key of ["sampleImages", "realImages"]) {
+        if (parts[key]) {
+          const add = (src[key] || []).filter((u) => !next[key].includes(u));
+          next[key] = [...next[key], ...add];
+          for (const u of add) if (src.imageLabels?.[u]) next.imageLabels[u] = src.imageLabels[u];
+        }
+      }
+      return next;
+    });
+  }
+
+  function handleCopyFrom() {
+    const src = products.find((x) => x.id === copyFromId);
+    if (!src) return;
+    applyCopy(src, copyParts);
+    setCopyNotice(`Đã lấy dữ liệu từ “${src.name}” vào form. Kiểm tra lại rồi bấm nút lưu ở cuối form.`);
+    setTimeout(() => setCopyNotice(""), 6000);
+  }
+
+  // Nhân bản: mở form "Thêm sản phẩm mới" đã điền sẵn dữ liệu của sản phẩm này
+  function handleDuplicate(p) {
+    setForm({
+      pageIds: pageIdsOf(p),
+      name: (p.name || "") + " (bản sao)",
+      stock: p.stock || "Còn hàng",
+      description: p.description || "",
+      notes: p.notes || "",
+      openingScript: p.openingScript || "",
+      triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
+      sampleImages: p.sampleImages || [],
+      realImages: p.realImages || [],
+      imageLabels: p.imageLabels || {},
+    });
+    setEditingId(null);
+    setCopyNotice(`Đã tạo dữ liệu từ “${p.name}”. Sửa tên và nội dung cho Page mới rồi bấm “Thêm sản phẩm”.`);
+    setTimeout(() => setCopyNotice(""), 8000);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  // Đổi nhanh các Page áp dụng của 1 sản phẩm ngay tại danh sách, không cần mở form Sửa
+  async function handleMovePage(p, newPageIds) {
+    const { pageId: _old, ...rest } = p;
+    const updated = { ...rest, pageIds: newPageIds };
+    await fetch("/api/products", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updated),
+    });
+    load();
   }
 
   async function handleDelete(id) {
@@ -270,7 +392,7 @@ export default function AdminPage() {
   const btn = { padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" };
 
   return (
-    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 760, margin: "0 auto" }}>
+    <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 1180, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Quản lý sản phẩm</h1>
         <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
@@ -309,20 +431,97 @@ export default function AdminPage() {
         </div>
       </details>
 
+      <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
       <form
         onSubmit={handleSubmit}
         style={{
           display: "flex",
           flexDirection: "column",
           gap: 10,
-          marginBottom: 32,
+          width: 400,
+          flexShrink: 0,
+          position: "sticky",
+          top: 20,
+          maxHeight: "calc(100vh - 40px)",
+          overflowY: "auto",
           border: "1px solid #e2e2e2",
           padding: 20,
           borderRadius: 10,
           background: "#fafafa",
+          boxSizing: "border-box",
         }}
       >
         <strong>{editingId ? "Sửa sản phẩm" : "Thêm sản phẩm mới"}</strong>
+        {copyNotice && (
+          <div style={{ padding: "8px 12px", background: "#ecfdf3", border: "1px solid #b7ebc6", color: "#15803d", borderRadius: 8, fontSize: 13 }}>
+            {copyNotice}
+          </div>
+        )}
+        {products.length > 0 && (
+          <div style={{ border: "1px dashed #b9c2ff", background: "#f5f7ff", borderRadius: 8, padding: 12 }}>
+            <strong style={{ fontSize: 14 }}>📋 Tạo dữ liệu từ sản phẩm có sẵn</strong>
+            <div style={{ color: "#777", fontSize: 12, margin: "2px 0 8px" }}>
+              Chọn sản phẩm, tick phần muốn lấy, rồi bấm “Lấy dữ liệu”. Không phải gõ lại hay tải ảnh lại.
+            </div>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <select
+                value={copyFromId}
+                onChange={(e) => setCopyFromId(e.target.value)}
+                style={{ ...inputStyle, flex: 1, minWidth: 180, padding: "8px 10px", fontSize: 14 }}
+              >
+                <option value="">— Chọn sản phẩm để lấy dữ liệu —</option>
+                {products
+                  .filter((x) => x.id !== editingId)
+                  .map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name}
+                    </option>
+                  ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleCopyFrom}
+                disabled={!copyFromId}
+                style={{ ...btn, background: copyFromId ? "#4f46e5" : "#c7c7c7", color: "#fff", border: "none", padding: "8px 16px" }}
+              >
+                Lấy dữ liệu
+              </button>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 16px", marginTop: 8, fontSize: 13 }}>
+              {[
+                ["description", "Nội dung"],
+                ["notes", "Lưu ý cho bot"],
+                ["openingScript", "Câu mở đầu"],
+                ["triggerQuestions", "Câu hỏi có sẵn"],
+                ["sampleImages", "Ảnh mẫu"],
+                ["realImages", "Ảnh thực tế"],
+              ].map(([key, label]) => (
+                <label key={key} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={copyParts[key]}
+                    onChange={(e) => setCopyParts((c) => ({ ...c, [key]: e.target.checked }))}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            {copyParts.triggerQuestions && (
+              <div style={{ color: "#b45309", fontSize: 12, marginTop: 6 }}>
+                Nhớ sửa “Câu hỏi có sẵn” cho khác sản phẩm cũ. Nếu trùng, bot sẽ nhầm sang sản phẩm cũ.
+              </div>
+            )}
+          </div>
+        )}
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Áp dụng cho Page
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Tick các Page muốn bán và tư vấn sản phẩm này (chọn được nhiều Page). Không tick Page nào (hoặc tick “Tất cả Page”) nếu sản phẩm dùng chung.
+          </div>
+          <PageChecklist pages={pages} value={form.pageIds} onChange={(ids) => setForm({ ...form, pageIds: ids })} />
+        </div>
         <input
           style={inputStyle}
           placeholder="Tên sản phẩm (vd: Chân váy 3 tầng)"
@@ -354,6 +553,22 @@ export default function AdminPage() {
             Dọn ký tự "|" thừa ở cuối dòng
           </button>
         )}
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Lưu ý cho bot (không bắt buộc)
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Dặn riêng bot về sản phẩm này: đối tượng khách, cách xưng hô, điều nên/không nên nói... Bot sẽ tuân theo khi
+            tư vấn sản phẩm này.
+          </div>
+          <textarea
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
+            rows={3}
+            value={form.notes}
+            onChange={(e) => setForm({ ...form, notes: e.target.value })}
+            placeholder={"Ví dụ:\nKhách của sản phẩm này toàn là nữ, gọi khách là chị.\nKhông tự giảm giá, chỉ báo giá theo bảng."}
+          />
+        </div>
         <div>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
             Câu thoại mở đầu (chạy quảng cáo)
@@ -418,12 +633,36 @@ export default function AdminPage() {
         </div>
       </form>
 
+      <div style={{ flex: 1, minWidth: 0 }}>
       {loading ? (
         <p>Đang tải...</p>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          {pages.length > 0 && products.length > 0 && (
+            <select
+              value={filterPage}
+              onChange={(e) => setFilterPage(e.target.value)}
+              style={{ ...inputStyle, padding: "8px 10px", fontSize: 14 }}
+            >
+              <option value="all">Xem tất cả sản phẩm</option>
+              <option value="shared">Chỉ sản phẩm dùng chung</option>
+              {pages.map((pg) => (
+                <option key={pg.id} value={pg.id}>
+                  Page: {pg.name}
+                </option>
+              ))}
+            </select>
+          )}
           {products.length === 0 && <p>Chưa có sản phẩm nào — thêm sản phẩm đầu tiên ở form trên.</p>}
-          {products.map((p) => {
+          {products
+            .filter((p) =>
+              filterPage === "all"
+                ? true
+                : filterPage === "shared"
+                ? pageIdsOf(p).length === 0
+                : pageIdsOf(p).includes(filterPage)
+            )
+            .map((p) => {
             const open = openId === p.id;
             const thumb = (p.sampleImages || [])[0] || (p.realImages || [])[0];
             const nImg = (p.sampleImages || []).length + (p.realImages || []).length;
@@ -453,6 +692,7 @@ export default function AdminPage() {
                       {p.name}
                     </strong>
                     <span style={{ color: "#888", fontSize: 13 }}>
+                      {pageLabel(p, pages)} · 
                       {p.stock}
                       {nImg > 0 ? ` · ${nImg} ảnh` : ""}
                       {p.openingScript ? " · có câu mở đầu" : ""}
@@ -475,6 +715,12 @@ export default function AdminPage() {
                     >
                       {p.description || "(chưa có nội dung)"}
                     </p>
+                    {p.notes && (
+                      <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f1faf1", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
+                        <div style={{ color: "#575", fontSize: 12, marginBottom: 2 }}>Lưu ý cho bot</div>
+                        {p.notes}
+                      </div>
+                    )}
                     {p.openingScript && (
                       <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f4f7ff", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
                         <div style={{ color: "#667", fontSize: 12, marginBottom: 2 }}>Câu mở đầu quảng cáo</div>
@@ -489,9 +735,18 @@ export default function AdminPage() {
                     )}
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
                     <Thumbs label="Ảnh thực tế" urls={p.realImages} labels={p.imageLabels} />
+                    {pages.length > 0 && (
+                      <div style={{ marginTop: 12 }}>
+                        <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>Áp dụng cho Page (tick để bật/tắt ngay):</div>
+                        <PageChecklist compact pages={pages} value={pageIdsOf(p)} onChange={(ids) => handleMovePage(p, ids)} />
+                      </div>
+                    )}
                     <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                       <button onClick={() => handleEdit(p)} style={btn}>
                         Sửa
+                      </button>
+                      <button onClick={() => handleDuplicate(p)} style={{ ...btn, border: "1px solid #b9c2ff", background: "#f5f7ff", color: "#4338ca" }}>
+                        📋 Tạo dữ liệu (nhân bản)
                       </button>
                       <button
                         onClick={() => handleDelete(p.id)}
@@ -507,6 +762,8 @@ export default function AdminPage() {
           })}
         </div>
       )}
+      </div>
+      </div>
     </main>
   );
 }

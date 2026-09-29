@@ -2,7 +2,8 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { getConversation, addMessage, deleteConversation } from "@/lib/conversations";
+import { getConversation, addMessage, deleteConversation, getConversationPageId } from "@/lib/conversations";
+import { getPageToken } from "@/lib/pages";
 
 export async function GET(req, { params }) {
   try {
@@ -21,7 +22,12 @@ export async function POST(req, { params }) {
     return NextResponse.json({ error: "Tin nhắn trống" }, { status: 400 });
   }
 
-  const PAGE_ACCESS_TOKEN = process.env.FB_PAGE_ACCESS_TOKEN;
+  // Trả lời bằng đúng token của Page mà khách này đã nhắn tới
+  const pageId = await getConversationPageId(params.id);
+  const PAGE_ACCESS_TOKEN = await getPageToken(pageId);
+  if (!PAGE_ACCESS_TOKEN) {
+    return NextResponse.json({ error: "Chưa có token cho Page của cuộc trò chuyện này" }, { status: 400 });
+  }
   const fbRes = await fetch(
     `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
     {
