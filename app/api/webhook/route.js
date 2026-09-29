@@ -129,21 +129,34 @@ export async function POST(req) {
         const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
 
-        for (let i = 0; i < messages.length; i++) {
-          if (i > 0) {
-            await fbAction(senderId, "typing_on", pageToken);
+        const sendTexts = async () => {
+          for (let i = 0; i < messages.length; i++) {
+            if (i > 0) {
+              await fbAction(senderId, "typing_on", pageToken);
+            }
+            await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
+            await sendMessage(senderId, messages[i], pageToken);
+            await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
+              console.error("Không lưu được tin của bot:", e.message)
+            );
           }
-          await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
-          await sendMessage(senderId, messages[i], pageToken);
-          await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
-            console.error("Không lưu được tin của bot:", e.message)
-          );
-        }
+        };
 
-        if (images.length) {
+        const sendImages = async () => {
+          if (!images.length) return;
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
           await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
+        };
+
+        if (openedProductId) {
+          // Câu mở đầu quảng cáo: gửi ẢNH MẪU trước, rồi mới gửi câu mở đầu (giá, ưu đãi...)
+          await sendImages();
+          if (images.length) await fbAction(senderId, "typing_on", pageToken);
+          await sendTexts();
+        } else {
+          await sendTexts();
+          await sendImages();
         }
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
