@@ -21,6 +21,7 @@ import {
   getLatestCustomerMessageId,
   getPendingCustomerMessages,
   getLastOpeningAgeMs,
+  isInOpeningWindow,
   getFirstPendingCustomerAgeMs,
   hasAdminMessage,
 } from "@/lib/conversations";
@@ -120,7 +121,7 @@ export async function POST(req) {
 
         // Lưu lịch sử chỉ để xem lại; nếu kho dữ liệu lỗi thì bot vẫn phải trả lời khách
         const savedImages = await persistCustomerImages(senderId, fbImages);
-        const messageId = await addMessage(senderId, "customer", text, savedImages, pageId).catch((e) =>
+        const messageId = await addMessage(senderId, "customer", text, savedImages, pageId, event.timestamp).catch((e) =>
           console.error("Không lưu được tin của khách:", e.message)
         );
         await ensureProfile(senderId, pageToken).catch((e) =>
@@ -155,14 +156,12 @@ export async function POST(req) {
           }
         }
 
-        // Vừa bắt đầu gửi câu mở đầu cho khách này → các tin khách gõ thêm ngay lúc đó không trả lời riêng,
-        // chờ khách nhắn tiếp sau đó mới trả lời.
-        if (OPENING_BURST_MS > 0) {
-          const openingAge = await getLastOpeningAgeMs(senderId).catch(() => null);
-          if (openingAge !== null && openingAge < OPENING_BURST_MS) {
-            console.log("Vừa gửi câu mở đầu, bỏ qua tin nhắn liền sau:", text);
-            continue;
-          }
+        // Tin này do khách gõ TRƯỚC khi câu mở đầu gửi xong (+ chốt an toàn) → thuộc loạt tin đầu, không trả lời riêng.
+        // So theo GIỜ KHÁCH GÕ (event.timestamp), không phải giờ webhook đến — Facebook hay gửi webhook trễ vài giây,
+        // nên "Xin màu", "Có size k" có thể đến sau khi mở đầu đã gửi dù khách gõ từ trước.
+        if (OPENING_BURST_MS > 0 && (await isInOpeningWindow(senderId, messageId, OPENING_BURST_MS).catch(() => false))) {
+          console.log("Tin khách gõ trong loạt tin đầu, bỏ qua:", text);
+          continue;
         }
 
         // Khách bấm câu hỏi có sẵn nhiều lần / gửi trùng trong vài phút → chỉ trả lời 1 lần
