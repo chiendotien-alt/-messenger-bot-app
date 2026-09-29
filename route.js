@@ -16,6 +16,12 @@ import {
   getCurrentProduct,
   setCurrentProduct,
   getCustomerName,
+  isRecentOutgoingDuplicate,
+  hasOutgoingMessage,
+  getLatestCustomerMessageId,
+  getPendingCustomerMessages,
+  getLastOpeningAgeMs,
+  hasAdminMessage,
 } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
@@ -45,8 +51,18 @@ const MODEL_CHAIN = [
       .filter(Boolean)
   ),
 ];
-const GEMINI_TIMEOUT_MS = 9000; // mỗi lần gọi chờ tối đa 9s (giảm từ 15s để khách đỡ chờ lâu)
-const REPLY_BUDGET_MS = 25000; // tổng thời gian dành cho AI trong 1 tin nhắn (giảm từ 45s)
+// Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 18000; // mỗi lần gọi chờ tối đa 18s (Gemini đang chậm thì 9s là quá ngắn)
+const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
+// ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
+// Khách mới (chưa ai trả lời) → chờ ngần này ms để gom cả loạt tin liền nhau, rồi chỉ trả lời 1 lần bằng câu mở đầu.
+const FIRST_CONTACT_WAIT_MS = process.env.FIRST_CONTACT_WAIT_MS !== undefined ? Number(process.env.FIRST_CONTACT_WAIT_MS) : 5000;
+// Trong ngần này ms kể từ lúc bắt đầu gửi câu mở đầu, mọi tin khách gõ thêm coi như thuộc loạt tin đầu → không trả lời riêng.
+const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(process.env.OPENING_BURST_MS) : 25000;
+// Khách mới mà bot chưa đoán được họ hỏi sản phẩm nào → vẫn chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm đầu tiên có câu mở đầu
+// (thay vì để AI trả lời dài dòng). Đặt FIRST_CONTACT_DEFAULT_OPENING=0 để tắt.
+const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
+const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
 const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
 // ---- 1. Facebook gọi GET để xác minh webhook khi bạn cấu hình trên Meta ----
@@ -75,6 +91,13 @@ export async function POST(req) {
     const pageId = entry.id ? String(entry.id) : null;
     const pageToken = await getPageToken(pageId);
     for (const event of entry.messaging ?? []) {
+      // Tin do CHỦ PAGE gửi (từ điện thoại / Messenger / Business Suite) → Facebook gửi về dạng "echo".
+      // Lưu lại để hiện trên trang quản trị, KHÔNG cho bot trả lời.
+      if (event.message?.is_echo) {
+        await handleEcho(event, pageId).catch((e) => console.error("Lỗi lưu tin echo:", e.message));
+        continue;
+      }
+
       const senderId = event.sender?.id;
       // Khách gõ chữ, hoặc bấm câu hỏi có sẵn/nút (Facebook gửi dạng postback, "title" chính là câu hỏi)
       const text = event.message?.text || event.postback?.title || "";
@@ -111,8 +134,33 @@ export async function POST(req) {
           continue;
         }
 
+        // Khách MỚI nhắn liền mấy tin: chờ một chút cho khách gõ xong, chỉ tin CUỐI CÙNG của loạt mới đi tiếp
+        // (các tin trước tự dừng) → bot chỉ trả lời 1 lần duy nhất.
+        const firstContact =
+          FIRST_CONTACT_WAIT_MS > 0 && !!messageId && !(await hasOutgoingMessage(senderId).catch(() => true));
+        if (firstContact) {
+          await sleep(FIRST_CONTACT_WAIT_MS);
+          const latestId = await getLatestCustomerMessageId(senderId).catch(() => messageId);
+          if (latestId && Number(latestId) > Number(messageId)) {
+            console.log("Khách mới nhắn liền nhiều tin → để tin cuối cùng trả lời:", text);
+            continue;
+          }
+        }
+
+        // Vừa bắt đầu gửi câu mở đầu cho khách này → các tin khách gõ thêm ngay lúc đó không trả lời riêng,
+        // chờ khách nhắn tiếp sau đó mới trả lời.
+        if (OPENING_BURST_MS > 0) {
+          const openingAge = await getLastOpeningAgeMs(senderId).catch(() => null);
+          if (openingAge !== null && openingAge < OPENING_BURST_MS) {
+            console.log("Vừa gửi câu mở đầu, bỏ qua tin nhắn liền sau:", text);
+            continue;
+          }
+        }
+
         // Khách bấm câu hỏi có sẵn nhiều lần / gửi trùng trong vài phút → chỉ trả lời 1 lần
+        // (khách mới đã được gom ở bước trên nên không cần kiểm tra trùng)
         if (
+          !firstContact &&
           text &&
           !fbImages.length &&
           (await isRepeatedMessage(senderId, text, messageId).catch(() => false))
@@ -124,26 +172,39 @@ export async function POST(req) {
         await fbAction(senderId, "mark_seen", pageToken);
         await fbAction(senderId, "typing_on", pageToken);
 
-        const reply = await generateReply(senderId, text, savedImages, settings, pageId);
+        const reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact);
         if (reply.skip) continue;
         const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
 
-        for (let i = 0; i < messages.length; i++) {
-          if (i > 0) {
-            await fbAction(senderId, "typing_on", pageToken);
+        const sendTexts = async () => {
+          for (let i = 0; i < messages.length; i++) {
+            if (i > 0) {
+              await fbAction(senderId, "typing_on", pageToken);
+            }
+            await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
+            await sendMessage(senderId, messages[i], pageToken);
+            await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
+              console.error("Không lưu được tin của bot:", e.message)
+            );
           }
-          await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
-          await sendMessage(senderId, messages[i], pageToken);
-          await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
-            console.error("Không lưu được tin của bot:", e.message)
-          );
-        }
+        };
 
-        if (images.length) {
+        const sendImages = async () => {
+          if (!images.length) return;
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
           await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
+        };
+
+        if (openedProductId) {
+          // Câu mở đầu quảng cáo: gửi ẢNH MẪU trước, rồi mới gửi câu mở đầu (giá, ưu đãi...)
+          await sendImages();
+          if (images.length) await fbAction(senderId, "typing_on", pageToken);
+          await sendTexts();
+        } else {
+          await sendTexts();
+          await sendImages();
         }
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
@@ -159,6 +220,39 @@ export async function POST(req) {
 
   // Luôn trả 200 cho Facebook để nó không gửi lại (retry) sự kiện
   return new Response("EVENT_RECEIVED", { status: 200 });
+}
+
+// ---- Tin nhắn chủ Page tự gửi bằng điện thoại: lưu vào lịch sử để hiện trên web quản lý ----
+// Với echo: sender.id = ID của Page, recipient.id = ID của khách.
+// app_id = app đã gửi tin. Tin do chính bot/trang quản trị này gửi thì app_id trùng FB_APP_ID
+// (những tin đó đã được lưu ngay lúc gửi nên phải bỏ qua để không bị lưu 2 lần).
+// Tin gửi từ điện thoại/Page Inbox thì không có app_id, hoặc là app khác của Facebook.
+async function handleEcho(event, pageId) {
+  const customerId = event.recipient?.id;
+  const msg = event.message || {};
+  if (!customerId || !msg.mid) return;
+
+  const ownAppId = process.env.FB_APP_ID ? String(process.env.FB_APP_ID) : null;
+  const echoAppId = msg.app_id ? String(msg.app_id) : null;
+  const FB_PAGE_INBOX_APP_ID = "263902037430900"; // app "Page Inbox" của Facebook (tin gửi từ điện thoại/inbox)
+  const sentByThisApp = ownAppId
+    ? echoAppId === ownAppId
+    : Boolean(echoAppId) && echoAppId !== FB_PAGE_INBOX_APP_ID; // chưa khai báo FB_APP_ID → coi mọi app_id lạ là của bot
+  if (sentByThisApp) return;
+
+  const text = msg.text || "";
+  const images = (msg.attachments || [])
+    .filter((a) => a.type === "image" && a.payload?.url && !a.payload?.sticker_id)
+    .map((a) => a.payload.url);
+  if (!text && !images.length) return;
+
+  // Facebook có thể gửi lại cùng 1 echo → chỉ xử lý 1 lần
+  if (!(await claimEvent("echo:" + msg.mid).catch(() => true))) return;
+
+  // Phòng khi FB_APP_ID chưa khai báo: nếu bot/admin vừa gửi đúng câu này thì không lưu lại lần nữa
+  if (text && (await isRecentOutgoingDuplicate(customerId, text).catch(() => false))) return;
+
+  await addMessage(customerId, "admin", text, images, pageId);
 }
 
 // ---- Câu mở đầu quảng cáo: khách hỏi giá lần đầu → gửi câu soạn sẵn + ẢNH MẪU (không gửi ảnh thực tế) ----
@@ -353,7 +447,7 @@ function parseModelJson(raw) {
   }
 }
 
-async function generateReply(senderId, customerMessage, customerImages, settings, pageId) {
+async function generateReply(senderId, customerMessage, customerImages, settings, pageId, firstContact = false) {
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
   // Chỉ lấy sản phẩm của đúng Page đang nhận tin (+ sản phẩm dùng chung cho mọi Page)
@@ -361,20 +455,51 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   let history = [];
   try {
-    history = await getRecentMessages(senderId, 14);
+    history = await getRecentMessages(senderId, 22);
   } catch (e) {
     console.error("Không đọc được lịch sử chat:", e.message);
   }
 
   // Suy ra sản phẩm khách đang hỏi: từ câu quảng cáo/tên sản phẩm trong tin nhắn → nhớ lại cho các tin sau
-  const match = matchProduct(customerMessage, products);
+  let match = matchProduct(customerMessage, products);
+  if (firstContact) {
+    // Khách mới nhắn nhiều tin: tìm sản phẩm trong CẢ loạt tin (câu quảng cáo có sẵn ưu tiên nhất)
+    const pending = await getPendingCustomerMessages(senderId).catch(() => []);
+    for (const m of pending) {
+      const mm = m.text ? matchProduct(m.text, products) : null;
+      if (mm && (!match || (mm.exact && !match.exact))) match = mm;
+    }
+  }
   if (match) await setCurrentProduct(senderId, match.product.id).catch(() => {});
   let currentId = match?.product.id || (await getCurrentProduct(senderId).catch(() => null));
   if (!currentId && products.length === 1) currentId = products[0].id;
   const currentProduct = products.find((p) => String(p.id) === String(currentId)) || null;
+  // Chủ shop đã tự nhắn hỏi khách hộ bot → khách trả lời thì AI trả lời luôn, không gửi câu mở đầu quảng cáo nữa
+  const adminHandled = firstContact ? false : await hasAdminMessage(senderId).catch(() => false);
+
+  // Khách MỚI (dù nhắn 1 hay nhiều tin, nội dung gì cũng được): chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm.
+  // Những gì khách hỏi thêm sẽ được trả lời ở lần khách nhắn tiếp theo.
+  if (firstContact) {
+    let target = match?.product || currentProduct;
+    let usedDefault = false;
+    if (!target && FIRST_CONTACT_DEFAULT_OPENING) {
+      target = products.find((p) => (p.openingScript || "").trim()) || null;
+      usedDefault = !!target;
+    }
+    if (target && (target.openingScript || "").trim()) {
+      const sentBefore = openingAlreadySent(history, target);
+      const claim = await claimOpening(senderId, target.id).catch(() => ({ claimed: true, ageMs: 0 }));
+      if (claim.claimed && !sentBefore) {
+        // Nhớ sản phẩm vừa gửi để các câu hỏi tiếp theo của khách hiểu đúng đang nói về sản phẩm nào
+        if (usedDefault) await setCurrentProduct(senderId, target.id).catch(() => {});
+        return openingReply(target);
+      }
+      if (!claim.claimed && claim.ageMs < OPENING_BURST_MS) return { skip: true };
+    }
+  }
 
   // Đường tắt (không cần gọi AI): khách bấm câu hỏi quảng cáo có sẵn, hoặc hỏi giá → câu mở đầu + ảnh mẫu
-  if (!customerImages.length) {
+  if (!customerImages.length && !adminHandled) {
     const isPreset = !!match?.exact;
     const target = isPreset
       ? match.product
@@ -437,7 +562,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")
   if (parsed?.use_opening_product) {
     const p = products.find((x) => String(x.id) === String(parsed.use_opening_product));
-    if (p && (p.openingScript || "").trim() && !openingAlreadySent(history, p)) return openingReply(p);
+    if (!adminHandled && p && (p.openingScript || "").trim() && !openingAlreadySent(history, p)) return openingReply(p);
   }
 
   // Chọn ảnh cần gửi
@@ -512,6 +637,9 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
   const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
 
   for (const model of MODEL_CHAIN) {
+    // Model vừa báo quá tải (503) → nhảy thẳng sang model kế tiếp; riêng model cuối luôn được thử
+    if ((modelDown.get(model) || 0) > Date.now() && model !== MODEL_CHAIN[MODEL_CHAIN.length - 1]) continue;
+
     let config = generationConfig;
     let stripped = false;
 
@@ -571,9 +699,14 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
           modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút → nghỉ 1 phút, thử key khác
           continue;
         }
+        if (res.status === 503) {
+          // "Model đang quá tải" là lỗi của CẢ model (đổi key không giúp) → nghỉ model này 45s, sang model kế tiếp ngay
+          modelDown.set(model, Date.now() + 45 * 1000);
+          break;
+        }
         if (res.status >= 500) {
           modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
-          continue; // quá tải → thử key khác luôn cho nhanh
+          continue; // lỗi máy chủ khác → thử key khác
         }
         continue; // 400 khác → thử key khác của model này
       }

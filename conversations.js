@@ -54,6 +54,63 @@ export async function isRepeatedMessage(senderId, text, messageId, windowSec = 1
   return rows.length > 0;
 }
 
+/** Bot/admin vừa gửi đúng nội dung này cho khách trong vài chục giây? (để không lưu trùng tin echo) */
+export async function isRecentOutgoingDuplicate(senderId, text, windowSec = 60) {
+  if (!text) return false;
+  const sql = await getSql();
+  const rows = await sql`SELECT 1 FROM messages
+                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')
+                           AND text = ${text}
+                           AND created_at > now() - (${windowSec}::int * interval '1 second')
+                         LIMIT 1`;
+  return rows.length > 0;
+}
+
+/** Khách này đã từng được bot/chủ shop nhắn lại chưa? (chưa = khách mới, đang nhắn lần đầu) */
+export async function hasOutgoingMessage(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT 1 FROM messages
+                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')
+                         LIMIT 1`;
+  return rows.length > 0;
+}
+
+/** Chủ shop đã tự nhắn cho khách này chưa? (có → coi như chủ shop đã mở lời hộ bot, không gửi lại câu mở đầu quảng cáo nữa) */
+export async function hasAdminMessage(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT 1 FROM messages
+                         WHERE conversation_id = ${senderId} AND sender = 'admin'
+                         LIMIT 1`;
+  return rows.length > 0;
+}
+
+/** id tin nhắn MỚI NHẤT của khách trong cuộc trò chuyện (để biết tin nào là tin cuối trong một loạt tin liền nhau). */
+export async function getLatestCustomerMessageId(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT MAX(id) AS id FROM messages
+                         WHERE conversation_id = ${senderId} AND sender = 'customer'`;
+  return rows[0]?.id ?? null;
+}
+
+/** Các tin khách đã gửi kể từ lần cuối bot/chủ shop nhắn lại (cũ → mới). */
+export async function getPendingCustomerMessages(senderId) {
+  const sql = await getSql();
+  return await sql`SELECT text, images FROM messages
+                   WHERE conversation_id = ${senderId} AND sender = 'customer'
+                     AND id > COALESCE((SELECT MAX(id) FROM messages
+                                        WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')), 0)
+                   ORDER BY id ASC`;
+}
+
+/** Câu mở đầu gần nhất được gửi cho khách này cách đây bao nhiêu mili giây? Chưa gửi → null. */
+export async function getLastOpeningAgeMs(senderId) {
+  const sql = await getSql();
+  const rows = await sql`SELECT EXTRACT(EPOCH FROM (now() - MAX(sent_at))) * 1000 AS age
+                         FROM opening_sent WHERE conversation_id = ${senderId}`;
+  const age = rows[0]?.age;
+  return age === null || age === undefined ? null : Number(age);
+}
+
 /**
  * Giữ chỗ để gửi câu mở đầu của 1 sản phẩm cho 1 khách (an toàn khi 2 tin đến cùng lúc).
  * claimed=true → được phép gửi. claimed=false → đã gửi từ ageMs mili giây trước.
@@ -176,18 +233,42 @@ export async function ensureProfile(senderId, pageToken) {
 }
 
 /** pageId để trống → lấy hội thoại của tất cả các Page. */
-export async function listConversations(pageId = null) {
+// Số điện thoại Việt Nam trong tin nhắn khách: 0912345678, 0912 345 678, 0912.345.678, +84912345678, 84912345678, số bàn 02...
+const PHONE_SQL =
+  "(^|[^0-9])(0|[+]?84)[[:space:].-]?([35789]([[:space:].-]?[0-9]){8}|2([[:space:].-]?[0-9]){9})([^0-9]|$)";
+const PHONE_JS = /(?<![0-9])(?:0|\+?84)[\s.-]?(?:[35789](?:[\s.-]?[0-9]){8}|2(?:[\s.-]?[0-9]){9})(?![0-9])/;
+
+/** Lấy số điện thoại (đã bỏ khoảng trắng/dấu chấm) từ 1 đoạn tin nhắn, không có thì trả null. */
+export function extractPhone(text) {
+  const m = String(text || "").match(PHONE_JS);
+  return m ? m[0].replace(/[\s.-]/g, "") : null;
+}
+
+/**
+ * Danh sách hội thoại. phoneOnly=true → chỉ giữ khách đã để lại số điện thoại (trong tin nhắn của khách).
+ * Mỗi hội thoại trả thêm `phone` (số gần nhất khách để lại, hoặc null).
+ */
+export async function listConversations(pageId = null, phoneOnly = false) {
   const sql = await getSql();
   const pid = pageId ? String(pageId) : null;
-  return await sql`SELECT id, name, avatar,
-                          page_id AS "pageId",
-                          last_message AS "lastMessage",
-                          last_from AS "lastFrom",
-                          last_time AS "lastTime"
-                   FROM conversations
-                   WHERE (${pid}::text IS NULL OR page_id = ${pid})
-                   ORDER BY last_time DESC
+  const rows = await sql`SELECT c.id, c.name, c.avatar,
+                          c.page_id AS "pageId",
+                          c.last_message AS "lastMessage",
+                          c.last_from AS "lastFrom",
+                          c.last_time AS "lastTime",
+                          ph.text AS "phoneText"
+                   FROM conversations c
+                   LEFT JOIN LATERAL (
+                     SELECT m.text FROM messages m
+                     WHERE m.conversation_id = c.id AND m.sender = 'customer'
+                       AND m.text ~ ${PHONE_SQL}
+                     ORDER BY m.id DESC LIMIT 1
+                   ) ph ON true
+                   WHERE (${pid}::text IS NULL OR c.page_id = ${pid})
+                     AND (${phoneOnly}::boolean = false OR ph.text IS NOT NULL)
+                   ORDER BY c.last_time DESC
                    LIMIT 100`;
+  return rows.map(({ phoneText, ...c }) => ({ ...c, phone: extractPhone(phoneText) }));
 }
 
 export async function getConversation(senderId) {
@@ -217,7 +298,7 @@ export async function getConversationPageId(senderId) {
 }
 
 /** Lấy N tin gần nhất của một khách (cũ → mới) để bot nhớ ngữ cảnh. */
-export async function getRecentMessages(senderId, limit = 14) {
+export async function getRecentMessages(senderId, limit = 22) {
   const sql = await getSql();
   return await sql`SELECT sender AS "from", text, images
                    FROM (
