@@ -397,6 +397,17 @@ async function fetchImagePart(url) {
   }
 }
 
+/** Xoá mọi ghi chú nội bộ kiểu "📷 [Bot đã gửi ...]" mà AI lỡ bắt chước viết vào tin gửi khách. */
+function stripBotNotes(t) {
+  return String(t || "")
+    .replace(/📷?\s*\[\s*(Bot|Shop|Hệ thống|Khách)\s+đã\s+gửi[^\]]*\]?/gi, "")
+    .replace(/\[\s*(Bot|Shop)\s+đã\s+gửi[^\]]*\]/gi, "")
+    .replace(/📷/g, "")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 /** Đổi lịch sử chat trong DB thành contents của Gemini (xen kẽ user/model, kết thúc bằng user). */
 async function buildContents(history, latestText, latestImages) {
   const items = [];
@@ -568,7 +579,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (typeof parsed?.messages === "string") list = [parsed.messages];
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
   else if (!parsed && raw.trim()) list = [raw.trim()];
-  let messages = list.map((m) => String(m).trim()).filter(Boolean).slice(0, 2);
+  let messages = list.map((m) => stripBotNotes(m)).filter(Boolean).slice(0, 2);
   const openingRequested = !!parsed?.use_opening_product;
 
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")
@@ -757,7 +768,7 @@ async function retryForcedText(systemPrompt, contents, deadline, apiKeys) {
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
     const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
-    return list.map((m) => String(m).trim()).filter(Boolean).slice(0, 2);
+    return list.map((m) => stripBotNotes(m)).filter(Boolean).slice(0, 2);
   } catch (e) {
     console.error("Lỗi thử lại Gemini:", e.message);
     return [];
