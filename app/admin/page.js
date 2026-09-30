@@ -604,16 +604,19 @@ const fmtDateTime = (d) => {
 };
 const labelStyle = { fontSize: 12, color: "#666", margin: "10px 0 3px", display: "block" };
 
-function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
-  const [order, setOrder] = useState({ customerName: "", phone: "", address: "", productId: "", productName: "", variant: "", quantity: 1, unitPrice: 0, shipFee: 0, note: "" });
+const blankOrder = { customerName: "", phone: "", address: "", productId: "", productName: "", variant: "", quantity: 1, unitPrice: 0, shipFee: 0, note: "" };
+
+// Cột đơn hàng bên phải: luôn hiện khi đang mở 1 hội thoại.
+// Trên cùng là nút "Tạo đơn"; bên dưới là các đơn đã lưu, mỗi đơn có nút bút để sửa.
+function OrderPanel({ conversationId, pageId, onChanged }) {
+  const [order, setOrder] = useState(blankOrder);
   const [products, setProducts] = useState([]);
   const [saved, setSaved] = useState([]);
   const [orderId, setOrderId] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [formOpen, setFormOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
   const [aiOk, setAiOk] = useState(false);
-  const [openIds, setOpenIds] = useState({});
-  const [showSaved, setShowSaved] = useState(true);
 
   const loadSaved = useCallback(async () => {
     try {
@@ -621,6 +624,17 @@ function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
       if (res.ok) setSaved(await res.json());
     } catch {}
   }, [conversationId]);
+
+  // Danh sách sản phẩm để chọn khi sửa đơn (không cần gọi AI)
+  const loadProducts = useCallback(async () => {
+    try {
+      const res = await fetch("/api/products", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = Array.isArray(data) ? data : data.products || [];
+      setProducts(list.map((p) => ({ id: p.id, name: p.name })));
+    } catch {}
+  }, []);
 
   async function autoFill() {
     setLoading(true);
@@ -654,9 +668,31 @@ function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
   }
 
   useEffect(() => {
-    autoFill();
     loadSaved();
+    loadProducts();
   }, [conversationId]);
+
+  function startNew() {
+    setOrder(blankOrder);
+    setOrderId(null);
+    setFormOpen(true);
+    autoFill();
+  }
+
+  function startEdit(o) {
+    setOrder({ ...blankOrder, ...o });
+    setOrderId(o.id);
+    setAiOk(false);
+    setLoading(false);
+    setMsg("");
+    setFormOpen(true);
+  }
+
+  function cancelForm() {
+    setFormOpen(false);
+    setOrderId(null);
+    setMsg("");
+  }
 
   const set = (k, v) => setOrder((o) => ({ ...o, [k]: v }));
   const total = (Number(order.unitPrice) || 0) * (Number(order.quantity) || 1) + (Number(order.shipFee) || 0);
@@ -706,8 +742,10 @@ function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
       setMsg("Lưu lỗi: " + (data.error || res.status));
       return;
     }
-    setOrderId(data.id);
-    setMsg(`Đã lưu đơn #${data.id} ✓`);
+    // Lưu xong: đóng form, đơn hiện thành thẻ bên dưới (có bút để sửa)
+    setFormOpen(false);
+    setOrderId(null);
+    setMsg("");
     loadSaved();
     onChanged && onChanged();
   }
@@ -715,112 +753,115 @@ function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
   async function removeSaved(id) {
     if (!confirm("Xóa đơn này?")) return;
     await fetch("/api/orders", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-    if (orderId === id) setOrderId(null);
+    if (orderId === id) cancelForm();
     loadSaved();
     onChanged && onChanged();
   }
 
+  const iconBtn = { border: "none", background: "transparent", cursor: "pointer", fontSize: 15, padding: "2px 6px", borderRadius: 6 };
+
   return (
-    <aside style={{ width: 360, borderLeft: "1px solid #eee", overflowY: "auto", padding: "14px 16px", background: "#fff" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong style={{ fontSize: 16 }}>🧾 Tạo đơn hàng</strong>
-        <button onClick={onClose} style={{ border: "none", background: "transparent", fontSize: 18, cursor: "pointer" }}>✕</button>
-      </div>
-      {loading && <div style={{ color: "#888", fontSize: 13, marginTop: 6 }}>Đang đọc chat để điền đơn...</div>}
-      {!loading && !aiOk && (
-        <div style={{ color: "#b45309", fontSize: 12, marginTop: 6 }}>AI chưa điền được, bạn nhập tay các ô còn trống nhé.</div>
-      )}
-      {!loading && aiOk && (
-        <div style={{ color: "#888", fontSize: 12, marginTop: 6 }}>Đã tự điền từ chat. Bạn kiểm tra lại trước khi lưu.</div>
-      )}
-
-      <label style={labelStyle}>Tên người nhận</label>
-      <input style={inputStyle} value={order.customerName} onChange={(e) => set("customerName", e.target.value)} />
-      <label style={labelStyle}>Số điện thoại</label>
-      <input style={inputStyle} value={order.phone} onChange={(e) => set("phone", e.target.value)} />
-      <label style={labelStyle}>Địa chỉ nhận hàng</label>
-      <textarea style={{ ...inputStyle, minHeight: 64 }} value={order.address} onChange={(e) => set("address", e.target.value)} />
-      <label style={labelStyle}>Sản phẩm</label>
-      <select style={inputStyle} value={order.productId} onChange={(e) => pickProduct(e.target.value)}>
-        <option value="">— Chọn sản phẩm —</option>
-        {products.map((p) => (
-          <option key={p.id} value={p.id}>{p.name}</option>
-        ))}
-      </select>
-      <label style={labelStyle}>Màu / size</label>
-      <input style={inputStyle} value={order.variant} onChange={(e) => set("variant", e.target.value)} />
-      <div style={{ display: "flex", gap: 8 }}>
-        <div style={{ flex: 1 }}>
-          <label style={labelStyle}>Số lượng</label>
-          <input type="number" min="1" style={inputStyle} value={order.quantity} onChange={(e) => set("quantity", e.target.value)} />
-        </div>
-        <div style={{ flex: 2 }}>
-          <label style={labelStyle}>Đơn giá (đ)</label>
-          <input type="number" min="0" style={inputStyle} value={order.unitPrice} onChange={(e) => set("unitPrice", e.target.value)} />
-        </div>
-      </div>
-      <label style={labelStyle}>Phí ship (đ)</label>
-      <input type="number" min="0" style={inputStyle} value={order.shipFee} onChange={(e) => set("shipFee", e.target.value)} />
-      <label style={labelStyle}>Ghi chú</label>
-      <input style={inputStyle} value={order.note} onChange={(e) => set("note", e.target.value)} />
-
-      <div style={{ margin: "14px 0 8px", fontSize: 16 }}>
-        Tổng thu: <strong style={{ color: "#c0392b" }}>{money(total)}</strong>
-      </div>
-      <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={save} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-          {orderId ? `Cập nhật đơn #${orderId}` : "Lưu đơn"}
+    <aside style={{ width: 360, flexShrink: 0, borderLeft: "1px solid #eee", display: "flex", flexDirection: "column", background: "#fff" }}>
+      {/* Nút Tạo đơn luôn nằm trên cùng */}
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid #eee" }}>
+        <button
+          onClick={startNew}
+          disabled={formOpen && orderId === null && loading}
+          style={{ width: "100%", padding: "10px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontWeight: 600, fontSize: 14, cursor: "pointer" }}
+        >
+          🧾 Tạo đơn
         </button>
-        <button onClick={copy} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Sao chép</button>
-        <button onClick={autoFill} title="Điền lại từ chat" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻</button>
       </div>
-      {msg && <div style={{ fontSize: 13, marginTop: 8, color: msg.includes("✓") ? "#166534" : "#b45309" }}>{msg}</div>}
 
-      {saved.length > 0 && (
-        <div style={{ marginTop: 18 }}>
-          <div
-            onClick={() => setShowSaved((v) => !v)}
-            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}
-          >
-            <strong style={{ fontSize: 13 }}>Đơn đã lưu của khách này ({saved.length})</strong>
-            <span style={{ fontSize: 12, color: "#666" }}>{showSaved ? "▾ Thu gọn" : "▸ Mở ra"}</span>
+      <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
+        {formOpen && (
+          <div style={{ border: "1px solid #bbf7d0", background: "#fafffc", borderRadius: 10, padding: "10px 12px", marginBottom: 14 }}>
+            <strong style={{ fontSize: 14 }}>{orderId ? `✏️ Sửa đơn #${orderId}` : "Đơn mới"}</strong>
+            {loading && <div style={{ color: "#888", fontSize: 13, marginTop: 6 }}>Đang đọc chat để điền đơn...</div>}
+            {!loading && !orderId && !aiOk && (
+              <div style={{ color: "#b45309", fontSize: 12, marginTop: 6 }}>AI chưa điền được, bạn nhập tay các ô còn trống nhé.</div>
+            )}
+            {!loading && !orderId && aiOk && (
+              <div style={{ color: "#888", fontSize: 12, marginTop: 6 }}>Đã tự điền từ chat. Bạn kiểm tra lại trước khi lưu.</div>
+            )}
+
+            <label style={labelStyle}>Tên người nhận</label>
+            <input style={inputStyle} value={order.customerName} onChange={(e) => set("customerName", e.target.value)} />
+            <label style={labelStyle}>Số điện thoại</label>
+            <input style={inputStyle} value={order.phone} onChange={(e) => set("phone", e.target.value)} />
+            <label style={labelStyle}>Địa chỉ nhận hàng</label>
+            <textarea style={{ ...inputStyle, minHeight: 64 }} value={order.address} onChange={(e) => set("address", e.target.value)} />
+            <label style={labelStyle}>Sản phẩm</label>
+            <select style={inputStyle} value={order.productId} onChange={(e) => pickProduct(e.target.value)}>
+              <option value="">{order.productName && !order.productId ? order.productName : "— Chọn sản phẩm —"}</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <label style={labelStyle}>Màu / size</label>
+            <input style={inputStyle} value={order.variant} onChange={(e) => set("variant", e.target.value)} />
+            <div style={{ display: "flex", gap: 8 }}>
+              <div style={{ flex: 1 }}>
+                <label style={labelStyle}>Số lượng</label>
+                <input type="number" min="1" style={inputStyle} value={order.quantity} onChange={(e) => set("quantity", e.target.value)} />
+              </div>
+              <div style={{ flex: 2 }}>
+                <label style={labelStyle}>Đơn giá (đ)</label>
+                <input type="number" min="0" style={inputStyle} value={order.unitPrice} onChange={(e) => set("unitPrice", e.target.value)} />
+              </div>
+            </div>
+            <label style={labelStyle}>Phí ship (đ)</label>
+            <input type="number" min="0" style={inputStyle} value={order.shipFee} onChange={(e) => set("shipFee", e.target.value)} />
+            <label style={labelStyle}>Ghi chú</label>
+            <input style={inputStyle} value={order.note} onChange={(e) => set("note", e.target.value)} />
+
+            <div style={{ margin: "14px 0 8px", fontSize: 16 }}>
+              Tổng thu: <strong style={{ color: "#c0392b" }}>{money(total)}</strong>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={save} disabled={loading} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontWeight: 600, cursor: "pointer" }}>
+                {orderId ? `Cập nhật đơn #${orderId}` : "Lưu đơn"}
+              </button>
+              <button onClick={copy} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Sao chép</button>
+              {!orderId && (
+                <button onClick={autoFill} title="Điền lại từ chat" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻</button>
+              )}
+            </div>
+            <button onClick={cancelForm} style={{ marginTop: 8, width: "100%", padding: "8px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", color: "#555", cursor: "pointer" }}>
+              Đóng
+            </button>
+            {msg && <div style={{ fontSize: 13, marginTop: 8, color: msg.includes("✓") ? "#166534" : "#b45309" }}>{msg}</div>}
           </div>
-          {showSaved &&
-            saved.map((o) => {
-              const open = !!openIds[o.id];
-              return (
-                <div key={o.id} style={{ border: "1px solid #eee", borderRadius: 8, marginTop: 6, fontSize: 13, background: orderId === o.id ? "#f0fdf4" : "#fff" }}>
-                  <div
-                    onClick={() => setOpenIds((m) => ({ ...m, [o.id]: !m[o.id] }))}
-                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", cursor: "pointer", userSelect: "none", gap: 8 }}
-                  >
-                    <div>
-                      <strong>Đơn #{o.id}</strong>
-                      <div style={{ color: "#888", fontSize: 12 }}>Ngày đặt: {fmtDateTime(o.createdAt)}</div>
-                    </div>
-                    <div style={{ textAlign: "right" }}>
-                      <div style={{ color: "#c0392b", fontWeight: 600 }}>{money(o.total)}</div>
-                      <div style={{ color: "#666", fontSize: 12 }}>{open ? "▾" : "▸"}</div>
-                    </div>
-                  </div>
-                  {open && (
-                    <div style={{ padding: "0 10px 10px", borderTop: "1px solid #f0f0f0", lineHeight: 1.6 }}>
-                      <div style={{ marginTop: 6 }}>👤 {o.customerName} — {o.phone}</div>
-                      <div>📍 {o.address}</div>
-                      <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
-                      <div>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
-                      {o.note ? <div>📝 {o.note}</div> : null}
-                      <div style={{ marginTop: 6, display: "flex", gap: 14 }}>
-                        <button onClick={() => { setOrder(o); setOrderId(o.id); setMsg(""); }} style={{ border: "none", background: "none", color: "#2563eb", cursor: "pointer", padding: 0 }}>Mở sửa</button>
-                        <button onClick={() => removeSaved(o.id)} style={{ border: "none", background: "none", color: "#c0392b", cursor: "pointer", padding: 0 }}>Xóa</button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-        </div>
-      )}
+        )}
+
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#444", marginBottom: 6 }}>Đơn hàng ({saved.length})</div>
+        {saved.length === 0 && !formOpen && (
+          <div style={{ fontSize: 13, color: "#9ca3af", fontStyle: "italic" }}>Khách này chưa có đơn nào.</div>
+        )}
+        {saved.map((o) => (
+          <div
+            key={o.id}
+            style={{ border: orderId === o.id ? "1px solid #16a34a" : "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10, fontSize: 13, background: "#fff", overflow: "hidden" }}
+          >
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "#16a34a", color: "#fff" }}>
+              <strong>Đơn #{o.id}</strong>
+              <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
+                <button onClick={() => startEdit(o)} title="Sửa đơn" aria-label="Sửa đơn" style={{ ...iconBtn, color: "#fff" }}>✏️</button>
+                <button onClick={() => removeSaved(o.id)} title="Xóa đơn" aria-label="Xóa đơn" style={{ ...iconBtn, color: "#fff" }}>🗑</button>
+              </span>
+            </div>
+            <div style={{ padding: "8px 10px", lineHeight: 1.65 }}>
+              <div>👤 {o.customerName}{o.phone ? ` — ${o.phone}` : ""}</div>
+              <div>📍 {o.address}</div>
+              <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
+              <div style={{ color: "#555" }}>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
+              {o.note ? <div>📝 {o.note}</div> : null}
+              <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
+              <div style={{ color: "#999", fontSize: 12 }}>{fmtDateTime(o.createdAt)}</div>
+            </div>
+          </div>
+        ))}
+      </div>
     </aside>
   );
 }
@@ -838,10 +879,8 @@ export default function ChatAdminPage() {
   const [pageFilter, setPageFilter] = useState("all"); // "all" hoặc ID của 1 Page
   const [showSettings, setShowSettings] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
-  const [showOrder, setShowOrder] = useState(false);
   const pageFilterRef = useRef("all");
   const [ordersByConv, setOrdersByConv] = useState({}); // { conversationId: [đơn mới → cũ] }
-  const [openOrderIds, setOpenOrderIds] = useState({}); // đơn nào đang sổ chi tiết ở danh sách bên trái
 
   const loadOrders = useCallback(async () => {
     try {
@@ -1129,7 +1168,7 @@ export default function ChatAdminPage() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              onClick={() => { if (c.id !== selectedId) setShowOrder(false); setSelectedId(c.id); }}
+              onClick={() => setSelectedId(c.id)}
               style={{
                 display: "flex",
                 gap: 12,
@@ -1182,37 +1221,8 @@ export default function ChatAdminPage() {
                 {c.phone && (
                   <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>📞 {c.phone}</div>
                 )}
-                {(ordersByConv[c.id] || []).length === 0 ? (
-                  <div style={{ fontSize: 12, color: "#9ca3af", opacity: 0.6, fontStyle: "italic", marginTop: 3 }}>chưa có đơn</div>
-                ) : (
-                  <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
-                    {ordersByConv[c.id].map((o) => {
-                      const open = !!openOrderIds[o.id];
-                      return (
-                        <div key={o.id} style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 8, marginTop: 3, fontSize: 12 }}>
-                          <div
-                            onClick={() => setOpenOrderIds((m) => ({ ...m, [o.id]: !m[o.id] }))}
-                            style={{ display: "flex", justifyContent: "space-between", gap: 6, padding: "4px 8px", cursor: "pointer", userSelect: "none", color: "#166534" }}
-                          >
-                            <span>
-                              🧾 <strong>Đơn #{o.id}</strong> · {fmtDateTime(o.createdAt)}
-                            </span>
-                            <span style={{ flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
-                          </div>
-                          {open && (
-                            <div style={{ padding: "2px 8px 6px", borderTop: "1px solid #dcfce7", lineHeight: 1.55, color: "#333", whiteSpace: "normal", wordBreak: "break-word" }}>
-                              <div>👤 {o.customerName} — {o.phone}</div>
-                              <div>📍 {o.address}</div>
-                              <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
-                              <div>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
-                              {o.note ? <div>📝 {o.note}</div> : null}
-                              <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
+                {(ordersByConv[c.id] || []).length > 0 && (
+                  <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>🧾 {ordersByConv[c.id].length} đơn</div>
                 )}
               </div>
               <button
@@ -1258,21 +1268,6 @@ export default function ChatAdminPage() {
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={() => setShowOrder(selectedId)}
-                  style={{
-                    padding: "7px 14px",
-                    borderRadius: 8,
-                    border: "none",
-                    background: "#16a34a",
-                    color: "#fff",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  🧾 Tạo đơn
-                </button>
                 <button
                   onClick={() => deleteChat(selectedId, headName)}
                   style={{
@@ -1369,12 +1364,11 @@ export default function ChatAdminPage() {
             </>
           )}
         </section>
-        {showOrder && selectedId && showOrder === selectedId && (
+        {selectedId && (
           <OrderPanel
             key={selectedId}
             conversationId={selectedId}
             pageId={current.pageId || selected?.pageId}
-            onClose={() => setShowOrder(false)}
             onChanged={loadOrders}
           />
         )}
