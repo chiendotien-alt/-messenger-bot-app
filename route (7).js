@@ -2,17 +2,17 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { getSettings, saveSettings } from "@/lib/settings";
+import { listConversations } from "@/lib/conversations";
 
-export async function GET() {
-  const settings = await getSettings();
-  return NextResponse.json(settings);
-}
-
-export async function POST(req) {
-  const body = await req.json();
-  const current = await getSettings();
-  const updated = { ...current, ...body };
-  await saveSettings(updated);
-  return NextResponse.json(updated);
+export async function GET(req) {
+  try {
+    const params = new URL(req.url).searchParams;
+    const pageId = params.get("pageId");
+    const phoneOnly = params.get("phone") === "1";
+    const list = await listConversations(pageId, phoneOnly);
+    return NextResponse.json(list, { headers: { "Cache-Control": "no-store" } });
+  } catch (err) {
+    console.error("Lỗi đọc danh sách hội thoại:", err);
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
 }

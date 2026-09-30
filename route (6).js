@@ -1,33 +1,65 @@
-// app/api/upload/route.js — tải ảnh sản phẩm lên Vercel Blob, trả về link công khai
-import { NextResponse } from "next/server";
-import { put } from "@vercel/blob";
-
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-const MAX_BYTES = 4 * 1024 * 1024; // Vercel giới hạn body ~4.5MB; trang admin đã tự nén ảnh trước khi gửi
+import { NextResponse } from "next/server";
+import { getConversation, addMessage, deleteConversation, getConversationPageId } from "@/lib/conversations";
+import { getPageToken } from "@/lib/pages";
 
-export async function POST(req) {
+export async function GET(req, { params }) {
   try {
-    const form = await req.formData();
-    const file = form.get("file");
-    if (!file || typeof file === "string") {
-      return NextResponse.json({ error: "Không có file" }, { status: 400 });
-    }
-    if (!file.type?.startsWith("image/")) {
-      return NextResponse.json({ error: "Chỉ nhận file ảnh" }, { status: 400 });
-    }
-    if (file.size > MAX_BYTES) {
-      return NextResponse.json({ error: "Ảnh quá lớn (tối đa 4MB)" }, { status: 413 });
-    }
-    const safeName = (file.name || "image").replace(/[^a-zA-Z0-9._-]/g, "_");
-    const blob = await put(`product-images/${safeName}`, file, {
-      access: "public",
-      addRandomSuffix: true,
-      contentType: file.type,
-    });
-    return NextResponse.json({ url: blob.url });
+    const conv = await getConversation(params.id);
+    return NextResponse.json(conv, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
-    console.error("Lỗi upload ảnh:", err);
+    console.error("Lỗi đọc hội thoại:", err);
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
+}
+
+// Chủ shop tự gửi trả lời (dùng được cả khi bot đang bật hoặc tắt)
+export async function POST(req, { params }) {
+  const { text } = await req.json();
+  if (!text || !text.trim()) {
+    return NextResponse.json({ error: "Tin nhắn trống" }, { status: 400 });
+  }
+
+  // Trả lời bằng đúng token của Page mà khách này đã nhắn tới
+  const pageId = await getConversationPageId(params.id);
+  const PAGE_ACCESS_TOKEN = await getPageToken(pageId);
+  if (!PAGE_ACCESS_TOKEN) {
+    return NextResponse.json({ error: "Chưa có token cho Page của cuộc trò chuyện này" }, { status: 400 });
+  }
+  const fbRes = await fetch(
+    `https://graph.facebook.com/v21.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: params.id },
+        message: { text },
+        messaging_type: "RESPONSE",
+      }),
+    }
+  );
+
+  const fbData = await fbRes.json();
+  if (!fbRes.ok || fbData.error) {
+    return NextResponse.json(
+      { error: fbData.error?.message || "Facebook từ chối gửi tin nhắn" },
+      { status: 502 }
+    );
+  }
+
+  await addMessage(params.id, "admin", text);
+  return NextResponse.json({ ok: true });
+}
+
+// Xóa cuộc trò chuyện (để test lại từ đầu hoặc ẩn khách không tiềm năng)
+export async function DELETE(req, { params }) {
+  try {
+    await deleteConversation(params.id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    console.error("Lỗi xóa hội thoại:", err);
     return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
   }
 }

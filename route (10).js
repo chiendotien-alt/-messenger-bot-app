@@ -1,51 +1,40 @@
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
+// app/api/products/route.js
 import { NextResponse } from "next/server";
-import { listPages, addPage, removePage, setPageBot } from "@/lib/pages";
+import { getProducts, saveProducts } from "@/lib/products";
 
-// Danh sách Page (id, tên, ảnh) — không bao giờ trả token
 export async function GET() {
-  try {
-    return NextResponse.json(await listPages(), { headers: { "Cache-Control": "no-store" } });
-  } catch (err) {
-    console.error("Lỗi đọc danh sách Page:", err);
-    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
-  }
+  const products = await getProducts();
+  return NextResponse.json(products);
 }
 
-// Thêm Page: { token }
 export async function POST(req) {
-  try {
-    const { token } = await req.json();
-    return NextResponse.json(await addPage(token));
-  } catch (err) {
-    return NextResponse.json({ error: String(err.message || err) }, { status: 400 });
-  }
+  const newProduct = await req.json();
+  const products = await getProducts();
+  const id = Date.now().toString();
+  products.push({ id, ...newProduct });
+  await saveProducts(products);
+  return NextResponse.json({ ok: true, id });
 }
 
-// Gỡ Page: /api/pages?id=...
+export async function PUT(req) {
+  const updated = await req.json();
+  const products = await getProducts();
+  const idx = products.findIndex((p) => p.id === updated.id);
+  if (idx === -1) {
+    return NextResponse.json({ error: "Không tìm thấy sản phẩm" }, { status: 404 });
+  }
+  products[idx] = updated;
+  await saveProducts(products);
+  return NextResponse.json({ ok: true });
+}
+
 export async function DELETE(req) {
-  try {
-    const id = new URL(req.url).searchParams.get("id");
-    if (!id) return NextResponse.json({ error: "Thiếu id Page" }, { status: 400 });
-    await removePage(id);
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    return NextResponse.json({ error: String(err.message || err) }, { status: 400 });
-  }
-}
-
-// Bật/tắt bot riêng cho 1 Page: { id, botEnabled }
-export async function PATCH(req) {
-  try {
-    const { id, botEnabled } = await req.json();
-    if (!id || typeof botEnabled !== "boolean") {
-      return NextResponse.json({ error: "Thiếu thông tin Page" }, { status: 400 });
-    }
-    await setPageBot(id, botEnabled);
-    return NextResponse.json({ ok: true });
-  } catch (err) {
-    return NextResponse.json({ error: String(err.message || err) }, { status: 400 });
-  }
+  const { id } = await req.json();
+  const products = await getProducts();
+  const filtered = products.filter((p) => p.id !== id);
+  await saveProducts(filtered);
+  return NextResponse.json({ ok: true });
 }

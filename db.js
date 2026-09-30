@@ -64,6 +64,17 @@ async function init(sql) {
   await sql`ALTER TABLE pages ADD COLUMN IF NOT EXISTS bot_enabled BOOLEAN DEFAULT TRUE`;
   await sql`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS page_id TEXT`;
   await sql`CREATE INDEX IF NOT EXISTS idx_conversations_page ON conversations (page_id, last_time DESC)`;
+  // Đơn hàng nháp tạo từ khung chat (trang giao hàng sau này đọc bảng này)
+  await sql`CREATE TABLE IF NOT EXISTS orders (
+    id BIGSERIAL PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    page_id TEXT,
+    data JSONB NOT NULL,
+    status TEXT DEFAULT 'draft',
+    created_at TIMESTAMPTZ DEFAULT now(),
+    updated_at TIMESTAMPTZ DEFAULT now()
+  )`;
+  await sql`CREATE INDEX IF NOT EXISTS idx_orders_conv ON orders (conversation_id, id DESC)`;
   await sql`CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value JSONB NOT NULL

@@ -536,11 +536,11 @@ export default function AdminPage() {
           onChange={(e) => setForm({ ...form, stock: e.target.value })}
         />
         <textarea
-          style={{ ...inputStyle, resize: "vertical" }}
+          style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical", flexShrink: 0, minHeight: 220 }}
           placeholder="Nội dung sản phẩm: giá bán (theo số lượng nếu có), chất liệu, màu sắc, size, ưu đãi, giao hàng, câu hỏi khách hay hỏi..."
           value={form.description}
           onChange={(e) => setForm({ ...form, description: e.target.value })}
-          rows={7}
+          rows={10}
         />
         {/\|/.test(form.description) && (
           <button
