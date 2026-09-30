@@ -596,16 +596,24 @@ function ApiKeysModal({ onClose }) {
 
 const money = (n) => (Number(n) || 0).toLocaleString("vi-VN") + "đ";
 const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, boxSizing: "border-box" };
+const fmtDateTime = (d) => {
+  if (!d) return "";
+  const dt = new Date(d);
+  if (isNaN(dt)) return "";
+  return dt.toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+};
 const labelStyle = { fontSize: 12, color: "#666", margin: "10px 0 3px", display: "block" };
 
-function OrderPanel({ conversationId, pageId, onClose }) {
-  const [order, setOrder] = useState(null);
+function OrderPanel({ conversationId, pageId, onClose, onChanged }) {
+  const [order, setOrder] = useState({ customerName: "", phone: "", address: "", productId: "", productName: "", variant: "", quantity: 1, unitPrice: 0, shipFee: 0, note: "" });
   const [products, setProducts] = useState([]);
   const [saved, setSaved] = useState([]);
   const [orderId, setOrderId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState("");
-  const [aiOk, setAiOk] = useState(true);
+  const [aiOk, setAiOk] = useState(false);
+  const [openIds, setOpenIds] = useState({});
+  const [showSaved, setShowSaved] = useState(true);
 
   const loadSaved = useCallback(async () => {
     try {
@@ -617,22 +625,31 @@ function OrderPanel({ conversationId, pageId, onClose }) {
   async function autoFill() {
     setLoading(true);
     setMsg("");
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 58000);
     try {
       const res = await fetch("/api/orders/draft", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ conversationId }),
+        signal: ctrl.signal,
       });
-      const data = await res.json();
+      const raw = await res.text();
+      let data = null;
+      try {
+        data = JSON.parse(raw);
+      } catch {}
+      if (!data) throw new Error(res.status === 504 || res.status === 500 ? "Máy chủ phản hồi quá lâu, bấm ↻ để thử lại" : "Máy chủ trả về dữ liệu lỗi, bấm ↻ để thử lại");
       if (!res.ok) throw new Error(data.error || "Lỗi");
       setOrder(data.order);
       setProducts(data.products || []);
-      setAiOk(data.aiOk);
+      setAiOk(!!data.aiOk);
       setOrderId(null);
     } catch (e) {
-      setMsg("Không tự điền được: " + e.message);
-      setOrder((o) => o || { customerName: "", phone: "", address: "", productId: "", productName: "", variant: "", quantity: 1, unitPrice: 0, shipFee: 0, note: "" });
+      setAiOk(false);
+      setMsg("Không tự điền được: " + (e.name === "AbortError" ? "quá thời gian chờ, bấm ↻ để thử lại" : e.message));
     }
+    clearTimeout(timer);
     setLoading(false);
   }
 
@@ -640,8 +657,6 @@ function OrderPanel({ conversationId, pageId, onClose }) {
     autoFill();
     loadSaved();
   }, [conversationId]);
-
-  if (!order) return <aside style={{ width: 360, borderLeft: "1px solid #eee", padding: 20 }}>Đang lấy thông tin đơn...</aside>;
 
   const set = (k, v) => setOrder((o) => ({ ...o, [k]: v }));
   const total = (Number(order.unitPrice) || 0) * (Number(order.quantity) || 1) + (Number(order.shipFee) || 0);
@@ -692,8 +707,9 @@ function OrderPanel({ conversationId, pageId, onClose }) {
       return;
     }
     setOrderId(data.id);
-    setMsg("Đã lưu đơn ✓");
+    setMsg(`Đã lưu đơn #${data.id} ✓`);
     loadSaved();
+    onChanged && onChanged();
   }
 
   async function removeSaved(id) {
@@ -701,6 +717,7 @@ function OrderPanel({ conversationId, pageId, onClose }) {
     await fetch("/api/orders", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
     if (orderId === id) setOrderId(null);
     loadSaved();
+    onChanged && onChanged();
   }
 
   return (
@@ -752,7 +769,7 @@ function OrderPanel({ conversationId, pageId, onClose }) {
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={save} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontWeight: 600, cursor: "pointer" }}>
-          {orderId ? "Cập nhật đơn" : "Lưu đơn"}
+          {orderId ? `Cập nhật đơn #${orderId}` : "Lưu đơn"}
         </button>
         <button onClick={copy} style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>Sao chép</button>
         <button onClick={autoFill} title="Điền lại từ chat" style={{ padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer" }}>↻</button>
@@ -761,17 +778,47 @@ function OrderPanel({ conversationId, pageId, onClose }) {
 
       {saved.length > 0 && (
         <div style={{ marginTop: 18 }}>
-          <strong style={{ fontSize: 13 }}>Đơn đã lưu của khách này</strong>
-          {saved.map((o) => (
-            <div key={o.id} style={{ border: "1px solid #eee", borderRadius: 8, padding: 8, marginTop: 6, fontSize: 13 }}>
-              <div>{o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
-              <div style={{ color: "#c0392b" }}>{money(o.total)}</div>
-              <div style={{ marginTop: 4, display: "flex", gap: 10 }}>
-                <button onClick={() => { setOrder(o); setOrderId(o.id); setMsg(""); }} style={{ border: "none", background: "none", color: "#2563eb", cursor: "pointer", padding: 0 }}>Mở sửa</button>
-                <button onClick={() => removeSaved(o.id)} style={{ border: "none", background: "none", color: "#c0392b", cursor: "pointer", padding: 0 }}>Xóa</button>
-              </div>
-            </div>
-          ))}
+          <div
+            onClick={() => setShowSaved((v) => !v)}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer", userSelect: "none" }}
+          >
+            <strong style={{ fontSize: 13 }}>Đơn đã lưu của khách này ({saved.length})</strong>
+            <span style={{ fontSize: 12, color: "#666" }}>{showSaved ? "▾ Thu gọn" : "▸ Mở ra"}</span>
+          </div>
+          {showSaved &&
+            saved.map((o) => {
+              const open = !!openIds[o.id];
+              return (
+                <div key={o.id} style={{ border: "1px solid #eee", borderRadius: 8, marginTop: 6, fontSize: 13, background: orderId === o.id ? "#f0fdf4" : "#fff" }}>
+                  <div
+                    onClick={() => setOpenIds((m) => ({ ...m, [o.id]: !m[o.id] }))}
+                    style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 10px", cursor: "pointer", userSelect: "none", gap: 8 }}
+                  >
+                    <div>
+                      <strong>Đơn #{o.id}</strong>
+                      <div style={{ color: "#888", fontSize: 12 }}>Ngày đặt: {fmtDateTime(o.createdAt)}</div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <div style={{ color: "#c0392b", fontWeight: 600 }}>{money(o.total)}</div>
+                      <div style={{ color: "#666", fontSize: 12 }}>{open ? "▾" : "▸"}</div>
+                    </div>
+                  </div>
+                  {open && (
+                    <div style={{ padding: "0 10px 10px", borderTop: "1px solid #f0f0f0", lineHeight: 1.6 }}>
+                      <div style={{ marginTop: 6 }}>👤 {o.customerName} — {o.phone}</div>
+                      <div>📍 {o.address}</div>
+                      <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
+                      <div>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
+                      {o.note ? <div>📝 {o.note}</div> : null}
+                      <div style={{ marginTop: 6, display: "flex", gap: 14 }}>
+                        <button onClick={() => { setOrder(o); setOrderId(o.id); setMsg(""); }} style={{ border: "none", background: "none", color: "#2563eb", cursor: "pointer", padding: 0 }}>Mở sửa</button>
+                        <button onClick={() => removeSaved(o.id)} style={{ border: "none", background: "none", color: "#c0392b", cursor: "pointer", padding: 0 }}>Xóa</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
         </div>
       )}
     </aside>
@@ -793,6 +840,20 @@ export default function ChatAdminPage() {
   const [showKeys, setShowKeys] = useState(false);
   const [showOrder, setShowOrder] = useState(false);
   const pageFilterRef = useRef("all");
+  const [ordersByConv, setOrdersByConv] = useState({}); // { conversationId: [đơn mới → cũ] }
+  const [openOrderIds, setOpenOrderIds] = useState({}); // đơn nào đang sổ chi tiết ở danh sách bên trái
+
+  const loadOrders = useCallback(async () => {
+    try {
+      const res = await fetch("/api/orders?all=1", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!Array.isArray(data)) return;
+      const map = {};
+      for (const o of data) (map[o.conversationId] = map[o.conversationId] || []).push(o);
+      setOrdersByConv(map);
+    } catch {}
+  }, []);
   const [phoneOnly, setPhoneOnly] = useState(false); // chỉ hiện khách đã để lại số điện thoại
   const phoneOnlyRef = useRef(false);
 
@@ -865,6 +926,12 @@ export default function ChatAdminPage() {
     const t = setInterval(loadConversations, 3000);
     return () => clearInterval(t);
   }, [loadConversations]);
+
+  useEffect(() => {
+    loadOrders();
+    const t = setInterval(loadOrders, 10000);
+    return () => clearInterval(t);
+  }, [loadOrders]);
 
   // Page đang xem đã bị gỡ → quay về "Tất cả"
   useEffect(() => {
@@ -1062,7 +1129,7 @@ export default function ChatAdminPage() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              onClick={() => setSelectedId(c.id)}
+              onClick={() => { if (c.id !== selectedId) setShowOrder(false); setSelectedId(c.id); }}
               style={{
                 display: "flex",
                 gap: 12,
@@ -1115,6 +1182,38 @@ export default function ChatAdminPage() {
                 {c.phone && (
                   <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>📞 {c.phone}</div>
                 )}
+                {(ordersByConv[c.id] || []).length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#9ca3af", opacity: 0.6, fontStyle: "italic", marginTop: 3 }}>chưa có đơn</div>
+                ) : (
+                  <div onClick={(e) => e.stopPropagation()} style={{ marginTop: 4 }}>
+                    {ordersByConv[c.id].map((o) => {
+                      const open = !!openOrderIds[o.id];
+                      return (
+                        <div key={o.id} style={{ border: "1px solid #bbf7d0", background: "#f0fdf4", borderRadius: 8, marginTop: 3, fontSize: 12 }}>
+                          <div
+                            onClick={() => setOpenOrderIds((m) => ({ ...m, [o.id]: !m[o.id] }))}
+                            style={{ display: "flex", justifyContent: "space-between", gap: 6, padding: "4px 8px", cursor: "pointer", userSelect: "none", color: "#166534" }}
+                          >
+                            <span>
+                              🧾 <strong>Đơn #{o.id}</strong> · {fmtDateTime(o.createdAt)}
+                            </span>
+                            <span style={{ flexShrink: 0 }}>{open ? "▾" : "▸"}</span>
+                          </div>
+                          {open && (
+                            <div style={{ padding: "2px 8px 6px", borderTop: "1px solid #dcfce7", lineHeight: 1.55, color: "#333", whiteSpace: "normal", wordBreak: "break-word" }}>
+                              <div>👤 {o.customerName} — {o.phone}</div>
+                              <div>📍 {o.address}</div>
+                              <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
+                              <div>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
+                              {o.note ? <div>📝 {o.note}</div> : null}
+                              <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
               <button
                 onClick={(e) => {
@@ -1160,7 +1259,7 @@ export default function ChatAdminPage() {
                   )}
                 </div>
                 <button
-                  onClick={() => setShowOrder(true)}
+                  onClick={() => setShowOrder(selectedId)}
                   style={{
                     padding: "7px 14px",
                     borderRadius: 8,
@@ -1270,12 +1369,13 @@ export default function ChatAdminPage() {
             </>
           )}
         </section>
-        {showOrder && selectedId && (
+        {showOrder && selectedId && showOrder === selectedId && (
           <OrderPanel
             key={selectedId}
             conversationId={selectedId}
             pageId={current.pageId || selected?.pageId}
             onClose={() => setShowOrder(false)}
+            onChanged={loadOrders}
           />
         )}
       </div>
