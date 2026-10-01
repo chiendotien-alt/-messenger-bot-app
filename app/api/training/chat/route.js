@@ -8,8 +8,8 @@ import { runPlayground } from "@/lib/botPlayground";
 
 export async function POST(req) {
   try {
-    const { history, productId } = await req.json();
-    const result = await runPlayground({ history, productId });
+    const { history, productId, customerName, customerInfo } = await req.json();
+    const result = await runPlayground({ history, productId, customerName, customerInfo });
     if (result.error) return NextResponse.json({ error: result.error }, { status: 200 });
     return NextResponse.json(result);
   } catch (err) {
