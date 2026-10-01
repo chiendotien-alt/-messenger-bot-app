@@ -201,7 +201,7 @@ export async function POST(req) {
         await fbAction(senderId, "mark_seen", pageToken);
         await fbAction(senderId, "typing_on", pageToken);
 
-        const reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact);
+        const reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact, startedAt + 50000);
         if (reply.skip) continue;
         const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
@@ -212,7 +212,12 @@ export async function POST(req) {
               await fbAction(senderId, "typing_on", pageToken);
             }
             await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
-            await sendMessage(senderId, messages[i], pageToken);
+            const delivered = await sendMessage(senderId, messages[i], pageToken);
+            if (!delivered) {
+              // Facebook từ chối (quá 24 giờ, token hết hạn...) → KHÔNG lưu như đã gửi, để bot/shop không tưởng khách đã nhận
+              if (i === 0) throw new Error("Facebook từ chối tin đầu tiên");
+              break;
+            }
             await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
               console.error("Không lưu được tin của bot:", e.message)
             );
@@ -488,6 +493,56 @@ async function buildContents(history, latestText, latestImages) {
   return contents;
 }
 
+/**
+ * AI trả về JSON bị cắt dở / hỏng → vớt lấy phần chữ trả lời, TUYỆT ĐỐI không gửi nguyên đoạn JSON cho khách.
+ * Không phải JSON (AI trả chữ thường) thì dùng luôn. Không vớt được gì → trả mảng rỗng (hệ thống sẽ gọi AI lại).
+ */
+function salvageMessages(raw) {
+  const t = String(raw || "").replace(/```json|```/g, "").trim();
+  if (!t) return [];
+  if (!/^[\[{]/.test(t) && !/"messages"\s*:/.test(t) && !/"use_opening_product"|"send_images"|"customer_info"/.test(t)) {
+    return [t]; // chữ bình thường, không phải JSON
+  }
+  const out = [];
+  const m = t.match(/"messages"\s*:\s*\[([\s\S]*)/);
+  if (m) {
+    const re = /"((?:[^"\\]|\\.)*)"/g;
+    let x;
+    while ((x = re.exec(m[1])) && out.length < 2) {
+      try {
+        out.push(JSON.parse(`"${x[1]}"`));
+      } catch {}
+    }
+  }
+  return out;
+}
+
+/**
+ * Chỉ giữ thông tin mà khách THỰC SỰ đã nhắn (chống AI đoán bừa/bịa rồi lưu làm thật):
+ * SĐT phải có đúng dãy số trong tin khách; tên/địa chỉ/màu-size phải có phần lớn từ xuất hiện trong tin khách.
+ */
+function verifyCustomerInfo(info, history, latestText) {
+  const customerTexts = (history || []).filter((m) => m.from === "customer").map((m) => m.text || "");
+  customerTexts.push(latestText || "");
+  const blob = norm(customerTexts.join(" \n "));
+  const digits = customerTexts.join(" ").replace(/\D/g, "");
+  const out = {};
+  for (const k of ["name", "phone", "address", "variant"]) {
+    const v = typeof info[k] === "string" ? info[k].trim() : "";
+    if (!v) continue;
+    if (k === "phone") {
+      const d = v.replace(/\D/g, "");
+      if (d.length >= 9 && digits.includes(d.replace(/^84/, "0").replace(/^0/, ""))) out.phone = v;
+      continue;
+    }
+    const tokens = norm(v).split(/\s+/).filter(Boolean);
+    if (!tokens.length) continue;
+    const hit = tokens.filter((tk) => blob.includes(tk)).length;
+    if (hit / tokens.length >= 0.6) out[k] = v;
+  }
+  return out;
+}
+
 function parseModelJson(raw) {
   if (!raw) return null;
   const cleaned = raw.replace(/```json|```/g, "").trim();
@@ -504,7 +559,7 @@ function parseModelJson(raw) {
   }
 }
 
-async function generateReply(senderId, customerMessage, customerImages, settings, pageId, firstContact = false) {
+async function generateReply(senderId, customerMessage, customerImages, settings, pageId, firstContact = false, hardDeadline = Date.now() + 50000) {
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
   // Chỉ lấy sản phẩm của đúng Page đang nhận tin (+ sản phẩm dùng chung cho mọi Page)
@@ -592,7 +647,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   );
   const contents = await buildContents(history, customerMessage, customerImages);
 
-  const deadline = Date.now() + REPLY_BUDGET_MS;
+  // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
+  const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
   const apiKeys = await getAllRawKeys();
 
   // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản hơn.
@@ -619,13 +675,14 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   if (Array.isArray(parsed?.messages)) list = parsed.messages;
   else if (typeof parsed?.messages === "string") list = [parsed.messages];
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
-  else if (!parsed && raw.trim()) list = [raw.trim()];
-  let messages = list.map((m) => stripBotNotes(m)).filter(Boolean).slice(0, 2);
+  else if (!parsed && raw.trim()) list = salvageMessages(raw);
+  let messages = list.map((m) => stripBotNotes(m).slice(0, 1900)).filter(Boolean).slice(0, 2);
   const openingRequested = !!parsed?.use_opening_product;
 
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
   if (parsed?.customer_info && typeof parsed.customer_info === "object") {
-    await mergeCustomerInfo(senderId, parsed.customer_info).catch((e) =>
+    const verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
+    await mergeCustomerInfo(senderId, verified).catch((e) =>
       console.error("Không lưu được thông tin khách:", e.message)
     );
   }
@@ -687,7 +744,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
       // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
       console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
-      const retried = await retryForcedText(systemPrompt, contents, deadline, apiKeys);
+      const retried = await retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDeadline);
       if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
       return fallback;
     }
@@ -796,7 +853,7 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
-async function retryForcedText(systemPrompt, contents, deadline, apiKeys) {
+async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDeadline = Date.now() + 50000) {
   try {
     const extra =
       "\n\nLƯU Ý BẮT BUỘC: mảng messages KHÔNG được rỗng. Câu mở đầu quảng cáo đã gửi rồi nên use_opening_product phải là null. " +
@@ -810,7 +867,7 @@ async function retryForcedText(systemPrompt, contents, deadline, apiKeys) {
         responseMimeType: "application/json",
         thinkingConfig: { thinkingLevel: "low" },
       },
-      Math.max(deadline, Date.now() + 15000), // luôn chừa ít nhất 15s cho lần thử lại này
+      Math.min(Math.max(deadline, Date.now() + 15000), hardDeadline), // chừa tới 15s cho lần thử lại, nhưng không vượt giới hạn 60s của Vercel
       apiKeys
     );
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
@@ -870,7 +927,7 @@ async function fbAction(recipientId, action, token) {
 }
 
 async function sendMessage(recipientId, text, token) {
-  await fbPost({
+  return await fbPost({
     recipient: { id: recipientId },
     message: { text },
     messaging_type: "RESPONSE",
