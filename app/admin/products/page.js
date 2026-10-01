@@ -408,9 +408,17 @@ export default function AdminPage() {
     <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 1180, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
         <h1 style={{ margin: 0 }}>Quản lý sản phẩm</h1>
-        <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
-          <ChatIcon />
-        </a>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <a
+            href="/admin/products/training"
+            style={{ ...navButtonStyle, width: "auto", padding: "0 14px", fontSize: 14, fontWeight: 600 }}
+          >
+            Dạy bot
+          </a>
+          <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
+            <ChatIcon />
+          </a>
+        </div>
       </div>
       <p style={{ color: "#666", marginTop: 8 }}>
         Bot dùng đúng danh sách này (nội dung và ảnh) để tư vấn khách trên Messenger.

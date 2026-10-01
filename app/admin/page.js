@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BoxIcon, KeyIcon, SettingsIcon, BellIcon, navButtonStyle } from "./icons";
+import { BoxIcon, KeyIcon, SettingsIcon, navButtonStyle } from "./icons";
 
 function displayName(name, id) {
   return name || `Khách ${String(id || "").slice(-4)}`;
@@ -1111,9 +1111,6 @@ export default function ChatAdminPage() {
         >
           <KeyIcon />
         </button>
-        <a href="/admin/followup" title="Nhắc khách quay lại" aria-label="Nhắc khách quay lại" style={navButtonStyle}>
-          <BellIcon />
-        </a>
         <a href="/admin/products" title="Quản lý sản phẩm" aria-label="Quản lý sản phẩm" style={navButtonStyle}>
           <BoxIcon />
         </a>
