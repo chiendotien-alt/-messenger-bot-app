@@ -204,14 +204,27 @@ export default function FollowupPage() {
         </div>
       )}
 
+      <div style={card}>
+        <b>Bot tự chạy thế nào?</b>
+        <p style={{ color: "#444", fontSize: 14, margin: "8px 0 0", lineHeight: 1.6 }}>
+          Bạn <b>không phải cài thêm gì</b>. Khi nút ở đầu trang đang BẬT, bot tự nhắc khách theo 2 cách:
+          (1) mỗi khi có tin nhắn khách gửi về, bot kiểm tra và nhắc dần vài khách (cách nhau ít nhất 5 phút);
+          (2) mỗi ngày 1 lần vào khoảng 12 giờ trưa, bot quét và nhắc các khách còn sót.
+          Muốn tắt thì bỏ tick ở đầu trang.
+        </p>
+      </div>
+
       <details style={card}>
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Cách để bot tự chạy định kỳ (làm 1 lần)</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Không bắt buộc: chạy đều hơn bằng cron-job.org</summary>
+        <p style={{ color: "#666", fontSize: 14 }}>
+          Chỉ cần nếu shop ít tin nhắn và bạn muốn bot nhắc đúng giờ hơn. Làm 1 lần:
+        </p>
         <ol style={{ lineHeight: 1.7, paddingLeft: 20 }}>
           <li>Vào <b>cron-job.org</b>, tạo tài khoản miễn phí, bấm <b>Create cronjob</b>.</li>
           <li>Ô <b>URL</b> dán: <code style={{ background: "#f3f4f6", padding: "2px 6px", borderRadius: 4 }}>{origin}/api/followup/run</code></li>
           <li>Chọn lịch: <b>Every 5 minutes</b> (mỗi 5 phút).</li>
           <li>Mở mục <b>Advanced</b> → bật <b>HTTP authentication</b> → nhập đúng tên đăng nhập và mật khẩu bạn dùng vào trang quản trị này.</li>
-          <li>Bấm <b>Create</b>. Xong. Chỉ khi nút ở trên đang BẬT thì bot mới nhắn.</li>
+          <li>Bấm <b>Create</b>. Xong.</li>
         </ol>
       </details>
     </main>

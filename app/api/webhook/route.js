@@ -32,6 +32,7 @@ import {
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
+import { maybeRunFollowup } from "@/lib/followup";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 // GOOGLE_API_KEY (biến môi trường) + các key thêm bằng nút 🔑 trên trang quản trị — xem lib/apiKeys.js
@@ -91,6 +92,7 @@ export async function GET(req) {
 
 // ---- 2. Facebook gọi POST mỗi khi có tin nhắn mới từ khách ----
 export async function POST(req) {
+  const startedAt = Date.now();
   const body = await req.json();
 
   if (body.object !== "page") {
@@ -243,6 +245,12 @@ export async function POST(req) {
         ).catch(() => {});
       }
     }
+  }
+
+  // Tự nhắc khách quay lại (nếu đang bật): tận dụng lúc có tin nhắn về, không cần dịch vụ hẹn giờ bên ngoài.
+  // Chỉ chạy khi xử lý tin chưa quá lâu, và mọi lỗi đều bỏ qua để không ảnh hưởng việc trả lời khách.
+  if (Date.now() - startedAt < 22000) {
+    await maybeRunFollowup().catch((e) => console.error("Lỗi tự nhắc khách:", e.message));
   }
 
   // Luôn trả 200 cho Facebook để nó không gửi lại (retry) sự kiện
