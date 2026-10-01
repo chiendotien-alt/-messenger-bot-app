@@ -282,16 +282,27 @@ export default function AdminPage() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    if (saving) return; // chống bấm 2 lần
     setSaving(true);
-    await fetch("/api/products", {
-      method: editingId ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(editingId ? { id: editingId, ...cleanForm(form) } : cleanForm(form)),
-    });
-    setForm(EMPTY_FORM);
-    setEditingId(null);
+    try {
+      const res = await fetch("/api/products", {
+        method: editingId ? "PUT" : "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editingId ? { id: editingId, ...cleanForm(form) } : cleanForm(form)),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        alert("Lưu CHƯA được: " + (d.error || "lỗi mạng") + "\nForm vẫn giữ nguyên, bạn bấm Lưu lại nhé.");
+        setSaving(false);
+        return;
+      }
+      setForm(EMPTY_FORM);
+      setEditingId(null);
+      await load();
+    } catch (err) {
+      alert("Lưu CHƯA được (mạng bị lỗi). Form vẫn giữ nguyên, bạn bấm Lưu lại nhé.");
+    }
     setSaving(false);
-    load();
   }
 
   function setLabel(url, value) {
@@ -365,21 +376,23 @@ export default function AdminPage() {
   async function handleMovePage(p, newPageIds) {
     const { pageId: _old, ...rest } = p;
     const updated = { ...rest, pageIds: newPageIds };
-    await fetch("/api/products", {
+    const res = await fetch("/api/products", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(updated),
     });
+    if (!res.ok) alert("Chuyển Page CHƯA được, thử lại nhé.");
     load();
   }
 
   async function handleDelete(id) {
     if (!confirm("Xóa sản phẩm này?")) return;
-    await fetch("/api/products", {
+    const res = await fetch("/api/products", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id }),
     });
+    if (!res.ok) alert("Xóa CHƯA được, thử lại nhé.");
     load();
   }
 

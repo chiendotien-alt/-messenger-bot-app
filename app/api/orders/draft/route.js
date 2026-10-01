@@ -3,7 +3,7 @@ export const revalidate = 0;
 export const maxDuration = 60;
 
 import { NextResponse } from "next/server";
-import { getConversation, extractPhone } from "@/lib/conversations";
+import { getConversation, extractPhone, getCustomerInfo } from "@/lib/conversations";
 import { getProducts, filterProductsForPage } from "@/lib/products";
 import { getAllRawKeys } from "@/lib/apiKeys";
 
@@ -72,13 +72,16 @@ export async function POST(req) {
         break;
       }
     }
+    // Thông tin bot đã ghi nhớ trong lúc chat (tên nhận hàng, SĐT, địa chỉ, màu/size) — dùng làm nền, AI đọc chat sẽ ghi đè nếu có mới hơn
+    const saved = await getCustomerInfo(conversationId).catch(() => ({}));
+    if (!phone && saved.phone) phone = saved.phone;
     const order = {
-      customerName: conv.name || "",
+      customerName: saved.name || conv.name || "",
       phone,
-      address: "",
+      address: saved.address || "",
       productId: "",
       productName: "",
-      variant: "",
+      variant: saved.variant || "",
       quantity: 1,
       unitPrice: 0,
       shipFee: 0,

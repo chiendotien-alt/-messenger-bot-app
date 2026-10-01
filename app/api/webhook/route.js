@@ -24,6 +24,10 @@ import {
   isInOpeningWindow,
   getFirstPendingCustomerAgeMs,
   hasAdminMessage,
+  hasNewerDifferentCustomerMessage,
+  getCustomerInfo,
+  mergeCustomerInfo,
+  extractPhone,
 } from "@/lib/conversations";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
@@ -66,6 +70,9 @@ const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(pro
 // Khách mới mà bot chưa đoán được họ hỏi sản phẩm nào → vẫn chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm đầu tiên có câu mở đầu
 // (thay vì để AI trả lời dài dòng). Đặt FIRST_CONTACT_DEFAULT_OPENING=0 để tắt.
 const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
+// ---- Khách ĐÃ CÓ cuộc trò chuyện nhắn liền mấy tin ngắn: chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần ----
+// (tin cuối cùng của loạt sẽ trả lời chung cho cả loạt; các tin trước tự dừng). Đặt REPLY_DEBOUNCE_MS=0 để tắt.
+const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 4000;
 const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
 const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
@@ -127,6 +134,9 @@ export async function POST(req) {
         await ensureProfile(senderId, pageToken).catch((e) =>
           console.error("Lỗi hồ sơ khách:", e.message)
         );
+        // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
+        const phoneInMsg = extractPhone(text);
+        if (phoneInMsg) await mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {});
 
         const settings = await getSettings();
         if (settings.botEnabled === false) {
@@ -162,6 +172,16 @@ export async function POST(req) {
         if (OPENING_BURST_MS > 0 && (await isInOpeningWindow(senderId, messageId, OPENING_BURST_MS).catch(() => false))) {
           console.log("Tin khách gõ trong loạt tin đầu, bỏ qua:", text);
           continue;
+        }
+
+        // Khách cũ nhắn liền mấy tin ngắn ("giá sao" / "có ship k" / "size L"): chờ vài giây, chỉ tin cuối trả lời cho cả loạt.
+        // Bấm nút/câu hỏi có sẵn (postback) thì trả lời ngay, không chờ.
+        if (!firstContact && !event.postback && REPLY_DEBOUNCE_MS > 0 && messageId) {
+          await sleep(REPLY_DEBOUNCE_MS);
+          if (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
+            console.log("Khách nhắn tiếp tin mới → để tin cuối cùng trả lời chung:", text);
+            continue;
+          }
         }
 
         // Khách bấm câu hỏi có sẵn nhiều lần / gửi trùng trong vài phút → chỉ trả lời 1 lần
@@ -314,7 +334,13 @@ const MAX_IMAGES = 4;
 const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
 const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
 
-function buildSystemPrompt(catalogText, shopInfo, currentProduct, customerName) {
+function buildSystemPrompt(catalogText, shopInfo, currentProduct, customerName, customerInfo = {}) {
+  const infoLines = [
+    customerInfo.name && `tên nhận hàng: ${customerInfo.name}`,
+    customerInfo.phone && `số điện thoại: ${customerInfo.phone}`,
+    customerInfo.address && `địa chỉ: ${customerInfo.address}`,
+    customerInfo.variant && `màu/size/mẫu đã chọn: ${customerInfo.variant}`,
+  ].filter(Boolean);
   return `Bạn là nhân viên tư vấn bán hàng của shop, đang nhắn tin với khách qua Messenger.
 Mục tiêu: tư vấn đúng nhu cầu và giúp khách chốt đơn, nhưng cảm giác như một người thật nhắn tin, không phải máy trả lời tự động.
 
@@ -340,6 +366,7 @@ CÁCH TƯ VẤN
 - Mỗi lượt chỉ hỏi lại tối đa 1 câu, và là câu cụ thể giúp tư vấn (vd: nhà mấy người, dùng để làm gì, cần màu/size nào).
 - Chỉ nói "chưa rõ ý" khi thật sự không đoán được từ ngữ cảnh; khi đó hỏi lại đúng 1 điểm cụ thể.
 - Khi khách có dấu hiệu muốn mua, xin nhẹ nhàng số điện thoại, địa chỉ, số lượng để lên đơn. Không ép mua.
+- Mục THÔNG TIN KHÁCH ĐÃ CUNG CẤP là những gì khách đã nói và hệ thống đã lưu: TUYỆT ĐỐI không hỏi lại những thứ đã có, chỉ hỏi phần còn thiếu để lên đơn. Nếu khách đổi thông tin (địa chỉ mới, đổi size...) thì ghi nhận cái mới.
 - Giá bán, size, màu, ưu đãi nằm trong phần "Nội dung" của từng sản phẩm; đọc kỹ để báo đúng giá theo số lượng khách hỏi.
 - Mỗi sản phẩm có thể có dòng "LƯU Ý CỦA CHỦ SHOP": đó là chỉ dẫn riêng của chủ shop cho sản phẩm đó, luôn tuân theo.
 - Chỉ dùng thông tin trong danh sách sản phẩm và thông tin shop bên dưới. Không bịa giá, tính năng, khuyến mãi, thời gian giao hàng. Nếu chưa có thông tin thì nói shop sẽ kiểm tra lại và mời khách để lại số điện thoại.
@@ -365,9 +392,10 @@ GỬI ẢNH
 - Khi gửi ảnh, viết 1 tin ngắn dẫn vào (vd: "shop gửi anh xem ảnh nhé"). Không gửi lại ảnh đã gửi ở các tin trước.
 
 ĐỊNH DẠNG TRẢ LỜI: chỉ trả về JSON hợp lệ, không thêm chữ nào khác:
-{"messages": ["tin 1", "tin 2 (nếu cần)"], "send_images": null, "use_opening_product": null}
-hoặc {"messages": ["..."], "send_images": {"product_id": "id sản phẩm", "type": "sample" | "real" | "both", "image_ids": ["S1"]}, "use_opening_product": null}
+{"messages": ["tin 1", "tin 2 (nếu cần)"], "send_images": null, "use_opening_product": null, "customer_info": null}
+hoặc {"messages": ["..."], "send_images": {"product_id": "id sản phẩm", "type": "sample" | "real" | "both", "image_ids": ["S1"]}, "use_opening_product": null, "customer_info": {"name": "", "phone": "", "address": "", "variant": ""}}
 (image_ids chỉ điền khi khách hỏi mẫu/màu cụ thể; use_opening_product là id sản phẩm hoặc null)
+(customer_info: CHỈ điền những gì khách vừa nói ra trong cuộc trò chuyện — name = tên người nhận hàng, phone = số điện thoại, address = địa chỉ nhận hàng, variant = màu/size/mẫu khách chọn. Ô nào khách chưa nói thì để chuỗi rỗng, không đoán, không bịa. Khách không nói gì thêm thì để null)
 
 SẢN PHẨM KHÁCH ĐANG QUAN TÂM
 ${
@@ -375,6 +403,9 @@ ${
     ? `Khách đang hỏi về sản phẩm [id: ${currentProduct.id}] ${currentProduct.name} (xác định từ câu hỏi quảng cáo khách bấm hoặc từ tên khách nhắc). Khi khách hỏi chung chung (giá, ảnh, còn hàng, size...) mà không nêu tên sản phẩm thì hiểu là hỏi sản phẩm này và dùng đúng id này cho send_images / use_opening_product. Chỉ chuyển sang sản phẩm khác khi khách nhắc rõ.`
     : "Chưa xác định được khách hỏi sản phẩm nào."
 }
+
+THÔNG TIN KHÁCH ĐÃ CUNG CẤP (đã lưu, không hỏi lại):
+${infoLines.length ? infoLines.join("\n") : "(chưa có)"}
 
 THÔNG TIN & QUY TẮC CỦA SHOP (do chủ shop cung cấp):
 ${shopInfo?.trim() || "(chủ shop chưa cung cấp thêm)"}
@@ -543,11 +574,13 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
 
   const customerName = await getCustomerName(senderId).catch(() => null);
+  const customerInfo = await getCustomerInfo(senderId).catch(() => ({}));
   const systemPrompt = buildSystemPrompt(
     formatProductsForPrompt(products),
     settings.botPrompt,
     currentProduct,
-    customerName
+    customerName,
+    customerInfo
   );
   const contents = await buildContents(history, customerMessage, customerImages);
 
@@ -581,6 +614,13 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (!parsed && raw.trim()) list = [raw.trim()];
   let messages = list.map((m) => stripBotNotes(m)).filter(Boolean).slice(0, 2);
   const openingRequested = !!parsed?.use_opening_product;
+
+  // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
+  if (parsed?.customer_info && typeof parsed.customer_info === "object") {
+    await mergeCustomerInfo(senderId, parsed.customer_info).catch((e) =>
+      console.error("Không lưu được thông tin khách:", e.message)
+    );
+  }
 
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")
   if (parsed?.use_opening_product) {

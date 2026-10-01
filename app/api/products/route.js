@@ -3,38 +3,47 @@ export const revalidate = 0;
 
 // app/api/products/route.js
 import { NextResponse } from "next/server";
-import { getProducts, saveProducts } from "@/lib/products";
+import { getProducts, addProduct, updateProduct, deleteProduct } from "@/lib/products";
+
+function fail(err) {
+  console.error("Lỗi sản phẩm:", err);
+  return NextResponse.json({ error: String(err?.message || err) }, { status: 500 });
+}
 
 export async function GET() {
   const products = await getProducts();
-  return NextResponse.json(products);
+  return NextResponse.json(products, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(req) {
-  const newProduct = await req.json();
-  const products = await getProducts();
-  const id = Date.now().toString();
-  products.push({ id, ...newProduct });
-  await saveProducts(products);
-  return NextResponse.json({ ok: true, id });
+  try {
+    const newProduct = await req.json();
+    const id = await addProduct(newProduct);
+    return NextResponse.json({ ok: true, id });
+  } catch (err) {
+    return fail(err);
+  }
 }
 
 export async function PUT(req) {
-  const updated = await req.json();
-  const products = await getProducts();
-  const idx = products.findIndex((p) => p.id === updated.id);
-  if (idx === -1) {
-    return NextResponse.json({ error: "Không tìm thấy sản phẩm" }, { status: 404 });
+  try {
+    const updated = await req.json();
+    const found = await updateProduct(updated);
+    if (!found) {
+      return NextResponse.json({ error: "Không tìm thấy sản phẩm" }, { status: 404 });
+    }
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return fail(err);
   }
-  products[idx] = updated;
-  await saveProducts(products);
-  return NextResponse.json({ ok: true });
 }
 
 export async function DELETE(req) {
-  const { id } = await req.json();
-  const products = await getProducts();
-  const filtered = products.filter((p) => p.id !== id);
-  await saveProducts(filtered);
-  return NextResponse.json({ ok: true });
+  try {
+    const { id } = await req.json();
+    await deleteProduct(id);
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return fail(err);
+  }
 }
