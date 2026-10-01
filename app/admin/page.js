@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
 import { BoxIcon, KeyIcon, SettingsIcon, navButtonStyle } from "./icons";
+import TeachChat from "./TeachChat";
 
 function displayName(name, id) {
   return name || `Khách ${String(id || "").slice(-4)}`;
@@ -893,6 +894,8 @@ export default function ChatAdminPage() {
       setOrdersByConv(map);
     } catch {}
   }, []);
+  const [teachMode, setTeachMode] = useState(false); // đang ở chế độ "Dạy bot"
+  const [teachEver, setTeachEver] = useState(false); // đã mở Dạy bot ít nhất 1 lần (giữ đoạn chat đang soạn khi bấm sang chat khác)
   const [phoneOnly, setPhoneOnly] = useState(false); // chỉ hiện khách đã để lại số điện thoại
   const phoneOnlyRef = useRef(false);
 
@@ -1142,7 +1145,7 @@ export default function ChatAdminPage() {
             onToggleBot={togglePageBot}
             globalBotEnabled={botEnabled}
           />
-          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0" }}>
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 8, flexWrap: "wrap" }}>
             <button
               onClick={togglePhoneOnly}
               aria-pressed={phoneOnly}
@@ -1158,6 +1161,25 @@ export default function ChatAdminPage() {
             >
               📞 Chỉ khách có số điện thoại{phoneOnly ? " ✓" : ""}
             </button>
+            <button
+              onClick={() => {
+                setTeachEver(true);
+                setTeachMode((v) => !v);
+              }}
+              aria-pressed={teachMode}
+              style={{
+                border: teachMode ? "1px solid #0b6bcb" : "1px solid #bfdbfe",
+                background: teachMode ? "#0b6bcb" : "#eff6ff",
+                color: teachMode ? "#fff" : "#1d4ed8",
+                borderRadius: 999,
+                padding: "5px 12px",
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              🎓 Dạy bot
+            </button>
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
           {conversations.length === 0 && (
@@ -1168,14 +1190,17 @@ export default function ChatAdminPage() {
           {conversations.map((c) => (
             <div
               key={c.id}
-              onClick={() => setSelectedId(c.id)}
+              onClick={() => {
+                setTeachMode(false);
+                setSelectedId(c.id);
+              }}
               style={{
                 display: "flex",
                 gap: 12,
                 alignItems: "center",
                 padding: "12px 16px",
                 cursor: "pointer",
-                background: selectedId === c.id ? "#eef2ff" : "transparent",
+                background: selectedId === c.id && !teachMode ? "#eef2ff" : "transparent",
                 borderBottom: "1px solid #f5f5f5",
               }}
             >
@@ -1241,7 +1266,14 @@ export default function ChatAdminPage() {
           </div>
         </aside>
 
+        {/* Chế độ Dạy bot (giữ nguyên đoạn đang soạn khi bấm sang chat khác) */}
+        {teachEver && (
+          <div style={{ display: teachMode ? "contents" : "none" }}>
+            <TeachChat onExit={() => setTeachMode(false)} />
+          </div>
+        )}
         {/* Khung chat */}
+        {!teachMode && (
         <section style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {!selectedId ? (
             <div style={{ margin: "auto", color: "#888" }}>Chọn một hội thoại để xem</div>
@@ -1364,7 +1396,8 @@ export default function ChatAdminPage() {
             </>
           )}
         </section>
-        {selectedId && (
+        )}
+        {!teachMode && selectedId && (
           <OrderPanel
             key={selectedId}
             conversationId={selectedId}

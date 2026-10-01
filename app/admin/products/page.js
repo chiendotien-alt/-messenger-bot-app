@@ -413,7 +413,7 @@ export default function AdminPage() {
             href="/admin/products/training"
             style={{ ...navButtonStyle, width: "auto", padding: "0 14px", fontSize: 14, fontWeight: 600 }}
           >
-            Dạy bot
+            Câu đã dạy (cũ)
           </a>
           <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
             <ChatIcon />
