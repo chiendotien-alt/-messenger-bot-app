@@ -605,6 +605,15 @@ const ORDER_STATUS = {
   returned: { label: "Hoàn / Hủy", color: "#dc2626" },
 };
 const statusOf = (o) => (ORDER_STATUS[o?.status] ? o.status : "draft");
+const filterFieldStyle = { height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, color: "#111827", width: "100%", boxSizing: "border-box", outline: "none" };
+const filterLabelStyle = { fontSize: 11, fontWeight: 600, letterSpacing: 0.4, color: "#6b7280", textTransform: "uppercase", marginBottom: 5 };
+const filterChipStyle = (active) => ({
+  height: 28, padding: "0 11px", borderRadius: 999, fontSize: 12.5, cursor: "pointer", whiteSpace: "nowrap",
+  border: active ? "1px solid #4f46e5" : "1px solid #d1d5db",
+  background: active ? "#eef2ff" : "#fff",
+  color: active ? "#4338ca" : "#374151",
+  fontWeight: active ? 600 : 400,
+});
 // Ngày hôm nay theo giờ Việt Nam (YYYY-MM-DD), cộng/trừ thêm n ngày
 function vnDay(offset = 0) {
   const t = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
@@ -929,6 +938,7 @@ export default function ChatAdminPage() {
   const [dateFrom, setDateFrom] = useState(""); // YYYY-MM-DD, trống = không giới hạn
   const [dateTo, setDateTo] = useState("");
   const rangeRef = useRef("|");
+  const [cleanup, setCleanup] = useState({ phase: "idle", count: 0, msg: "" }); // idle | loading | confirm | deleting | done | error
   const [orderFilter, setOrderFilter] = useState("all"); // all | none | draft | shipped | delivered | returned
 
   const loadOrders = useCallback(async () => {
@@ -1043,6 +1053,39 @@ export default function ChatAdminPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [current.messages.length, selectedId]);
+
+  // Dọn chat không có SĐT, không có đơn, quá 48 giờ không có tin mới (xem trước → xác nhận → xóa)
+  async function startCleanup() {
+    setCleanup({ phase: "loading", count: 0, msg: "" });
+    try {
+      const qs = pageFilter !== "all" ? `?pageId=${encodeURIComponent(pageFilter)}` : "";
+      const res = await fetch("/api/conversations/cleanup" + qs, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lỗi");
+      if (!data.count) setCleanup({ phase: "done", count: 0, msg: "Không có cuộc chat nào cần dọn." });
+      else setCleanup({ phase: "confirm", count: data.count, msg: "" });
+    } catch (e) {
+      setCleanup({ phase: "error", count: 0, msg: "Không kiểm tra được: " + (e.message || e) });
+    }
+  }
+
+  async function confirmCleanup() {
+    setCleanup((c) => ({ ...c, phase: "deleting" }));
+    try {
+      const res = await fetch("/api/conversations/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pageId: pageFilter !== "all" ? pageFilter : null }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lỗi");
+      setCleanup({ phase: "done", count: 0, msg: `Đã xóa ${data.deleted} cuộc chat.` });
+      setSelectedId(null);
+      loadConversations();
+    } catch (e) {
+      setCleanup({ phase: "error", count: 0, msg: "Xóa không thành công: " + (e.message || e) });
+    }
+  }
 
   function applyRange(from, to) {
     rangeRef.current = `${from}|${to}`;
@@ -1223,22 +1266,26 @@ export default function ChatAdminPage() {
             onToggleBot={togglePageBot}
             globalBotEnabled={botEnabled}
           />
-          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 8, flexWrap: "wrap" }}>
-            <button
-              onClick={togglePhoneOnly}
-              aria-pressed={phoneOnly}
-              style={{
-                border: phoneOnly ? "1px solid #16a34a" : "1px solid #ddd",
-                background: phoneOnly ? "#e8f7ee" : "#fff",
-                color: phoneOnly ? "#166534" : "#555",
-                borderRadius: 999,
-                padding: "5px 12px",
-                fontSize: 13,
-                cursor: "pointer",
-              }}
-            >
-              📞 Chỉ khách có số điện thoại{phoneOnly ? " ✓" : ""}
-            </button>
+          {/* Thanh công cụ: Tất cả / Có SĐT + Dạy bot */}
+          <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 10, alignItems: "center" }}>
+            <div style={{ display: "flex", flex: 1, background: "#f3f4f6", borderRadius: 9, padding: 3 }}>
+              {[[false, "Tất cả khách"], [true, "Có số điện thoại"]].map(([val, label]) => (
+                <button
+                  key={label}
+                  onClick={() => phoneOnly !== val && togglePhoneOnly()}
+                  aria-pressed={phoneOnly === val}
+                  style={{
+                    flex: 1, height: 30, border: "none", borderRadius: 7, cursor: "pointer", fontSize: 13,
+                    background: phoneOnly === val ? "#fff" : "transparent",
+                    color: phoneOnly === val ? "#111827" : "#6b7280",
+                    fontWeight: phoneOnly === val ? 600 : 500,
+                    boxShadow: phoneOnly === val ? "0 1px 2px rgba(0,0,0,0.12)" : "none",
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <button
               onClick={() => {
                 setTeachEver(true);
@@ -1246,69 +1293,127 @@ export default function ChatAdminPage() {
               }}
               aria-pressed={teachMode}
               style={{
-                border: teachMode ? "1px solid #0b6bcb" : "1px solid #bfdbfe",
-                background: teachMode ? "#0b6bcb" : "#eff6ff",
+                height: 36, padding: "0 14px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                border: "1px solid #1d4ed8",
+                background: teachMode ? "#1d4ed8" : "#fff",
                 color: teachMode ? "#fff" : "#1d4ed8",
-                borderRadius: 999,
-                padding: "5px 12px",
-                fontSize: 13,
-                fontWeight: 600,
-                cursor: "pointer",
               }}
             >
-              🎓 Dạy bot
+              Dạy bot
             </button>
           </div>
-          {/* Lọc chat theo thời gian + theo tình trạng đơn */}
-          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 13 }}>
-            <select
-              value={timePreset}
-              onChange={(e) => changeTimePreset(e.target.value)}
-              style={{ padding: "5px 8px", borderRadius: 8, border: timePreset !== "all" ? "1px solid #4f46e5" : "1px solid #ddd", background: "#fff", fontSize: 13 }}
-              aria-label="Lọc chat theo thời gian"
-            >
-              <option value="all">🕒 Mọi thời gian</option>
-              <option value="today">Hôm nay</option>
-              <option value="yesterday">Hôm qua</option>
-              <option value="7d">7 ngày qua</option>
-              <option value="30d">30 ngày qua</option>
-              <option value="custom">Chọn ngày...</option>
-            </select>
+
+          {/* Bộ lọc: thời gian (từ ngày → đến ngày) + tình trạng đơn */}
+          <div style={{ padding: "12px 16px", borderBottom: "1px solid #f0f0f0", background: "#fafafa" }}>
+            <div style={filterLabelStyle}>Thời gian</div>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+              {[["all", "Tất cả"], ["today", "Hôm nay"], ["yesterday", "Hôm qua"], ["7d", "7 ngày"], ["30d", "30 ngày"]].map(([k, label]) => (
+                <button key={k} onClick={() => changeTimePreset(k)} style={filterChipStyle(timePreset === k)}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>Từ ngày</div>
+                <input
+                  type="date"
+                  value={dateFrom}
+                  max={dateTo || vnDay(0)}
+                  onChange={(e) => {
+                    setTimePreset("custom");
+                    applyRange(e.target.value, dateTo);
+                  }}
+                  style={{ ...filterFieldStyle, borderColor: dateFrom ? "#4f46e5" : "#d1d5db" }}
+                />
+              </div>
+              <span style={{ color: "#9ca3af", marginTop: 18 }}>→</span>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 3 }}>Đến ngày</div>
+                <input
+                  type="date"
+                  value={dateTo}
+                  min={dateFrom || undefined}
+                  max={vnDay(0)}
+                  onChange={(e) => {
+                    setTimePreset("custom");
+                    applyRange(dateFrom, e.target.value);
+                  }}
+                  style={{ ...filterFieldStyle, borderColor: dateTo ? "#4f46e5" : "#d1d5db" }}
+                />
+              </div>
+            </div>
+            <div style={filterLabelStyle}>Tình trạng đơn</div>
             <select
               value={orderFilter}
               onChange={(e) => setOrderFilter(e.target.value)}
-              style={{ padding: "5px 8px", borderRadius: 8, border: orderFilter !== "all" ? "1px solid #4f46e5" : "1px solid #ddd", background: "#fff", fontSize: 13 }}
+              style={{ ...filterFieldStyle, borderColor: orderFilter !== "all" ? "#4f46e5" : "#d1d5db" }}
               aria-label="Lọc theo tình trạng đơn"
             >
-              <option value="all">🧾 Mọi tình trạng đơn</option>
+              <option value="all">Tất cả</option>
               <option value="none">Chưa có đơn</option>
               <option value="draft">Mới tạo (chưa gửi)</option>
               <option value="shipped">Đã gửi hàng</option>
               <option value="delivered">Đã giao</option>
               <option value="returned">Hoàn / Hủy</option>
             </select>
-            {timePreset === "custom" && (
-              <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
-                <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => applyRange(e.target.value, dateTo)} style={{ flex: 1, minWidth: 0, padding: "4px 6px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }} />
-                <span style={{ color: "#888" }}>→</span>
-                <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => applyRange(dateFrom, e.target.value)} style={{ flex: 1, minWidth: 0, padding: "4px 6px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }} />
-              </div>
-            )}
-            {filtering && (
-              <span style={{ color: "#666", fontSize: 12 }}>
-                {shownConversations.length} cuộc chat
-                {" · "}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 12.5, color: "#6b7280" }}>
+              <span>
+                <strong style={{ color: "#111827" }}>{shownConversations.length}</strong> cuộc chat
+              </span>
+              {filtering && (
                 <button
                   onClick={() => {
                     changeTimePreset("all");
                     setOrderFilter("all");
                   }}
-                  style={{ border: "none", background: "transparent", color: "#4f46e5", cursor: "pointer", fontSize: 12, padding: 0 }}
+                  style={{ border: "none", background: "transparent", color: "#4f46e5", cursor: "pointer", fontSize: 12.5, fontWeight: 600, padding: 0 }}
                 >
-                  Xóa lọc
+                  Xóa bộ lọc
                 </button>
-              </span>
-            )}
+              )}
+            </div>
+
+            {/* Dọn chat không có SĐT quá 48 giờ */}
+            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e5e7eb" }}>
+              {cleanup.phase === "idle" || cleanup.phase === "done" || cleanup.phase === "error" ? (
+                <>
+                  <button
+                    onClick={startCleanup}
+                    style={{ width: "100%", height: 34, borderRadius: 8, border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Dọn chat không có SĐT quá 48 giờ
+                  </button>
+                  {cleanup.msg && (
+                    <div style={{ marginTop: 6, fontSize: 12.5, color: cleanup.phase === "error" ? "#b91c1c" : "#166534" }}>{cleanup.msg}</div>
+                  )}
+                </>
+              ) : cleanup.phase === "loading" ? (
+                <div style={{ fontSize: 13, color: "#6b7280" }}>Đang kiểm tra...</div>
+              ) : (
+                <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: 12 }}>
+                  <div style={{ fontSize: 13, color: "#7f1d1d", lineHeight: 1.5 }}>
+                    Sẽ xóa <strong>{cleanup.count}</strong> cuộc chat{pageFilter !== "all" ? " của Fanpage đang chọn" : " (tất cả Fanpage)"}: khách chưa để lại số điện thoại, chưa có đơn hàng và đã hơn 48 giờ không nhắn. <strong>Không thể khôi phục.</strong>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={() => setCleanup({ phase: "idle", count: 0, msg: "" })}
+                      disabled={cleanup.phase === "deleting"}
+                      style={{ flex: 1, height: 34, borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", color: "#374151", fontSize: 13, cursor: "pointer" }}
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      onClick={confirmCleanup}
+                      disabled={cleanup.phase === "deleting"}
+                      style={{ flex: 2, height: 34, borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: cleanup.phase === "deleting" ? 0.6 : 1 }}
+                    >
+                      {cleanup.phase === "deleting" ? "Đang xóa..." : `Xóa ${cleanup.count} cuộc chat`}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
           {shownConversations.length === 0 && (

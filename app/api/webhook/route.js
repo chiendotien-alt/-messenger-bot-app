@@ -111,7 +111,7 @@ export async function POST(req) {
       // Tin do CHỦ PAGE gửi (từ điện thoại / Messenger / Business Suite) → Facebook gửi về dạng "echo".
       // Lưu lại để hiện trên trang quản trị, KHÔNG cho bot trả lời.
       if (event.message?.is_echo) {
-        await handleEcho(event, pageId).catch((e) => console.error("Lỗi lưu tin echo:", e.message));
+        await handleEcho(event, pageId, pageToken).catch((e) => console.error("Lỗi lưu tin echo:", e.message));
         continue;
       }
 
@@ -295,18 +295,32 @@ export async function POST(req) {
 // app_id = app đã gửi tin. Tin do chính bot/trang quản trị này gửi thì app_id trùng FB_APP_ID
 // (những tin đó đã được lưu ngay lúc gửi nên phải bỏ qua để không bị lưu 2 lần).
 // Tin gửi từ điện thoại/Page Inbox thì không có app_id, hoặc là app khác của Facebook.
-async function handleEcho(event, pageId) {
+// ID của chính app bot này (để phân biệt tin bot gửi với tin chủ shop nhắn bằng điện thoại / Business Suite).
+// Ưu tiên biến FB_APP_ID; nếu chưa khai báo thì hỏi Facebook bằng token của Page (nhớ lại, chỉ hỏi 1 lần).
+let cachedOwnAppId = null;
+async function getOwnAppId(pageToken) {
+  if (process.env.FB_APP_ID) return String(process.env.FB_APP_ID);
+  if (cachedOwnAppId) return cachedOwnAppId;
+  if (!pageToken) return null;
+  try {
+    const res = await fetch(`https://graph.facebook.com/v19.0/app?access_token=${encodeURIComponent(pageToken)}`);
+    const d = await res.json().catch(() => ({}));
+    if (d && d.id) cachedOwnAppId = String(d.id);
+  } catch {}
+  return cachedOwnAppId;
+}
+
+async function handleEcho(event, pageId, pageToken) {
   const customerId = event.recipient?.id;
   const msg = event.message || {};
   if (!customerId || !msg.mid) return;
 
-  const ownAppId = process.env.FB_APP_ID ? String(process.env.FB_APP_ID) : null;
+  const ownAppId = await getOwnAppId(pageToken);
   const echoAppId = msg.app_id ? String(msg.app_id) : null;
-  const FB_PAGE_INBOX_APP_ID = "263902037430900"; // app "Page Inbox" của Facebook (tin gửi từ điện thoại/inbox)
-  const sentByThisApp = ownAppId
-    ? echoAppId === ownAppId
-    : Boolean(echoAppId) && echoAppId !== FB_PAGE_INBOX_APP_ID; // chưa khai báo FB_APP_ID → coi mọi app_id lạ là của bot
-  if (sentByThisApp) return;
+  // Chỉ bỏ qua khi CHẮC CHẮN là tin do chính bot này gửi (đã được lưu lúc gửi).
+  // Tin gửi từ điện thoại / Messenger / Business Suite có app_id khác hoặc không có → luôn lưu để hiện trên web.
+  console.log("Echo từ chủ Page:", { echoAppId, ownAppId, hasText: Boolean(msg.text), attachments: (msg.attachments || []).length });
+  if (ownAppId && echoAppId === ownAppId) return;
 
   const text = msg.text || "";
   const images = (msg.attachments || [])
