@@ -74,7 +74,7 @@ const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(pro
 const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
 // ---- Khách ĐÃ CÓ cuộc trò chuyện nhắn liền mấy tin ngắn: chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần ----
 // (tin cuối cùng của loạt sẽ trả lời chung cho cả loạt; các tin trước tự dừng). Đặt REPLY_DEBOUNCE_MS=0 để tắt.
-const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 2500; // 2.5 giây
+const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 3000; // 3 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
 const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
 const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
@@ -204,8 +204,28 @@ export async function POST(req) {
 
         const reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact, startedAt + 50000);
         if (reply.skip) continue;
+
+        // Trong lúc AI soạn câu trả lời (vài giây), khách có thể đã nhắn thêm tin mới →
+        // bỏ câu trả lời cũ này, để tin mới nhất trả lời gộp cho cả loạt (tránh bot trả lời lặp lại từng tin).
+        if (
+          !firstContact &&
+          !event.postback &&
+          messageId &&
+          (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false))
+        ) {
+          console.log("Khách nhắn thêm trong lúc bot soạn → bỏ câu trả lời cũ, chờ tin mới nhất:", text);
+          if (reply.openingProductId) await releaseOpening(senderId, reply.openingProductId).catch(() => {});
+          continue;
+        }
         const { messages, images, imageItems, imageNote } = reply;
         openedProductId = reply.openingProductId || null;
+
+        // Khách vừa nhắn thêm tin mới (sau tin đang xử lý) → không gửi nữa, để tin mới nhất trả lời gộp
+        const superseded = async () =>
+          !firstContact &&
+          !event.postback &&
+          !!messageId &&
+          (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false));
 
         const sendTexts = async () => {
           for (let i = 0; i < messages.length; i++) {
@@ -213,6 +233,12 @@ export async function POST(req) {
               await fbAction(senderId, "typing_on", pageToken);
             }
             await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
+            // Kiểm tra lần cuối ngay trước khi gửi từng tin
+            if (await superseded()) {
+              console.log("Khách nhắn thêm ngay trước lúc gửi → dừng, chờ tin mới nhất:", text);
+              if (i === 0 && openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
+              return false;
+            }
             const delivered = await sendMessage(senderId, messages[i], pageToken);
             if (!delivered) {
               // Facebook từ chối (quá 24 giờ, token hết hạn...) → KHÔNG lưu như đã gửi, để bot/shop không tưởng khách đã nhận
@@ -223,10 +249,12 @@ export async function POST(req) {
               console.error("Không lưu được tin của bot:", e.message)
             );
           }
+          return true;
         };
 
         const sendImages = async () => {
           if (!images.length) return;
+          if (await superseded()) return; // khách đã nhắn thêm → không gửi ảnh cũ
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
           await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
@@ -238,8 +266,8 @@ export async function POST(req) {
           if (images.length) await fbAction(senderId, "typing_on", pageToken);
           await sendTexts();
         } else {
-          await sendTexts();
-          await sendImages();
+          const sent = await sendTexts();
+          if (sent) await sendImages();
         }
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
@@ -565,6 +593,21 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   );
   const contents = await buildContents(history, customerMessage, customerImages);
 
+  // Khách vừa nhắn LIÊN TIẾP nhiều tin (chưa ai trả lời) → dặn AI đọc hết rồi trả lời gộp 1 lần
+  let burstNote = "";
+  if (!firstContact) {
+    const pendingMsgs = await getPendingCustomerMessages(senderId).catch(() => []);
+    const lines = pendingMsgs.map((m) => (m.text || "").trim() || "[ảnh]").filter(Boolean).slice(-8);
+    if (lines.length >= 2) {
+      burstNote =
+        "\n\nKHÁCH VỪA NHẮN LIÊN TIẾP " + lines.length + " TIN (shop chưa trả lời tin nào):\n" +
+        lines.map((l, i) => `${i + 1}. ${l}`).join("\n") +
+        "\nHãy đọc HẾT các tin này rồi trả lời MỘT lần, gộp gọn: trả lời các câu khách hỏi, ghi nhận thông tin khách vừa đưa (SĐT, địa chỉ, tên...) " +
+        "và chỉ hỏi thêm đúng phần còn thiếu để lên đơn (tối đa 1 câu hỏi). Không trả lời từng tin một.";
+    }
+  }
+  const finalPrompt = systemPrompt + burstNote;
+
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
   const apiKeys = await getAllRawKeys();
@@ -579,7 +622,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let raw = "";
   let usedModel = null;
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    const r = await callGemini(systemPrompt, contents, attempts[i], deadline, apiKeys);
+    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys);
     raw = r.text;
     usedModel = r.model;
   }
@@ -662,7 +705,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
       // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
       console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
-      const retried = await retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDeadline);
+      const retried = await retryForcedText(finalPrompt, contents, deadline, apiKeys, hardDeadline);
       if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
       return fallback;
     }
