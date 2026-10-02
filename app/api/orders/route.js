@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { listOrders, listAllOrders, saveOrder, deleteOrder } from "@/lib/orders";
+import { listOrders, listAllOrders, saveOrder, deleteOrder, setOrderStatus } from "@/lib/orders";
 
 export async function GET(req) {
   try {
@@ -25,6 +25,18 @@ export async function POST(req) {
     if (!conversationId || !order) return NextResponse.json({ error: "Thiếu dữ liệu đơn" }, { status: 400 });
     const newId = await saveOrder(conversationId, pageId, order, id);
     return NextResponse.json({ ok: true, id: newId });
+  } catch (err) {
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
+}
+
+// Tick tình trạng đơn bằng tay
+export async function PATCH(req) {
+  try {
+    const { id, status } = await req.json();
+    if (!id || !status) return NextResponse.json({ error: "Thiếu dữ liệu" }, { status: 400 });
+    await setOrderStatus(id, status);
+    return NextResponse.json({ ok: true });
   } catch (err) {
     return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
   }

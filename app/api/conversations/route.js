@@ -9,7 +9,10 @@ export async function GET(req) {
     const params = new URL(req.url).searchParams;
     const pageId = params.get("pageId");
     const phoneOnly = params.get("phone") === "1";
-    const list = await listConversations(pageId, phoneOnly);
+    const okDate = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
+    const from = okDate(params.get("from")); // YYYY-MM-DD (giờ Việt Nam)
+    const to = okDate(params.get("to"));
+    const list = await listConversations(pageId, phoneOnly, from, to);
     return NextResponse.json(list, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("Lỗi đọc danh sách hội thoại:", err);

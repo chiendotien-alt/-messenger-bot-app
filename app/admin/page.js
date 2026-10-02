@@ -596,6 +596,22 @@ function ApiKeysModal({ onClose }) {
 }
 
 const money = (n) => (Number(n) || 0).toLocaleString("vi-VN") + "đ";
+
+// Tình trạng đơn (tick bằng tay)
+const ORDER_STATUS = {
+  draft: { label: "Mới tạo", color: "#6b7280" },
+  shipped: { label: "Đã gửi hàng", color: "#2563eb" },
+  delivered: { label: "Đã giao", color: "#16a34a" },
+  returned: { label: "Hoàn / Hủy", color: "#dc2626" },
+};
+const statusOf = (o) => (ORDER_STATUS[o?.status] ? o.status : "draft");
+// Ngày hôm nay theo giờ Việt Nam (YYYY-MM-DD), cộng/trừ thêm n ngày
+function vnDay(offset = 0) {
+  const t = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" });
+  const d = new Date(t + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + offset);
+  return d.toISOString().slice(0, 10);
+}
 const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 8, border: "1px solid #ddd", fontSize: 14, boxSizing: "border-box" };
 const fmtDateTime = (d) => {
   if (!d) return "";
@@ -751,6 +767,21 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
     onChanged && onChanged();
   }
 
+  // Tick tình trạng đơn: gửi hàng → đã giao → (hoặc) hoàn/hủy. Bỏ tick thì lùi về mức trước.
+  async function toggleStatus(o, key) {
+    const cur = statusOf(o);
+    let next;
+    if (key === "shipped") next = cur === "shipped" || cur === "delivered" ? "draft" : "shipped";
+    else if (key === "delivered") next = cur === "delivered" ? "shipped" : "delivered";
+    else next = cur === "returned" ? "draft" : "returned";
+    setSaved((list) => list.map((x) => (x.id === o.id ? { ...x, status: next } : x)));
+    try {
+      await fetch("/api/orders", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: o.id, status: next }) });
+    } catch {}
+    loadSaved();
+    onChanged && onChanged();
+  }
+
   async function removeSaved(id) {
     if (!confirm("Xóa đơn này?")) return;
     await fetch("/api/orders", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
@@ -844,8 +875,8 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
             key={o.id}
             style={{ border: orderId === o.id ? "1px solid #16a34a" : "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10, fontSize: 13, background: "#fff", overflow: "hidden" }}
           >
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "#16a34a", color: "#fff" }}>
-              <strong>Đơn #{o.id}</strong>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: ORDER_STATUS[statusOf(o)].color, color: "#fff" }}>
+              <strong>Đơn #{o.id} · {ORDER_STATUS[statusOf(o)].label}</strong>
               <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <button onClick={() => startEdit(o)} title="Sửa đơn" aria-label="Sửa đơn" style={{ ...iconBtn, color: "#fff" }}>✏️</button>
                 <button onClick={() => removeSaved(o.id)} title="Xóa đơn" aria-label="Xóa đơn" style={{ ...iconBtn, color: "#fff" }}>🗑</button>
@@ -859,6 +890,18 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
               {o.note ? <div>📝 {o.note}</div> : null}
               <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
               <div style={{ color: "#999", fontSize: 12 }}>{fmtDateTime(o.createdAt)}</div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e5e7eb" }}>
+                {[["shipped", "Đã gửi hàng"], ["delivered", "Đã giao"], ["returned", "Hoàn / Hủy"]].map(([k, label]) => {
+                  const st = statusOf(o);
+                  const checked = k === "shipped" ? st === "shipped" || st === "delivered" : st === k;
+                  return (
+                    <label key={k} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 13, color: checked ? ORDER_STATUS[k].color : "#555", fontWeight: checked ? 600 : 400 }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleStatus(o, k)} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                      {label}
+                    </label>
+                  );
+                })}
+              </div>
             </div>
           </div>
         ))}
@@ -882,6 +925,11 @@ export default function ChatAdminPage() {
   const [showKeys, setShowKeys] = useState(false);
   const pageFilterRef = useRef("all");
   const [ordersByConv, setOrdersByConv] = useState({}); // { conversationId: [đơn mới → cũ] }
+  const [timePreset, setTimePreset] = useState("all"); // all | today | yesterday | 7d | 30d | custom
+  const [dateFrom, setDateFrom] = useState(""); // YYYY-MM-DD, trống = không giới hạn
+  const [dateTo, setDateTo] = useState("");
+  const rangeRef = useRef("|");
+  const [orderFilter, setOrderFilter] = useState("all"); // all | none | draft | shipped | delivered | returned
 
   const loadOrders = useCallback(async () => {
     try {
@@ -902,18 +950,22 @@ export default function ChatAdminPage() {
   const loadConversations = useCallback(async () => {
     const filter = pageFilter;
     const onlyPhone = phoneOnly;
+    const from = dateFrom;
+    const to = dateTo;
     try {
       const params = [];
       if (filter !== "all") params.push(`pageId=${encodeURIComponent(filter)}`);
       if (onlyPhone) params.push("phone=1");
+      if (from) params.push(`from=${from}`);
+      if (to) params.push(`to=${to}`);
       const qs = params.length ? "?" + params.join("&") : "";
       const res = await fetch("/api/conversations" + qs, { cache: "no-store" });
       if (!res.ok) return; // lỗi tạm thời: giữ nguyên danh sách cũ
       const data = await res.json();
       // Bỏ kết quả về muộn của Page đã đổi đi (tránh nhảy lẫn danh sách)
-      if (Array.isArray(data) && pageFilterRef.current === filter && phoneOnlyRef.current === onlyPhone) setConversations(data);
+      if (Array.isArray(data) && pageFilterRef.current === filter && phoneOnlyRef.current === onlyPhone && rangeRef.current === `${from}|${to}`) setConversations(data);
     } catch {}
-  }, [pageFilter, phoneOnly]);
+  }, [pageFilter, phoneOnly, dateFrom, dateTo]);
 
   const loadPages = useCallback(async () => {
     try {
@@ -991,6 +1043,32 @@ export default function ChatAdminPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [current.messages.length, selectedId]);
+
+  function applyRange(from, to) {
+    rangeRef.current = `${from}|${to}`;
+    setDateFrom(from);
+    setDateTo(to);
+    setConversations([]);
+  }
+
+  function changeTimePreset(p) {
+    setTimePreset(p);
+    if (p === "all") applyRange("", "");
+    else if (p === "today") applyRange(vnDay(0), vnDay(0));
+    else if (p === "yesterday") applyRange(vnDay(-1), vnDay(-1));
+    else if (p === "7d") applyRange(vnDay(-6), vnDay(0));
+    else if (p === "30d") applyRange(vnDay(-29), vnDay(0));
+    else applyRange(dateFrom || vnDay(-6), dateTo || vnDay(0)); // custom: giữ khoảng đang có hoặc mặc định 7 ngày
+  }
+
+  // Lọc thêm theo tình trạng đơn (đơn đã tick bằng tay)
+  const shownConversations = conversations.filter((c) => {
+    if (orderFilter === "all") return true;
+    const list = ordersByConv[c.id] || [];
+    if (orderFilter === "none") return list.length === 0;
+    return list.some((o) => statusOf(o) === orderFilter);
+  });
+  const filtering = timePreset !== "all" || orderFilter !== "all";
 
   function togglePhoneOnly() {
     const next = !phoneOnly;
@@ -1181,13 +1259,64 @@ export default function ChatAdminPage() {
               🎓 Dạy bot
             </button>
           </div>
+          {/* Lọc chat theo thời gian + theo tình trạng đơn */}
+          <div style={{ padding: "8px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", fontSize: 13 }}>
+            <select
+              value={timePreset}
+              onChange={(e) => changeTimePreset(e.target.value)}
+              style={{ padding: "5px 8px", borderRadius: 8, border: timePreset !== "all" ? "1px solid #4f46e5" : "1px solid #ddd", background: "#fff", fontSize: 13 }}
+              aria-label="Lọc chat theo thời gian"
+            >
+              <option value="all">🕒 Mọi thời gian</option>
+              <option value="today">Hôm nay</option>
+              <option value="yesterday">Hôm qua</option>
+              <option value="7d">7 ngày qua</option>
+              <option value="30d">30 ngày qua</option>
+              <option value="custom">Chọn ngày...</option>
+            </select>
+            <select
+              value={orderFilter}
+              onChange={(e) => setOrderFilter(e.target.value)}
+              style={{ padding: "5px 8px", borderRadius: 8, border: orderFilter !== "all" ? "1px solid #4f46e5" : "1px solid #ddd", background: "#fff", fontSize: 13 }}
+              aria-label="Lọc theo tình trạng đơn"
+            >
+              <option value="all">🧾 Mọi tình trạng đơn</option>
+              <option value="none">Chưa có đơn</option>
+              <option value="draft">Mới tạo (chưa gửi)</option>
+              <option value="shipped">Đã gửi hàng</option>
+              <option value="delivered">Đã giao</option>
+              <option value="returned">Hoàn / Hủy</option>
+            </select>
+            {timePreset === "custom" && (
+              <div style={{ display: "flex", gap: 6, alignItems: "center", width: "100%" }}>
+                <input type="date" value={dateFrom} max={dateTo || undefined} onChange={(e) => applyRange(e.target.value, dateTo)} style={{ flex: 1, minWidth: 0, padding: "4px 6px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }} />
+                <span style={{ color: "#888" }}>→</span>
+                <input type="date" value={dateTo} min={dateFrom || undefined} onChange={(e) => applyRange(dateFrom, e.target.value)} style={{ flex: 1, minWidth: 0, padding: "4px 6px", borderRadius: 8, border: "1px solid #ddd", fontSize: 13 }} />
+              </div>
+            )}
+            {filtering && (
+              <span style={{ color: "#666", fontSize: 12 }}>
+                {shownConversations.length} cuộc chat
+                {" · "}
+                <button
+                  onClick={() => {
+                    changeTimePreset("all");
+                    setOrderFilter("all");
+                  }}
+                  style={{ border: "none", background: "transparent", color: "#4f46e5", cursor: "pointer", fontSize: 12, padding: 0 }}
+                >
+                  Xóa lọc
+                </button>
+              </span>
+            )}
+          </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
-          {conversations.length === 0 && (
+          {shownConversations.length === 0 && (
             <p style={{ padding: 16, color: "#888" }}>
-              {phoneOnly ? "Chưa có khách nào để lại số điện thoại." : "Chưa có khách nào nhắn tin."}
+              {filtering ? "Không có cuộc chat nào khớp bộ lọc." : phoneOnly ? "Chưa có khách nào để lại số điện thoại." : "Chưa có khách nào nhắn tin."}
             </p>
           )}
-          {conversations.map((c) => (
+          {shownConversations.map((c) => (
             <div
               key={c.id}
               onClick={() => {
@@ -1247,7 +1376,17 @@ export default function ChatAdminPage() {
                   <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>📞 {c.phone}</div>
                 )}
                 {(ordersByConv[c.id] || []).length > 0 && (
-                  <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>🧾 {ordersByConv[c.id].length} đơn</div>
+                  <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>
+                    🧾 {ordersByConv[c.id].length} đơn
+                    {Object.keys(ORDER_STATUS).map((k) => {
+                      const n = ordersByConv[c.id].filter((o) => statusOf(o) === k).length;
+                      return n ? (
+                        <span key={k} style={{ marginLeft: 6, color: ORDER_STATUS[k].color }}>
+                          · {n} {ORDER_STATUS[k].label.toLowerCase()}
+                        </span>
+                      ) : null;
+                    })}
+                  </div>
                 )}
               </div>
               <button
