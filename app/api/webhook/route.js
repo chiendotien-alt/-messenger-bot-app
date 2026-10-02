@@ -75,6 +75,9 @@ const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING 
 // ---- Khách ĐÃ CÓ cuộc trò chuyện nhắn liền mấy tin ngắn: chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần ----
 // (tin cuối cùng của loạt sẽ trả lời chung cho cả loạt; các tin trước tự dừng). Đặt REPLY_DEBOUNCE_MS=0 để tắt.
 const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 3000; // 3 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
+// AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
+// Muốn bot vẫn gửi câu "chờ shop một chút" khi lỗi thì đặt biến môi trường SILENT_ON_ERROR=0 trên Vercel.
+const SILENT_ON_ERROR = process.env.SILENT_ON_ERROR !== "0";
 const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
 const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
@@ -272,11 +275,13 @@ export async function POST(req) {
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
         if (openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
-        await sendMessage(
-          senderId,
-          "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!",
-          pageToken
-        ).catch(() => {});
+        if (!SILENT_ON_ERROR) {
+          await sendMessage(
+            senderId,
+            "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!",
+            pageToken
+          ).catch(() => {});
+        }
       }
     }
   }
@@ -384,6 +389,21 @@ async function fetchImagePart(url) {
   }
 }
 
+/**
+ * Gemini/máy chủ đôi khi trả về câu báo lỗi tiếng Anh (vd "An error occurred.") như thể là câu trả lời.
+ * Những câu này TUYỆT ĐỐI không được gửi cho khách → coi như AI chưa trả lời, để hệ thống thử lại.
+ */
+function isErrorText(t) {
+  const x = String(t || "").trim();
+  if (!x) return false;
+  if (/^[\[{]/.test(x)) return false; // JSON thật thì để phần phân tích JSON xử lý
+  const hasVietnamese = /[àáảãạăằắẳẵặâầấẩẫậèéẻẽẹêềếểễệìíỉĩịòóỏõọôồốổỗộơờớởỡợùúủũụưừứửữựỳýỷỹỵđ]/i.test(x);
+  if (hasVietnamese) return false;
+  if (/\b(error|errors|exception|failed|failure|something went wrong|internal server|unavailable|overloaded|quota|rate limit|try again|unable to|cannot|can't|sorry)\b/i.test(x)) return true;
+  // Câu ngắn hoàn toàn tiếng Anh, không có chữ có dấu → nhiều khả năng không phải câu trả lời cho khách
+  return x.length < 80 && /^[\x00-\x7F]+$/.test(x) && /\b(the|an|a|is|was|occurred|please)\b/i.test(x);
+}
+
 /** Xoá mọi ghi chú nội bộ kiểu "📷 [Bot đã gửi ...]" mà AI lỡ bắt chước viết vào tin gửi khách. */
 function stripBotNotes(t) {
   return String(t || "")
@@ -400,7 +420,7 @@ async function buildContents(history, latestText, latestImages) {
   const items = [];
   for (const m of history) {
     const isCustomer = m.from === "customer";
-    if (!isCustomer && (m.text.startsWith(OLD_FALLBACK) || m.text === FALLBACK_TEXT)) continue;
+    if (!isCustomer && (m.text.startsWith(OLD_FALLBACK) || m.text === FALLBACK_TEXT || isErrorText(m.text))) continue;
     const imgs = isCustomer ? m.images || [] : [];
     const text = m.text || (imgs.length ? `[Khách gửi ${imgs.length} ảnh]` : "");
     if (text) items.push({ role: isCustomer ? "user" : "model", text, images: imgs });
@@ -442,7 +462,7 @@ async function buildContents(history, latestText, latestImages) {
  */
 function salvageMessages(raw) {
   const t = String(raw || "").replace(/```json|```/g, "").trim();
-  if (!t) return [];
+  if (!t || isErrorText(t)) return [];
   if (!/^[\[{]/.test(t) && !/"messages"\s*:/.test(t) && !/"use_opening_product"|"send_images"|"customer_info"/.test(t)) {
     return [t]; // chữ bình thường, không phải JSON
   }
@@ -625,6 +645,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys);
     raw = r.text;
     usedModel = r.model;
+    if (isErrorText(raw)) {
+      console.warn("AI trả về câu báo lỗi, bỏ qua và thử lại:", raw);
+      raw = "";
+    }
   }
   console.log("---- Khách hỏi:", customerMessage);
   console.log(`---- Bot trả lời (${usedModel || "không có model nào trả lời"}):`, raw || "(không có nội dung)");
@@ -637,7 +661,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (typeof parsed?.messages === "string") list = [parsed.messages];
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
   else if (!parsed && raw.trim()) list = salvageMessages(raw);
-  let messages = list.map((m) => stripBotNotes(m).slice(0, 1900)).filter(Boolean).slice(0, 2);
+  let messages = list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m)).slice(0, 2);
   const openingRequested = !!parsed?.use_opening_product;
 
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
@@ -707,6 +731,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
       const retried = await retryForcedText(finalPrompt, contents, deadline, apiKeys, hardDeadline);
       if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
+      // AI lỗi hẳn: im lặng, không gửi gì cho khách (chủ shop tự nhắn tay; khách nhắn tiếp thì bot thử lại bình thường)
+      if (SILENT_ON_ERROR) {
+        console.warn("AI không trả lời được → im lặng, chờ chủ shop hoặc tin tiếp theo của khách.");
+        return { skip: true };
+      }
       return fallback;
     }
   }
@@ -834,7 +863,7 @@ async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDe
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
     const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
-    return list.map((m) => stripBotNotes(m)).filter(Boolean).slice(0, 2);
+    return list.map((m) => stripBotNotes(m)).filter((m) => m && !isErrorText(m)).slice(0, 2);
   } catch (e) {
     console.error("Lỗi thử lại Gemini:", e.message);
     return [];
