@@ -1535,7 +1535,7 @@ export default function ChatAdminPage() {
         {/* Chế độ Dạy bot (giữ nguyên đoạn đang soạn khi bấm sang chat khác) */}
         {teachEver && (
           <div style={{ display: teachMode ? "contents" : "none" }}>
-            <TeachChat view={teachView} onExit={() => setTeachMode(false)} />
+            <TeachChat view={teachView} onViewChange={setTeachView} onExit={() => setTeachMode(false)} />
           </div>
         )}
         {/* Khung chat */}

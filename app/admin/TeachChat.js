@@ -85,7 +85,7 @@ function regroup(messages) {
   return turns;
 }
 
-export default function TeachChat({ onExit, view = "sim" }) {
+export default function TeachChat({ onExit, view = "sim", onViewChange }) {
   const [products, setProducts] = useState([]);
   const [productId, setProductId] = useState("");
   const [title, setTitle] = useState("");
@@ -128,6 +128,10 @@ export default function TeachChat({ onExit, view = "sim" }) {
   }, []);
 
   useEffect(() => {
+    if (view === "saved") loadChats();
+  }, [view]);
+
+  useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [turns, loading]);
 
@@ -156,7 +160,7 @@ export default function TeachChat({ onExit, view = "sim" }) {
   }
 
   function openChat(c) {
-    if (dirty && !confirm("Đoạn chat đang mở chưa lưu. Mở đoạn khác và bỏ đoạn này?")) return;
+    if (dirty && !confirm("Đoạn chat đang mở chưa lưu. Mở đoạn khác và bỏ đoạn này?")) return false;
     setNotice("");
     setError("");
     setEditing(null);
@@ -170,6 +174,7 @@ export default function TeachChat({ onExit, view = "sim" }) {
     setTitle(c.title || "");
     setSavedId(c.id);
     setDirty(false);
+    return true;
   }
 
   async function send(e) {
@@ -301,7 +306,7 @@ export default function TeachChat({ onExit, view = "sim" }) {
   return (
     <>
       {/* Khung chat (giống khung chat với khách thật) */}
-      <section style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+      <section style={{ flex: 1, display: view === "saved" ? "none" : "flex", flexDirection: "column", minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px", borderBottom: "1px solid #eee", flexWrap: "wrap" }}>
           <Dot size={40} label="🎓" bg="#fef3c7" />
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -509,46 +514,53 @@ export default function TeachChat({ onExit, view = "sim" }) {
         </form>
       </section>
 
-      {/* Cột bên phải: các đoạn chat đã dạy (chỉ hiện khi chọn "Câu đã dạy") */}
+      {/* Màn hình "Câu đã dạy": thay hẳn khung chat ở giữa */}
       {view === "saved" && (
-      <aside style={{ width: 360, flexShrink: 0, borderLeft: "1px solid #eee", display: "flex", flexDirection: "column", background: "#fff" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid #eee" }}>
-          <strong style={{ fontSize: 14 }}>Các đoạn chat đã dạy ({chats.length})</strong>
-          <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>Bot đọc các đoạn này khi trả lời khách thật.</div>
+      <section style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: "#f8f9fb" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 20px", borderBottom: "1px solid #eee", background: "#fff" }}>
+          <Dot size={40} label="📚" bg="#e0e7ff" />
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <strong>Câu đã dạy ({chats.length})</strong>
+            <div style={{ fontSize: 11, color: "#888" }}>Bot đọc các đoạn này khi trả lời khách thật.</div>
+          </div>
+          <button onClick={() => onViewChange?.("sim")} style={{ ...smallBtn, padding: "7px 12px", fontSize: 13 }}>
+            💬 Về mô phỏng chat
+          </button>
+          <button onClick={onExit} style={{ ...smallBtn, padding: "7px 12px", fontSize: 13 }}>
+            ✕ Thoát
+          </button>
         </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: "8px 16px" }}>
-          {!chats.length && <p style={{ color: "#999", fontSize: 13 }}>Chưa có đoạn nào. Chat thử, sửa câu bot chưa đúng, rồi bấm Lưu.</p>}
-          {chats.map((c) => (
-            <div
-              key={c.id}
-              style={{
-                border: savedId === c.id ? "1px solid #0b6bcb" : "1px solid #eee",
-                background: savedId === c.id ? "#f5f9ff" : "#fff",
-                borderRadius: 10,
-                padding: "8px 10px",
-                marginTop: 8,
-              }}
-            >
-              <div style={{ fontWeight: 600, fontSize: 14 }}>{c.title || "(không tên)"}</div>
-              <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
-                {c.productId ? `Sản phẩm: ${productName(c.productId) || c.productId} · ` : "Dùng chung · "}
-                {c.messages.length} tin · {fmtTime(c.updatedAt)}
+        <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+          {!chats.length && <p style={{ color: "#999", fontSize: 14, textAlign: "center", marginTop: 40 }}>Chưa có đoạn nào. Vào "Mô phỏng đoạn chat", chat thử, sửa câu bot chưa đúng, rồi bấm Lưu.</p>}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+            {chats.map((c) => (
+              <div key={c.id} style={{ border: savedId === c.id ? "1px solid #0b6bcb" : "1px solid #eee", background: "#fff", borderRadius: 10, padding: "10px 12px" }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{c.title || "(không tên)"}</div>
+                <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>
+                  {c.productId ? `Sản phẩm: ${productName(c.productId) || c.productId} · ` : "Dùng chung · "}
+                  {c.messages.length} tin · {fmtTime(c.updatedAt)}
+                </div>
+                <div style={{ fontSize: 12, color: "#555", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  Khách: {c.messages.find((m) => m.from === "customer")?.text || ""}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <button
+                    onClick={() => {
+                      if (openChat(c) !== false) onViewChange?.("sim");
+                    }}
+                    style={smallBtn}
+                  >
+                    Mở / sửa
+                  </button>
+                  <button onClick={() => removeChat(c)} style={{ ...smallBtn, color: "#c0392b" }}>
+                    Xóa
+                  </button>
+                </div>
               </div>
-              <div style={{ fontSize: 12, color: "#555", marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                Khách: {c.messages.find((m) => m.from === "customer")?.text || ""}
-              </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                <button onClick={() => openChat(c)} style={smallBtn}>
-                  Mở / sửa
-                </button>
-                <button onClick={() => removeChat(c)} style={{ ...smallBtn, color: "#c0392b" }}>
-                  Xóa
-                </button>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      </aside>
+      </section>
       )}
     </>
   );
