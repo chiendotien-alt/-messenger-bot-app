@@ -953,6 +953,8 @@ export default function ChatAdminPage() {
     } catch {}
   }, []);
   const [teachMode, setTeachMode] = useState(false); // đang ở chế độ "Dạy bot"
+  const [teachView, setTeachView] = useState("sim"); // "sim" = Mô phỏng đoạn chat, "saved" = Câu đã dạy
+  const [teachMenu, setTeachMenu] = useState(false); // đang sổ menu của nút Dạy bot
   const [teachEver, setTeachEver] = useState(false); // đã mở Dạy bot ít nhất 1 lần (giữ đoạn chat đang soạn khi bấm sang chat khác)
   const [phoneOnly, setPhoneOnly] = useState(false); // chỉ hiện khách đã để lại số điện thoại
   const phoneOnlyRef = useRef(false);
@@ -1286,21 +1288,41 @@ export default function ChatAdminPage() {
                 </button>
               ))}
             </div>
-            <button
-              onClick={() => {
-                setTeachEver(true);
-                setTeachMode((v) => !v);
-              }}
-              aria-pressed={teachMode}
-              style={{
-                height: 36, padding: "0 14px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer",
-                border: "1px solid #1d4ed8",
-                background: teachMode ? "#1d4ed8" : "#fff",
-                color: teachMode ? "#fff" : "#1d4ed8",
-              }}
-            >
-              Dạy bot
-            </button>
+            <div style={{ position: "relative" }}>
+              <button
+                onClick={() => setTeachMenu((v) => !v)}
+                aria-pressed={teachMode}
+                style={{
+                  height: 36, padding: "0 12px", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: "pointer",
+                  border: "1px solid #1d4ed8",
+                  background: teachMode ? "#1d4ed8" : "#fff",
+                  color: teachMode ? "#fff" : "#1d4ed8",
+                }}
+              >
+                Dạy bot ▾
+              </button>
+              {teachMenu && (
+                <>
+                  <div onClick={() => setTeachMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                  <div style={{ position: "absolute", right: 0, top: 40, zIndex: 41, background: "#fff", border: "1px solid #ddd", borderRadius: 10, boxShadow: "0 6px 20px rgba(0,0,0,0.15)", minWidth: 200, overflow: "hidden" }}>
+                    {[["sim", "💬 Mô phỏng đoạn chat"], ["saved", "📚 Câu đã dạy"]].map(([k, label]) => (
+                      <button
+                        key={k}
+                        onClick={() => {
+                          setTeachEver(true);
+                          setTeachView(k);
+                          setTeachMode(true);
+                          setTeachMenu(false);
+                        }}
+                        style={{ display: "block", width: "100%", textAlign: "left", padding: "10px 14px", border: "none", background: teachMode && teachView === k ? "#eef2ff" : "#fff", fontSize: 14, cursor: "pointer", fontWeight: teachMode && teachView === k ? 600 : 400 }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
 
           {/* Bộ lọc: thời gian (từ ngày → đến ngày) + tình trạng đơn */}
@@ -1513,7 +1535,7 @@ export default function ChatAdminPage() {
         {/* Chế độ Dạy bot (giữ nguyên đoạn đang soạn khi bấm sang chat khác) */}
         {teachEver && (
           <div style={{ display: teachMode ? "contents" : "none" }}>
-            <TeachChat onExit={() => setTeachMode(false)} />
+            <TeachChat view={teachView} onExit={() => setTeachMode(false)} />
           </div>
         )}
         {/* Khung chat */}
