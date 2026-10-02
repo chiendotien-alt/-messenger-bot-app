@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, matchProduct } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct } from "@/lib/products";
 import {
   addMessage,
   ensureProfile,
@@ -19,6 +19,7 @@ import {
   isRecentOutgoingDuplicate,
   hasOutgoingMessage,
   getLatestCustomerMessageId,
+  getMaxOutgoingId,
   getPendingCustomerMessages,
   getLastOpeningAgeMs,
   isInOpeningWindow,
@@ -205,7 +206,19 @@ export async function POST(req) {
         await fbAction(senderId, "mark_seen", pageToken);
         await fbAction(senderId, "typing_on", pageToken);
 
-        const reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact, startedAt + 50000);
+        // Soạn câu trả lời. Nếu trong lúc soạn mà có tin khác của bot/chủ shop vừa được gửi (do 2 luồng chạy song song),
+        // soạn lại 1 lần với lịch sử mới để không lặp lại/xác nhận lại điều đã nói.
+        let reply;
+        for (let pass = 0; pass < 2; pass++) {
+          const outBefore = await getMaxOutgoingId(senderId).catch(() => null);
+          reply = await generateReply(senderId, text, savedImages, settings, pageId, firstContact, startedAt + 50000);
+          if (reply.skip) break;
+          const outAfter = await getMaxOutgoingId(senderId).catch(() => outBefore);
+          if (String(outAfter ?? "") === String(outBefore ?? "")) break;
+          console.log("Có tin khác của bot/chủ shop vừa gửi trong lúc soạn → soạn lại với lịch sử mới:", text);
+          if (reply.openingProductId) await releaseOpening(senderId, reply.openingProductId).catch(() => {});
+          if (pass === 1) reply = { skip: true }; // vẫn bị đổi lần nữa → dừng, tránh trả lời lặp
+        }
         if (reply.skip) continue;
 
         // Trong lúc AI soạn câu trả lời (vài giây), khách có thể đã nhắn thêm tin mới →
@@ -536,6 +549,40 @@ function parseModelJson(raw) {
   }
 }
 
+// Từ đệm cuối câu — bỏ đi khi so sánh ("màu đen nha" = "màu đen")
+const FILLER_WORDS = new Set(["da", "a", "nha", "nhe", "nhen", "ha", "hen", "oi", "vang", "ok", "oke", "roi", "do", "di", "chi", "anh", "em"]);
+// Dấu hiệu khách đang HỎI (không phải chỉ nhắc lại thông tin)
+const QUESTION_RE = /(^| )(k|ko|khong|chua|sao|nao|dau|gi|may|bao nhieu|bao lau|the nao|duoc khong|co khong)( |$)/;
+
+/**
+ * Tin khách chỉ NHẮC LẠI thông tin mà bot/chủ shop vừa nói SAU tin đó (vd khách nhắn "Màu đen" cùng lúc với địa chỉ,
+ * bot trả lời gộp "lên đơn màu đen..." xong, tin "Màu đen" lại được xử lý riêng → không cần trả lời thêm).
+ * Kiểm tra bằng code, không phụ thuộc AI tuân thủ prompt.
+ */
+function isEchoOfShopReply(history, customerMessage) {
+  const raw = String(customerMessage || "");
+  if (!raw.trim() || raw.includes("?")) return false;
+  let words = normKey(raw).split(" ").filter(Boolean);
+  while (words.length && FILLER_WORDS.has(words[words.length - 1])) words.pop();
+  while (words.length && FILLER_WORDS.has(words[0])) words.shift();
+  if (!words.length || words.length > 5) return false;
+  const key = words.join(" ");
+  if (key.length < 3 || QUESTION_RE.test(key)) return false;
+
+  // Vị trí tin khách này trong lịch sử; sau nó chỉ được có tin bot/chủ shop (không có tin khách mới hơn)
+  let idx = -1;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i].from === "customer" && normKey(history[i].text || "") === normKey(raw)) {
+      idx = i;
+      break;
+    }
+  }
+  if (idx < 0) return false;
+  const after = history.slice(idx + 1);
+  if (!after.length || after.some((m) => m.from === "customer")) return false;
+  return after.some((m) => (" " + normKey(m.text || "") + " ").includes(" " + key + " "));
+}
+
 async function generateReply(senderId, customerMessage, customerImages, settings, pageId, firstContact = false, hardDeadline = Date.now() + 50000) {
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
@@ -613,10 +660,19 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  // Khách chỉ nhắc lại đúng thông tin shop vừa nói ngay sau tin đó (race giữa 2 luồng xử lý) → không trả lời thêm
+  if (!firstContact && !customerImages.length && isEchoOfShopReply(history, customerMessage)) {
+    console.log("Tin khách chỉ lặp lại thông tin bot vừa chốt → không trả lời:", customerMessage);
+    return { skip: true };
+  }
+
   const customerName = await getCustomerName(senderId).catch(() => null);
   const customerInfo = await getCustomerInfo(senderId).catch(() => ({}));
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
-  const trainingText = await getTrainingForPrompt(currentProduct?.id).catch(() => "");
+  // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
+  const pendingMsgs = firstContact ? [] : await getPendingCustomerMessages(senderId).catch(() => []);
+  const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
+  const trainingText = await getTrainingForPrompt(currentProduct?.id, trainQueries).catch(() => "");
   const systemPrompt = buildSystemPrompt(
     formatProductsForPrompt(products),
     settings.botPrompt,
@@ -630,7 +686,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Khách vừa nhắn LIÊN TIẾP nhiều tin (chưa ai trả lời) → dặn AI đọc hết rồi trả lời gộp 1 lần
   let burstNote = "";
   if (!firstContact) {
-    const pendingMsgs = await getPendingCustomerMessages(senderId).catch(() => []);
     const lines = pendingMsgs.map((m) => (m.text || "").trim() || "[ảnh]").filter(Boolean).slice(-8);
     if (lines.length >= 2) {
       burstNote =
@@ -684,6 +739,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     await mergeCustomerInfo(senderId, verified).catch((e) =>
       console.error("Không lưu được thông tin khách:", e.message)
     );
+  }
+
+  // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
+  if (parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
+    console.log("AI quyết định không trả lời (tin khách chỉ lặp lại thông tin đã chốt):", customerMessage);
+    return { skip: true };
   }
 
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")

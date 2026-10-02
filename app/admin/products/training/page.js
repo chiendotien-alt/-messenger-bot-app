@@ -24,6 +24,7 @@ export default function TrainingPage() {
   const [manual, setManual] = useState({ customer: "", reply: "", productId: "" });
   const [manualOpen, setManualOpen] = useState(false);
   const [tableError, setTableError] = useState("");
+  const [tester, setTester] = useState({ text: "", results: null, loading: false });
 
   const endRef = useRef(null);
 
@@ -59,6 +60,23 @@ export default function TrainingPage() {
       else for (const m of t.messages) out.push({ from: "bot", text: m });
     }
     return out;
+  }
+
+  async function runTester() {
+    const text = tester.text.trim();
+    if (!text) return;
+    setTester((t) => ({ ...t, loading: true }));
+    try {
+      const r = await fetch("/api/training/match", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, productId }),
+      });
+      const data = await r.json();
+      setTester((t) => ({ ...t, loading: false, results: Array.isArray(data) ? data : [] }));
+    } catch {
+      setTester((t) => ({ ...t, loading: false, results: [] }));
+    }
   }
 
   async function send() {
@@ -321,11 +339,12 @@ export default function TrainingPage() {
 
           {manualOpen && (
             <div style={{ border: "1px dashed #cfcfcf", borderRadius: 10, padding: 12, marginTop: 10, background: "#fafafa", display: "grid", gap: 8 }}>
-              <input
+              <textarea
                 value={manual.customer}
                 onChange={(e) => setManual({ ...manual, customer: e.target.value })}
-                placeholder="Khách nói (vd: giảm chút được không shop)"
-                style={inputStyle}
+                rows={4}
+                placeholder={"Các cách khách có thể hỏi — mỗi dòng 1 cách. Càng nhiều cách nói càng dễ khớp, ví dụ:\ngiảm chút được không shop\nbớt đi shop\nrẻ hơn dc ko\nlấy 2 cái có giảm k"}
+                style={{ ...inputStyle, resize: "vertical" }}
               />
               <textarea
                 value={manual.reply}
@@ -343,6 +362,36 @@ export default function TrainingPage() {
             </div>
           )}
 
+          <div style={{ border: "1px solid #e2e2e2", borderRadius: 10, padding: 12, marginTop: 10, background: "#fff" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>Thử khớp: tin khách này bot sẽ lấy tình huống nào?</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={tester.text}
+                onChange={(e) => setTester({ ...tester, text: e.target.value })}
+                onKeyDown={(e) => e.key === "Enter" && runTester()}
+                placeholder="Gõ thử 1 tin khách, vd: bớt cho mình chút đi"
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button style={btn} onClick={runTester} disabled={tester.loading || !tester.text.trim()}>
+                {tester.loading ? "..." : "Thử"}
+              </button>
+            </div>
+            {tester.results && !tester.results.length && (
+              <div style={{ color: "#999", fontSize: 13, marginTop: 8 }}>Chưa có tình huống nào để so.</div>
+            )}
+            {tester.results && tester.results.map((m) => (
+              <div key={m.id} style={{ marginTop: 8, fontSize: 13, opacity: m.used ? 1 : 0.5 }}>
+                <b style={{ color: m.used ? "#1a7f37" : "#888" }}>{m.score}% {m.used ? "· bot sẽ dùng" : "· không dùng"}</b>
+                {" — "}khớp với: “{m.matchedVariant}” → {m.reply.split("\n")[0].slice(0, 90)}
+              </div>
+            ))}
+            {tester.results && tester.results.length > 0 && !tester.results.some((m) => m.used) && (
+              <div style={{ color: "#b45309", fontSize: 13, marginTop: 8 }}>
+                Chưa tình huống nào đủ giống → hãy thêm tình huống này (hoặc thêm cách nói này vào tình huống gần nhất).
+              </div>
+            )}
+          </div>
+
           {tableError && <div style={{ color: "#c0392b", fontSize: 13, marginTop: 8 }}>{tableError}</div>}
 
           <div style={{ marginTop: 10, border: "1px solid #e2e2e2", borderRadius: 10, overflow: "hidden", background: "#fff" }}>
@@ -355,10 +404,12 @@ export default function TrainingPage() {
               <div key={e.id} style={{ padding: 12, borderTop: "1px solid #f0f0f0" }}>
                 {rowEdit?.id === e.id ? (
                   <div style={{ display: "grid", gap: 8 }}>
-                    <input
+                    <textarea
                       value={rowEdit.customer}
                       onChange={(ev) => setRowEdit({ ...rowEdit, customer: ev.target.value })}
-                      style={inputStyle}
+                      rows={Math.max(2, rowEdit.customer.split("\n").length + 1)}
+                      placeholder="Các cách khách hỏi — mỗi dòng 1 cách"
+                      style={{ ...inputStyle, resize: "vertical" }}
                     />
                     <textarea
                       value={rowEdit.reply}
@@ -381,8 +432,8 @@ export default function TrainingPage() {
                     <div style={{ fontSize: 12, color: "#888", marginBottom: 4 }}>
                       {e.productId ? `Sản phẩm: ${productName(e.productId) || e.productId}` : "Dùng chung"}
                     </div>
-                    <div style={{ fontSize: 14 }}>
-                      <b>Khách:</b> {e.customer}
+                    <div style={{ fontSize: 14, whiteSpace: "pre-wrap" }}>
+                      <b>Khách hỏi{e.customer.includes("\n") ? " (các cách)" : ""}:</b> {e.customer}
                     </div>
                     <div style={{ fontSize: 14, whiteSpace: "pre-wrap", marginTop: 2 }}>
                       <b>Bot:</b> {e.reply}
@@ -404,7 +455,7 @@ export default function TrainingPage() {
             ))}
           </div>
           <p style={{ color: "#888", fontSize: 12, marginTop: 8 }}>
-            Bot đọc tối đa 40 câu mới nhất (cùng sản phẩm hoặc dùng chung) mỗi khi trả lời khách thật.
+            Mỗi khi khách nhắn, bot tự tìm tối đa 5 tình huống giống tin đó nhất trong kho này (cùng sản phẩm hoặc dùng chung) để trả lời theo; kho có thể chứa hàng trăm tình huống.
           </p>
         </section>
       </div>
