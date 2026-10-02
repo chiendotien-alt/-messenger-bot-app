@@ -27,6 +27,7 @@ import {
   hasAdminMessage,
   hasNewerDifferentCustomerMessage,
   getCustomerInfo,
+  getLastOutgoingAgeMs,
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
@@ -75,7 +76,11 @@ const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(pro
 const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
 // ---- Khách ĐÃ CÓ cuộc trò chuyện nhắn liền mấy tin ngắn: chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần ----
 // (tin cuối cùng của loạt sẽ trả lời chung cho cả loạt; các tin trước tự dừng). Đặt REPLY_DEBOUNCE_MS=0 để tắt.
-const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 3000; // 3 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
+const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 2500; // 2.5 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
+// Bot trả lời 2 tin liên tiếp: giữ tin thứ 2 ngần này ms (hiện "đang gõ"); trong lúc giữ mà khách nhắn thêm → hủy tin thứ 2, trả lời tin mới.
+const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 2500;
+// Khách nhắn thêm trong ngần này ms sau tin bot vừa gửi → dặn AI: câu trước trả lời hơi sớm, chỉ trả lời phần mới, không hỏi lại/lặp lại.
+const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? Number(process.env.FOLLOWUP_AFTER_BOT_MS) : 10000;
 // AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
 // Muốn bot vẫn gửi câu "chờ shop một chút" khi lỗi thì đặt biến môi trường SILENT_ON_ERROR=0 trên Vercel.
 const SILENT_ON_ERROR = process.env.SILENT_ON_ERROR !== "0";
@@ -248,7 +253,9 @@ export async function POST(req) {
             if (i > 0) {
               await fbAction(senderId, "typing_on", pageToken);
             }
-            await sleep(Math.min(1800, 500 + messages[i].length * 15)); // nghỉ tí như người đang gõ
+            const typingMs = Math.min(1800, 500 + messages[i].length * 15); // nghỉ tí như người đang gõ
+            // Tin thứ 2 giữ lâu hơn (SECOND_MSG_HOLD_MS) để kịp thấy khách nhắn thêm → hủy tin này, trả lời tin mới
+            await sleep(i > 0 ? Math.max(SECOND_MSG_HOLD_MS, typingMs) : typingMs);
             // Kiểm tra lần cuối ngay trước khi gửi từng tin
             if (await superseded()) {
               console.log("Khách nhắn thêm ngay trước lúc gửi → dừng, chờ tin mới nhất:", text);
@@ -695,7 +702,18 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "và chỉ hỏi thêm đúng phần còn thiếu để lên đơn (tối đa 1 câu hỏi). Không trả lời từng tin một.";
     }
   }
-  const finalPrompt = systemPrompt + burstNote;
+  // Khách nhắn thêm NGAY SAU tin bot vừa gửi (câu trước trả lời hơi sớm) → chỉ trả lời phần mới
+  let followupNote = "";
+  if (!firstContact && pendingMsgs.length) {
+    const outAge = await getLastOutgoingAgeMs(senderId).catch(() => null);
+    if (outAge !== null && outAge < FOLLOWUP_AFTER_BOT_MS) {
+      followupNote =
+        "\n\nLƯU Ý: khách vừa nhắn thêm chỉ vài giây sau tin shop vừa gửi, có thể khách nhắn tiếp khi chưa nói hết ý (tin shop vừa rồi có thể trả lời hơi sớm). " +
+        "Hãy đọc kỹ các tin MỚI của khách và chỉ trả lời phần mới đó. Nếu tin mới là câu trả lời cho câu shop vừa hỏi thì cứ ghi nhận và đi tiếp bình thường. " +
+        "Không lặp lại ý đã nói ở tin shop vừa gửi, không hỏi lại điều khách vừa trả lời (vd khách đã nói màu thì đừng hỏi màu nữa), không chào lại.";
+    }
+  }
+  const finalPrompt = systemPrompt + burstNote + followupNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
