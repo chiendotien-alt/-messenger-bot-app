@@ -9,7 +9,9 @@ const ALLOWED = [/\.public\.blob\.vercel-storage\.com$/i, /(^|\.)fbcdn\.net$/i, 
 
 export async function GET(req) {
   try {
-    const u = new URL(req.url).searchParams.get("u") || "";
+    const sp = new URL(req.url).searchParams;
+    const u = sp.get("u") || "";
+    const showArrow = sp.get("a") === "1"; // còn ảnh phía sau → vẽ mũi tên mờ bên phải
     const url = new URL(u);
     if (url.protocol !== "https:" || !ALLOWED.some((re) => re.test(url.hostname))) {
       return new Response("bad url", { status: 400 });
@@ -41,8 +43,19 @@ export async function GET(req) {
     }
     const bgColor = { r: Math.round(r / 4), g: Math.round(g / 4), b: Math.round(b / 4) };
     const photo = await sharp(rot).resize(INNER, INNER, { fit: "inside" }).toBuffer();
+    // Ảnh nằm sát TRÁI thẻ (thẳng hàng với khung chữ bên dưới), phần trống bên phải cùng màu nền ảnh
+    const pm = await sharp(photo).metadata();
+    const layers = [{ input: photo, left: 0, top: Math.round((SIZE - pm.height) / 2) }];
+    if (showArrow) {
+      const cx = SIZE - 62, cy = Math.round(SIZE / 2);
+      const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}">
+        <circle cx="${cx}" cy="${cy}" r="34" fill="#ffffff" fill-opacity="0.55"/>
+        <path d="M ${cx - 8} ${cy - 18} L ${cx + 10} ${cy} L ${cx - 8} ${cy + 18}" fill="none" stroke="#444444" stroke-opacity="0.5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+      layers.push({ input: Buffer.from(svg), left: 0, top: 0 });
+    }
     const out = await sharp({ create: { width: SIZE, height: SIZE, channels: 3, background: bgColor } })
-      .composite([{ input: photo, gravity: "center" }])
+      .composite(layers)
       .jpeg({ quality: 82 })
       .toBuffer();
 
