@@ -169,15 +169,18 @@ export async function POST(req) {
 
         // Khách MỚI nhắn liền mấy tin: chờ một chút cho khách gõ xong, chỉ tin CUỐI CÙNG của loạt mới đi tiếp
         // (các tin trước tự dừng) → bot chỉ trả lời 1 lần duy nhất.
+        const firstWaitMs = Number.isFinite(Number(settings.firstContactWaitSec)) && settings.firstContactWaitSec !== "" && settings.firstContactWaitSec !== undefined && settings.firstContactWaitSec !== null
+          ? Math.max(0, Number(settings.firstContactWaitSec)) * 1000
+          : FIRST_CONTACT_WAIT_MS;
         const firstContact =
-          FIRST_CONTACT_WAIT_MS > 0 &&
+          firstWaitMs > 0 &&
           !!messageId &&
           !(await hasOutgoingMessage(senderId).catch(() => true)) &&
           (await getLastOpeningAgeMs(senderId).catch(() => 0)) === null;
         if (firstContact) {
           // Chờ đủ FIRST_CONTACT_WAIT_MS tính từ tin ĐẦU TIÊN của khách (không phải từ tin vừa nhận)
           const firstAge = (await getFirstPendingCustomerAgeMs(senderId).catch(() => 0)) || 0;
-          await sleep(Math.max(0, FIRST_CONTACT_WAIT_MS - firstAge));
+          await sleep(Math.max(0, firstWaitMs - firstAge));
           const latestId = await getLatestCustomerMessageId(senderId).catch(() => messageId);
           if (latestId && Number(latestId) > Number(messageId)) {
             console.log("Khách mới nhắn liền nhiều tin → để tin cuối cùng trả lời:", text);
@@ -1070,6 +1073,16 @@ async function sendImage(recipientId, imageUrl, token) {
  * (carousel vuốt ngang, tối đa 10 thẻ/tin). Chỉ 1 ảnh → gửi ảnh thường.
  * Nếu Facebook từ chối carousel thì tự quay về gửi từng ảnh theo thứ tự.
  */
+const APP_BASE_URL = (
+  process.env.APP_BASE_URL ||
+  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://messenger-bot-app.vercel.app")
+).replace(/\/$/, "");
+// Ảnh trong carousel đi qua /api/img: thu nhỏ + viền trắng để không bị cắt chân ảnh. Đặt CAROUSEL_RESIZE=0 để dùng ảnh gốc.
+function cardImageUrl(url) {
+  if (process.env.CAROUSEL_RESIZE === "0") return url;
+  return `${APP_BASE_URL}/api/img?u=${encodeURIComponent(url)}`;
+}
+
 async function sendImagesGrouped(recipientId, items, token) {
   if (items.length === 1) return void (await sendImage(recipientId, items[0].url, token));
 
@@ -1088,8 +1101,8 @@ async function sendImagesGrouped(recipientId, items, token) {
               return {
                 title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
                 // Gợi ý vuốt ngay trên từng thẻ để khách biết còn ảnh/màu khác
-                subtitle: n < items.length ? `Mẫu ${n}/${items.length} · Vuốt sang phải ➡️ xem thêm` : `Mẫu ${n}/${items.length} · Mẫu cuối`,
-                image_url: it.url,
+                subtitle: n < items.length ? `${n}/${items.length} ➡️` : `${n}/${items.length}`,
+                image_url: cardImageUrl(it.url),
               };
             }),
           },

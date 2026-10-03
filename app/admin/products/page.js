@@ -230,6 +230,9 @@ export default function AdminPage() {
   const [botPrompt, setBotPrompt] = useState("");
   const [promptSaved, setPromptSaved] = useState("");
   const [promptStatus, setPromptStatus] = useState("");
+  const [firstWait, setFirstWait] = useState("12"); // giây chờ trước khi bot trả lời câu đầu tiên của khách mới
+  const [firstWaitSaved, setFirstWaitSaved] = useState("12");
+  const [firstWaitStatus, setFirstWaitStatus] = useState("");
   const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
   const [copyFromId, setCopyFromId] = useState("");
   const [copyParts, setCopyParts] = useState({
@@ -267,9 +270,34 @@ export default function AdminPage() {
       .then((s) => {
         setBotPrompt(s.botPrompt || "");
         setPromptSaved(s.botPrompt || "");
+        const w = s.firstContactWaitSec === undefined || s.firstContactWaitSec === null || s.firstContactWaitSec === "" ? "12" : String(s.firstContactWaitSec);
+        setFirstWait(w);
+        setFirstWaitSaved(w);
       })
       .catch(() => {});
   }, []);
+
+  async function saveFirstWait() {
+    const n = Number(firstWait);
+    if (firstWait === "" || !Number.isFinite(n) || n < 0 || n > 40) {
+      setFirstWaitStatus("Nhập số giây từ 0 đến 40");
+      return;
+    }
+    setFirstWaitStatus("Đang lưu...");
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ firstContactWaitSec: n }),
+    });
+    if (res.ok) {
+      setFirstWaitSaved(String(n));
+      setFirstWait(String(n));
+      setFirstWaitStatus("Đã lưu ✓");
+    } else {
+      setFirstWaitStatus("Lưu thất bại, thử lại nhé");
+    }
+    setTimeout(() => setFirstWaitStatus(""), 2500);
+  }
 
   async function savePrompt() {
     setPromptStatus("Đang lưu...");
@@ -441,6 +469,31 @@ export default function AdminPage() {
         style={{ border: "1px solid #e2e2e2", borderRadius: 10, padding: "12px 16px", marginBottom: 20, background: "#fafafa" }}
       >
         <summary style={{ cursor: "pointer", fontWeight: 600 }}>Thông tin & quy tắc của shop cho bot</summary>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "12px 0", padding: "10px 12px", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 8 }}>
+          <strong style={{ fontSize: 14 }}>Thời gian chờ câu đầu tiên:</strong>
+          <input
+            type="number"
+            min="0"
+            max="40"
+            step="1"
+            value={firstWait}
+            onChange={(e) => setFirstWait(e.target.value)}
+            style={{ ...inputStyle, width: 70 }}
+          />
+          <span style={{ fontSize: 14 }}>giây</span>
+          <button
+            type="button"
+            onClick={saveFirstWait}
+            disabled={firstWait === firstWaitSaved}
+            style={{ ...btn, background: "#111", color: "#fff", border: "none", opacity: firstWait === firstWaitSaved ? 0.5 : 1 }}
+          >
+            Lưu
+          </button>
+          <span style={{ color: "#2d7a3a", fontSize: 13 }}>{firstWaitStatus}</span>
+          <div style={{ width: "100%", color: "#666", fontSize: 12 }}>
+            Khách mới nhắn lần đầu: bot chờ ngần này giây (cho khách gõ xong) rồi mới gửi ảnh mẫu + câu mở đầu. Nhập 0 = trả lời ngay.
+          </div>
+        </div>
         <p style={{ color: "#666", fontSize: 13 }}>
           Ghi những gì bot cần biết để tư vấn giống người thật: phí ship, thời gian giao, bảo hành, đổi trả, khuyến mãi,
           SĐT/Zalo, giờ làm việc, cách xưng hô riêng...
