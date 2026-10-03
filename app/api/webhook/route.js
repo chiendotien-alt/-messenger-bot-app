@@ -1101,7 +1101,7 @@ async function sendImagesGrouped(recipientId, items, token) {
               return {
                 title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
                 // Gợi ý vuốt ngay trên từng thẻ để khách biết còn ảnh/màu khác
-                subtitle: n < items.length ? `${n}/${items.length} ➡️` : `${n}/${items.length}`,
+                // Không dùng dòng phụ → khung chữ dưới ảnh thấp, gọn
                 image_url: cardImageUrl(it.url),
               };
             }),
