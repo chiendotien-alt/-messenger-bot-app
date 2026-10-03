@@ -304,15 +304,6 @@ export async function POST(req) {
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
           await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
-          // Nhiều ảnh → nhắn thêm 1 câu nhắc vuốt + liệt kê tên màu/mẫu (khách khỏi hỏi "còn màu nào nữa")
-          if (images.length > 1) {
-            const names = [...new Set((imageItems || []).map((x) => (x.title || "").trim()).filter(Boolean))];
-            const list = names.length > 1 ? `: ${names.join(", ")}` : "";
-            const hint = `Dạ có ${images.length} mẫu${list}. Anh/chị vuốt ngang sang phải ➡️ để xem hết các mẫu nha ạ.`;
-            if (await sendMessage(senderId, hint, pageToken)) {
-              await addMessage(senderId, "bot", hint, [], pageId).catch(() => {});
-            }
-          }
         };
 
         if (openedProductId) {
@@ -420,6 +411,15 @@ function splitScript(script) {
   return chunks;
 }
 
+/** Các tin nhắn mở đầu: câu mở đầu chính + các tin phụ (nút "+" trong cài đặt sản phẩm), gửi lần lượt theo thứ tự. */
+function openingMessages(p) {
+  const extras = (Array.isArray(p.openingExtras) ? p.openingExtras : [])
+    .map((t) => String(t || "").trim())
+    .filter(Boolean)
+    .map((t) => t.slice(0, 2000));
+  return [...splitScript(p.openingScript), ...extras];
+}
+
 function openingAlreadySent(history, p) {
   const first = splitScript(p.openingScript)[0];
   return history.some((m) => m.from !== "customer" && m.text === first);
@@ -430,7 +430,7 @@ function openingReply(p) {
   const images = (p.sampleImages || []).slice(0, MAX_OPENING_IMAGES);
   const labels = p.imageLabels || {};
   return {
-    messages: splitScript(p.openingScript),
+    messages: openingMessages(p),
     images,
     imageItems: images.map((url) => ({ url, title: labels[url] || p.name })),
     imageNote: images.length ? `📷 [Bot đã gửi ${images.length} ảnh mẫu của "${p.name}" cùng câu mở đầu]` : "",

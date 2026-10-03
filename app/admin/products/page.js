@@ -9,6 +9,7 @@ const EMPTY_FORM = {
   description: "",
   notes: "",
   openingScript: "",
+  openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
   triggerQuestions: "",
   sampleImages: [],
   realImages: [],
@@ -216,7 +217,8 @@ function cleanForm(form) {
   for (const [u, v] of Object.entries(form.imageLabels || {})) {
     if (keep.has(u) && String(v).trim()) imageLabels[u] = String(v).trim();
   }
-  return { ...form, imageLabels };
+  const openingExtras = (form.openingExtras || []).map((t) => String(t || "").trim()).filter(Boolean);
+  return { ...form, imageLabels, openingExtras };
 }
 
 export default function AdminPage() {
@@ -322,6 +324,7 @@ export default function AdminPage() {
       description: p.description || "",
       notes: p.notes || "",
       openingScript: p.openingScript || "",
+      openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
@@ -338,6 +341,7 @@ export default function AdminPage() {
       for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
         if (parts[key]) next[key] = src[key] || "";
       }
+      if (parts.openingScript) next.openingExtras = Array.isArray(src.openingExtras) ? [...src.openingExtras] : [];
       for (const key of ["sampleImages", "realImages"]) {
         if (parts[key]) {
           const add = (src[key] || []).filter((u) => !next[key].includes(u));
@@ -366,6 +370,7 @@ export default function AdminPage() {
       description: p.description || "",
       notes: p.notes || "",
       openingScript: p.openingScript || "",
+      openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
@@ -615,6 +620,36 @@ export default function AdminPage() {
             onChange={(e) => setForm({ ...form, openingScript: e.target.value })}
             placeholder={"Ví dụ:\nDạ chào anh/chị, chân váy 3 tầng bên shop giá 199.000đ/chiếc, mua 2 chiếc chỉ 380.000đ, freeship toàn quốc ạ.\nAnh/chị xem ảnh mẫu bên dưới rồi cho shop biết mình thích màu nào nhé!"}
           />
+          {(form.openingExtras || []).map((txt, idx) => (
+            <div key={idx} style={{ display: "flex", gap: 6, marginTop: 8, alignItems: "flex-start" }}>
+              <textarea
+                style={{ ...inputStyle, flex: 1, boxSizing: "border-box", resize: "vertical" }}
+                rows={2}
+                value={txt}
+                onChange={(e) => {
+                  const next = [...(form.openingExtras || [])];
+                  next[idx] = e.target.value;
+                  setForm({ ...form, openingExtras: next });
+                }}
+                placeholder={`Tin nhắn thêm số ${idx + 1} (gửi tiếp ngay sau tin ở trên)`}
+              />
+              <button
+                type="button"
+                title="Xóa tin này"
+                onClick={() => setForm({ ...form, openingExtras: (form.openingExtras || []).filter((_, i) => i !== idx) })}
+                style={{ ...btn, padding: "6px 10px", color: "#c00" }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setForm({ ...form, openingExtras: [...(form.openingExtras || []), ""] })}
+            style={{ ...btn, marginTop: 8, padding: "6px 14px", fontWeight: 600 }}
+          >
+            + Thêm tin nhắn
+          </button>
         </div>
         <div>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
@@ -757,6 +792,11 @@ export default function AdminPage() {
                       <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f4f7ff", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
                         <div style={{ color: "#667", fontSize: 12, marginBottom: 2 }}>Câu mở đầu quảng cáo</div>
                         {p.openingScript}
+                        {(p.openingExtras || []).filter((t) => String(t).trim()).map((t, i) => (
+                          <div key={i} style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #ccd" }}>
+                            {t}
+                          </div>
+                        ))}
                       </div>
                     )}
                     {p.triggerQuestions && (
