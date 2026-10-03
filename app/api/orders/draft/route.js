@@ -6,6 +6,7 @@ import { NextResponse } from "next/server";
 import { getConversation, extractPhone, getCustomerInfo } from "@/lib/conversations";
 import { getProducts, filterProductsForPage } from "@/lib/products";
 import { getAllRawKeys } from "@/lib/apiKeys";
+import { getScope, canSeePage } from "@/lib/auth";
 
 const MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
 
@@ -52,8 +53,12 @@ export async function POST(req) {
   try {
     const { conversationId } = await req.json();
     const conv = await getConversation(conversationId);
+    const scope = await getScope(req);
+    if (!canSeePage(scope, conv.pageId)) return NextResponse.json({ error: "Bạn không có quyền với cuộc chat này." }, { status: 403 });
     const all = await getProducts();
-    const products = filterProductsForPage(all, conv.pageId);
+    let products = filterProductsForPage(all, conv.pageId);
+    // Member chỉ được chọn trong các sản phẩm được cấp quyền
+    if (!scope.isOwner) products = products.filter((p) => scope.productIds.has(String(p.id)));
 
     // Chỉ quét 20 tin nhắn cuối cùng (tính chung cả khách lẫn bot/shop)
     const last20 = conv.messages.slice(-20);

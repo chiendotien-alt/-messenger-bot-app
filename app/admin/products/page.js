@@ -241,6 +241,7 @@ export default function AdminPage() {
   const [copyNotice, setCopyNotice] = useState("");
   const [pages, setPages] = useState([]); // danh sách Fanpage
   const [filterPage, setFilterPage] = useState("all"); // lọc danh sách sản phẩm theo Page
+  const [isOwner, setIsOwner] = useState(false); // member chỉ được xem
 
   async function load() {
     setLoading(true);
@@ -251,6 +252,10 @@ export default function AdminPage() {
 
   useEffect(() => {
     load();
+    fetch("/api/me", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setIsOwner(Boolean(d?.isOwner)))
+      .catch(() => {});
     fetch("/api/pages", { cache: "no-store" })
       .then((r) => r.json())
       .then((d) => Array.isArray(d) && setPages(d))
@@ -407,14 +412,16 @@ export default function AdminPage() {
   return (
     <main style={{ fontFamily: "sans-serif", padding: 24, maxWidth: 1180, margin: "0 auto" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
-        <h1 style={{ margin: 0 }}>Quản lý sản phẩm</h1>
+        <h1 style={{ margin: 0 }}>{isOwner ? "Quản lý sản phẩm" : "Sản phẩm của bạn"}</h1>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <a
+          {isOwner && (
+<a
             href="/admin/products/training"
             style={{ ...navButtonStyle, width: "auto", padding: "0 14px", fontSize: 14, fontWeight: 600 }}
           >
             Câu đã dạy (cũ)
           </a>
+)}
           <a href="/admin" title="Hộp thoại khách hàng" aria-label="Hộp thoại khách hàng" style={navButtonStyle}>
             <ChatIcon />
           </a>
@@ -424,7 +431,8 @@ export default function AdminPage() {
         Bot dùng đúng danh sách này (nội dung và ảnh) để tư vấn khách trên Messenger.
       </p>
 
-      <details
+      {isOwner && (
+<details
         style={{ border: "1px solid #e2e2e2", borderRadius: 10, padding: "12px 16px", marginBottom: 20, background: "#fafafa" }}
       >
         <summary style={{ cursor: "pointer", fontWeight: 600 }}>Thông tin & quy tắc của shop cho bot</summary>
@@ -451,9 +459,11 @@ export default function AdminPage() {
           <span style={{ color: "#2d7a3a", fontSize: 13 }}>{promptStatus}</span>
         </div>
       </details>
+)}
 
       <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
-      <form
+      {isOwner && (
+<form
         onSubmit={handleSubmit}
         style={{
           display: "flex",
@@ -653,6 +663,7 @@ export default function AdminPage() {
           )}
         </div>
       </form>
+)}
 
       <div style={{ flex: 1, minWidth: 0 }}>
       {loading ? (
@@ -756,13 +767,14 @@ export default function AdminPage() {
                     )}
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
                     <Thumbs label="Ảnh thực tế" urls={p.realImages} labels={p.imageLabels} />
-                    {pages.length > 0 && (
+                    {isOwner && pages.length > 0 && (
                       <div style={{ marginTop: 12 }}>
                         <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>Áp dụng cho Page (tick để bật/tắt ngay):</div>
                         <PageChecklist compact pages={pages} value={pageIdsOf(p)} onChange={(ids) => handleMovePage(p, ids)} />
                       </div>
                     )}
-                    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                    {isOwner && (
+<div style={{ display: "flex", gap: 8, marginTop: 12 }}>
                       <button onClick={() => handleEdit(p)} style={btn}>
                         Sửa
                       </button>
@@ -776,6 +788,7 @@ export default function AdminPage() {
                         Xóa
                       </button>
                     </div>
+)}
                   </div>
                 )}
               </div>

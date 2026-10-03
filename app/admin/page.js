@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BoxIcon, KeyIcon, SettingsIcon, navButtonStyle } from "./icons";
+import { BoxIcon, KeyIcon, SettingsIcon, UsersIcon, navButtonStyle } from "./icons";
+import MembersModal from "./MembersModal";
 import TeachChat from "./TeachChat";
 
 function displayName(name, id) {
@@ -119,6 +120,14 @@ function PageSwitcher({ pages, value, onChange, onManage, onToggleBot, globalBot
     </div>
   );
 
+  if (pages.length === 0 && !onManage) {
+    return (
+      <div style={wrapStyle}>
+        <div style={{ padding: "9px 10px", fontSize: 13, color: "#6b7280" }}>Bạn chưa được cấp quyền Page nào. Liên hệ chủ shop.</div>
+      </div>
+    );
+  }
+
   if (pages.length === 0) {
     return (
       <div style={wrapStyle}>
@@ -227,9 +236,10 @@ function PageSwitcher({ pages, value, onChange, onManage, onToggleBot, globalBot
                 <Avatar src={p.avatar} name={p.name} size={32} />
                 <span style={{ ...nameStyle, color: p.botEnabled ? "#111" : "#999" }}>{p.name}</span>
               </button>
-              {switchBtn(p)}
+              {onToggleBot ? switchBtn(p) : null}
             </div>
           ))}
+          {onManage && (
           <button
             style={{ ...itemStyle(false), borderTop: "1px solid #eee", color: "#4f46e5" }}
             onClick={() => {
@@ -239,6 +249,7 @@ function PageSwitcher({ pages, value, onChange, onManage, onToggleBot, globalBot
           >
             ⚙ Quản lý Page
           </button>
+          )}
         </div>
       )}
     </div>
@@ -932,6 +943,14 @@ export default function ChatAdminPage() {
   const [pageFilter, setPageFilter] = useState("all"); // "all" hoặc ID của 1 Page
   const [showSettings, setShowSettings] = useState(false);
   const [showKeys, setShowKeys] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
+  const [isOwner, setIsOwner] = useState(false); // false = member cấp dưới (ẩn các chức năng của chủ shop)
+  useEffect(() => {
+    fetch("/api/me", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setIsOwner(Boolean(d?.isOwner)))
+      .catch(() => {});
+  }, []);
   const pageFilterRef = useRef("all");
   const [ordersByConv, setOrdersByConv] = useState({}); // { conversationId: [đơn mới → cũ] }
   const [timePreset, setTimePreset] = useState("all"); // all | today | yesterday | 7d | 30d | custom
@@ -1221,7 +1240,8 @@ export default function ChatAdminPage() {
       >
         <strong style={{ fontSize: 18 }}>Hộp thoại khách hàng</strong>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <button
+        {isOwner && (
+<button
           onClick={() => setShowSettings(true)}
           title="Cài đặt Fanpage"
           aria-label="Cài đặt Fanpage"
@@ -1229,7 +1249,9 @@ export default function ChatAdminPage() {
         >
           <SettingsIcon />
         </button>
-        <button
+)}
+        {isOwner && (
+<button
           onClick={() => setShowKeys(true)}
           title="API key AI"
           aria-label="API key AI"
@@ -1237,10 +1259,22 @@ export default function ChatAdminPage() {
         >
           <KeyIcon />
         </button>
-        <a href="/admin/products" title="Quản lý sản phẩm" aria-label="Quản lý sản phẩm" style={navButtonStyle}>
+)}
+        {isOwner && (
+        <button
+          onClick={() => setShowMembers(true)}
+          title="Quản lý member"
+          aria-label="Quản lý member"
+          style={{ ...navButtonStyle, cursor: "pointer" }}
+        >
+          <UsersIcon />
+        </button>
+        )}
+        <a href="/admin/products" title={isOwner ? "Quản lý sản phẩm" : "Xem sản phẩm"} aria-label="Sản phẩm" style={navButtonStyle}>
           <BoxIcon />
         </a>
-        <button
+        {isOwner && (
+<button
           onClick={toggleBot}
           style={{
             padding: "8px 16px",
@@ -1254,6 +1288,7 @@ export default function ChatAdminPage() {
         >
           {botEnabled ? "🤖 Bot đang BẬT" : "⏸ Bot đang TẮT"}
         </button>
+)}
         </div>
       </header>
 
@@ -1264,8 +1299,8 @@ export default function ChatAdminPage() {
             pages={pages}
             value={pageFilter}
             onChange={changePage}
-            onManage={() => setShowSettings(true)}
-            onToggleBot={togglePageBot}
+            onManage={isOwner ? () => setShowSettings(true) : undefined}
+            onToggleBot={isOwner ? togglePageBot : undefined}
             globalBotEnabled={botEnabled}
           />
           {/* Thanh công cụ: Tất cả / Có SĐT + Dạy bot */}
@@ -1288,7 +1323,8 @@ export default function ChatAdminPage() {
                 </button>
               ))}
             </div>
-            <div style={{ position: "relative" }}>
+            {isOwner && (
+<div style={{ position: "relative" }}>
               <button
                 onClick={() => setTeachMenu((v) => !v)}
                 aria-pressed={teachMode}
@@ -1323,6 +1359,7 @@ export default function ChatAdminPage() {
                 </>
               )}
             </div>
+)}
           </div>
 
           {/* Bộ lọc: thời gian (từ ngày → đến ngày) + tình trạng đơn */}
@@ -1397,7 +1434,8 @@ export default function ChatAdminPage() {
             </div>
 
             {/* Dọn chat không có SĐT quá 48 giờ */}
-            <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e5e7eb" }}>
+            {isOwner && (
+<div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e5e7eb" }}>
               {cleanup.phase === "idle" || cleanup.phase === "done" || cleanup.phase === "error" ? (
                 <>
                   <button
@@ -1436,6 +1474,7 @@ export default function ChatAdminPage() {
                 </div>
               )}
             </div>
+)}
           </div>
           <div style={{ flex: 1, overflowY: "auto" }}>
           {shownConversations.length === 0 && (
@@ -1516,7 +1555,8 @@ export default function ChatAdminPage() {
                   </div>
                 )}
               </div>
-              <button
+              {isOwner && (
+<button
                 onClick={(e) => {
                   e.stopPropagation();
                   deleteChat(c.id, displayName(c.name, c.id));
@@ -1527,6 +1567,7 @@ export default function ChatAdminPage() {
               >
                 🗑
               </button>
+)}
             </div>
           ))}
           </div>
@@ -1566,7 +1607,8 @@ export default function ChatAdminPage() {
                     </div>
                   )}
                 </div>
-                <button
+                {isOwner && (
+<button
                   onClick={() => deleteChat(selectedId, headName)}
                   style={{
                     padding: "7px 14px",
@@ -1580,6 +1622,7 @@ export default function ChatAdminPage() {
                 >
                   Xóa chat
                 </button>
+)}
               </div>
 
               <div style={{ flex: 1, overflowY: "auto", padding: 20, background: "#f8f9fb" }}>
@@ -1672,7 +1715,8 @@ export default function ChatAdminPage() {
           />
         )}
       </div>
-      {showKeys && <ApiKeysModal onClose={() => setShowKeys(false)} />}
+      {showKeys && isOwner && <ApiKeysModal onClose={() => setShowKeys(false)} />}
+      {showMembers && isOwner && <MembersModal pages={pages} onClose={() => setShowMembers(false)} />}
       {showSettings && (
         <SettingsModal pages={pages} onClose={() => setShowSettings(false)} onChanged={handlePagesChanged} />
       )}

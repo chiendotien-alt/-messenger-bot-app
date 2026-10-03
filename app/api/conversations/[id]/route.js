@@ -4,10 +4,15 @@ export const revalidate = 0;
 import { NextResponse } from "next/server";
 import { getConversation, addMessage, deleteConversation, getConversationPageId } from "@/lib/conversations";
 import { getPageToken } from "@/lib/pages";
+import { getScope, canSeePage } from "@/lib/auth";
+
+const NOT_FOUND = () => NextResponse.json({ error: "Không tìm thấy cuộc trò chuyện" }, { status: 404 });
 
 export async function GET(req, { params }) {
   try {
     const conv = await getConversation(params.id);
+    const scope = await getScope(req);
+    if (!canSeePage(scope, conv.pageId)) return NOT_FOUND();
     return NextResponse.json(conv, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("Lỗi đọc hội thoại:", err);
@@ -24,6 +29,7 @@ export async function POST(req, { params }) {
 
   // Trả lời bằng đúng token của Page mà khách này đã nhắn tới
   const pageId = await getConversationPageId(params.id);
+  if (!canSeePage(await getScope(req), pageId)) return NOT_FOUND();
   const PAGE_ACCESS_TOKEN = await getPageToken(pageId);
   if (!PAGE_ACCESS_TOKEN) {
     return NextResponse.json({ error: "Chưa có token cho Page của cuộc trò chuyện này" }, { status: 400 });
@@ -55,6 +61,7 @@ export async function POST(req, { params }) {
 
 // Xóa cuộc trò chuyện (để test lại từ đầu hoặc ẩn khách không tiềm năng)
 export async function DELETE(req, { params }) {
+  if (!(await getScope(req)).isOwner) return NextResponse.json({ error: "Chỉ chủ shop mới được xóa cuộc trò chuyện." }, { status: 403 });
   try {
     await deleteConversation(params.id);
     return NextResponse.json({ ok: true });
