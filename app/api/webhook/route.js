@@ -1078,10 +1078,10 @@ const APP_BASE_URL = (
   (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://messenger-bot-app.vercel.app")
 ).replace(/\/$/, "");
 // Ảnh trong carousel đi qua /api/img: thu nhỏ + viền trắng để không bị cắt chân ảnh. Đặt CAROUSEL_RESIZE=0 để dùng ảnh gốc.
-// &v=3: đổi số này khi sửa kiểu ảnh để Facebook không dùng lại ảnh cũ đã lưu tạm (cache theo link)
+// &v=4: đổi số này khi sửa kiểu ảnh để Facebook không dùng lại ảnh cũ đã lưu tạm (cache theo link)
 function cardImageUrl(url, showArrow) {
   if (process.env.CAROUSEL_RESIZE === "0") return url;
-  return `${APP_BASE_URL}/api/img?v=3&a=${showArrow ? 1 : 0}&u=${encodeURIComponent(url)}`;
+  return `${APP_BASE_URL}/api/img?v=4&a=${showArrow ? 1 : 0}&u=${encodeURIComponent(url)}`;
 }
 
 async function sendImagesGrouped(recipientId, items, token) {
@@ -1104,8 +1104,6 @@ async function sendImagesGrouped(recipientId, items, token) {
                 // Gợi ý vuốt ngay trên từng thẻ để khách biết còn ảnh/màu khác
                 // Không dùng dòng phụ → khung chữ dưới ảnh thấp, gọn
                 image_url: cardImageUrl(it.url, j < chunk.length - 1),
-                // Khách bấm vào ảnh → mở ảnh gốc to, rõ nét
-                default_action: { type: "web_url", url: it.url, webview_height_ratio: "full" },
               };
             }),
           },

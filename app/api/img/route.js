@@ -21,43 +21,35 @@ export async function GET(req) {
     const input = Buffer.from(await res.arrayBuffer());
 
     const SIZE = 640; // khung vuông
-    const INNER = Math.round(SIZE * 0.82); // ảnh thật chiếm 82% khung
-    // Nền = màu của viền ảnh gốc (ảnh chụp nền xám/trắng thì liền mạch) → thẻ nhìn đầy đặn,
-    // khung chữ dưới ảnh bằng đúng bề ngang thẻ, ảnh không bị cắt.
-    const base = sharp(input).rotate();
-    const rot = await base.clone().toBuffer();
-    const info = await sharp(rot).metadata();
-    const W = info.width, H = info.height;
-    const t = Math.max(2, Math.round(Math.min(W, H) * 0.02));
-    const strips = [
-      { left: 0, top: 0, width: W, height: t },
-      { left: 0, top: H - t, width: W, height: t },
-      { left: 0, top: 0, width: t, height: H },
-      { left: W - t, top: 0, width: t, height: H },
-    ];
-    let r = 0, g = 0, b = 0;
-    for (const e of strips) {
-      const piece = await sharp(rot).extract(e).toBuffer(); // cắt ra trước rồi mới đo
-      const st = await sharp(piece).stats();
-      r += st.channels[0].mean; g += st.channels[1].mean; b += st.channels[2].mean;
+    // Ảnh phóng vừa khít khung vuông (thấy đủ cả ảnh, không mất chân/cạp), đặt giữa.
+    // Phần thừa hai bên được kéo dài từ chính viền ảnh gốc nên liền mạch, không lộ khung.
+    const photoBuf = await sharp(input)
+      .rotate()
+      .resize(SIZE, SIZE, { fit: "inside" })
+      .toBuffer();
+    const pm = await sharp(photoBuf).metadata();
+    const padX = SIZE - pm.width, padY = SIZE - pm.height;
+    let card = sharp(photoBuf);
+    if (padX > 0 || padY > 0) {
+      card = card.extend({
+        left: Math.floor(padX / 2),
+        right: Math.ceil(padX / 2),
+        top: Math.floor(padY / 2),
+        bottom: Math.ceil(padY / 2),
+        extendWith: "copy",
+      });
     }
-    const bgColor = { r: Math.round(r / 4), g: Math.round(g / 4), b: Math.round(b / 4) };
-    const photo = await sharp(rot).resize(INNER, INNER, { fit: "inside" }).toBuffer();
-    // Ảnh nằm sát TRÁI thẻ (thẳng hàng với khung chữ bên dưới), phần trống bên phải cùng màu nền ảnh
-    const pm = await sharp(photo).metadata();
-    const layers = [{ input: photo, left: 0, top: Math.round((SIZE - pm.height) / 2) }];
+    const layers = [];
     if (showArrow) {
-      const cx = SIZE - 62, cy = Math.round(SIZE / 2);
+      const cx = SIZE - 52, cy = Math.round(SIZE / 2);
       const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${SIZE}" height="${SIZE}">
-        <circle cx="${cx}" cy="${cy}" r="34" fill="#ffffff" fill-opacity="0.55"/>
-        <path d="M ${cx - 8} ${cy - 18} L ${cx + 10} ${cy} L ${cx - 8} ${cy + 18}" fill="none" stroke="#444444" stroke-opacity="0.5" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="${cx}" cy="${cy}" r="30" fill="#ffffff" fill-opacity="0.5"/>
+        <path d="M ${cx - 7} ${cy - 16} L ${cx + 9} ${cy} L ${cx - 7} ${cy + 16}" fill="none" stroke="#444444" stroke-opacity="0.5" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
       layers.push({ input: Buffer.from(svg), left: 0, top: 0 });
     }
-    const out = await sharp({ create: { width: SIZE, height: SIZE, channels: 3, background: bgColor } })
-      .composite(layers)
-      .jpeg({ quality: 82 })
-      .toBuffer();
+    if (layers.length) card = sharp(await card.toBuffer()).composite(layers);
+    const out = await card.jpeg({ quality: 82 }).toBuffer();
 
     return new Response(out, {
       headers: { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=31536000, immutable" },
