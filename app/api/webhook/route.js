@@ -304,6 +304,15 @@ export async function POST(req) {
           // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
           await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
+          // Nhiều ảnh → nhắn thêm 1 câu nhắc vuốt + liệt kê tên màu/mẫu (khách khỏi hỏi "còn màu nào nữa")
+          if (images.length > 1) {
+            const names = [...new Set((imageItems || []).map((x) => (x.title || "").trim()).filter(Boolean))];
+            const list = names.length > 1 ? `: ${names.join(", ")}` : "";
+            const hint = `Dạ có ${images.length} mẫu${list}. Anh/chị vuốt ngang sang phải ➡️ để xem hết các mẫu nha ạ.`;
+            if (await sendMessage(senderId, hint, pageToken)) {
+              await addMessage(senderId, "bot", hint, [], pageId).catch(() => {});
+            }
+          }
         };
 
         if (openedProductId) {
@@ -430,7 +439,7 @@ function openingReply(p) {
 }
 
 // ---- Gọi Google Gemini API: soạn câu trả lời + quyết định có gửi ảnh không ----
-const MAX_IMAGES = 4;
+const MAX_IMAGES = 10;
 // Câu dùng khi AI lỗi — không được đưa vào lịch sử để model không bắt chước
 const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
 const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
@@ -1074,10 +1083,15 @@ async function sendImagesGrouped(recipientId, items, token) {
           payload: {
             template_type: "generic",
             image_aspect_ratio: "square",
-            elements: chunk.map((it) => ({
-              title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
-              image_url: it.url,
-            })),
+            elements: chunk.map((it, j) => {
+              const n = i + j + 1;
+              return {
+                title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
+                // Gợi ý vuốt ngay trên từng thẻ để khách biết còn ảnh/màu khác
+                subtitle: n < items.length ? `Mẫu ${n}/${items.length} · Vuốt sang phải ➡️ xem thêm` : `Mẫu ${n}/${items.length} · Mẫu cuối`,
+                image_url: it.url,
+              };
+            }),
           },
         },
       },
