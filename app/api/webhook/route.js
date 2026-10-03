@@ -76,9 +76,16 @@ const OPENING_BURST_MS = process.env.OPENING_BURST_MS !== undefined ? Number(pro
 const FIRST_CONTACT_DEFAULT_OPENING = process.env.FIRST_CONTACT_DEFAULT_OPENING !== "0";
 // ---- Khách ĐÃ CÓ cuộc trò chuyện nhắn liền mấy tin ngắn: chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần ----
 // (tin cuối cùng của loạt sẽ trả lời chung cho cả loạt; các tin trước tự dừng). Đặt REPLY_DEBOUNCE_MS=0 để tắt.
-const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 2500; // 2.5 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
+const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(process.env.REPLY_DEBOUNCE_MS) : 0; // 2.5 giây chờ khách gõ tiếp (mỗi tin mới của khách sẽ tính lại từ đầu)
 // Bot trả lời 2 tin liên tiếp: giữ tin thứ 2 ngần này ms (hiện "đang gõ"); trong lúc giữ mà khách nhắn thêm → hủy tin thứ 2, trả lời tin mới.
-const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 2500;
+// Khách nhắn dồn dập (tin thứ 2, 3... khi tin trước chưa được trả lời, hoặc nhắn tiếp ngay sau khi bot vừa trả lời):
+// chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
+const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 2500;
+const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
+const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 1000;
+// Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau 1s (câu ngắn) đến 1,5s (câu dài). AI soạn lâu hơn thì gửi ngay khi soạn xong.
+const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1000;
+const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 1500;
 // Khách nhắn thêm trong ngần này ms sau tin bot vừa gửi → dặn AI: câu trước trả lời hơi sớm, chỉ trả lời phần mới, không hỏi lại/lặp lại.
 const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? Number(process.env.FOLLOWUP_AFTER_BOT_MS) : 10000;
 // AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
@@ -188,9 +195,15 @@ export async function POST(req) {
 
         // Khách cũ nhắn liền mấy tin ngắn ("giá sao" / "có ship k" / "size L"): chờ vài giây, chỉ tin cuối trả lời cho cả loạt.
         // Bấm nút/câu hỏi có sẵn (postback) thì trả lời ngay, không chờ.
-        if (!firstContact && !event.postback && REPLY_DEBOUNCE_MS > 0 && messageId) {
-          await sleep(REPLY_DEBOUNCE_MS);
-          if (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
+        if (!firstContact && !event.postback && messageId) {
+          let waitMs = REPLY_DEBOUNCE_MS;
+          if (BURST_WAIT_MS > 0) {
+            const pend = await getPendingCustomerMessages(senderId).catch(() => []);
+            const outAge = await getLastOutgoingAgeMs(senderId).catch(() => null);
+            if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
+          }
+          if (waitMs > 0) await sleep(waitMs);
+          if (waitMs > 0 && await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
             console.log("Khách nhắn tiếp tin mới → để tin cuối cùng trả lời chung:", text);
             continue;
           }
@@ -208,8 +221,12 @@ export async function POST(req) {
           continue;
         }
 
-        await fbAction(senderId, "mark_seen", pageToken);
-        await fbAction(senderId, "typing_on", pageToken);
+        // Hiện "đã xem" + "đang gõ" ngay lập tức (gửi song song cho nhanh)
+        let typingStartedAt = Date.now();
+        await Promise.all([
+          fbAction(senderId, "mark_seen", pageToken),
+          fbAction(senderId, "typing_on", pageToken),
+        ]);
 
         // Soạn câu trả lời. Nếu trong lúc soạn mà có tin khác của bot/chủ shop vừa được gửi (do 2 luồng chạy song song),
         // soạn lại 1 lần với lịch sử mới để không lặp lại/xác nhận lại điều đã nói.
@@ -224,7 +241,10 @@ export async function POST(req) {
           if (reply.openingProductId) await releaseOpening(senderId, reply.openingProductId).catch(() => {});
           if (pass === 1) reply = { skip: true }; // vẫn bị đổi lần nữa → dừng, tránh trả lời lặp
         }
-        if (reply.skip) continue;
+        if (reply.skip) {
+          await fbAction(senderId, "typing_off", pageToken);
+          continue;
+        }
 
         // Trong lúc AI soạn câu trả lời (vài giây), khách có thể đã nhắn thêm tin mới →
         // bỏ câu trả lời cũ này, để tin mới nhất trả lời gộp cho cả loạt (tránh bot trả lời lặp lại từng tin).
@@ -252,10 +272,13 @@ export async function POST(req) {
           for (let i = 0; i < messages.length; i++) {
             if (i > 0) {
               await fbAction(senderId, "typing_on", pageToken);
+              typingStartedAt = Date.now();
             }
-            const typingMs = Math.min(1800, 500 + messages[i].length * 15); // nghỉ tí như người đang gõ
-            // Tin thứ 2 giữ lâu hơn (SECOND_MSG_HOLD_MS) để kịp thấy khách nhắn thêm → hủy tin này, trả lời tin mới
-            await sleep(i > 0 ? Math.max(SECOND_MSG_HOLD_MS, typingMs) : typingMs);
+            // Tin đầu: giả gõ 1-1,5s tính từ lúc bắt đầu "đang gõ" (AI soạn lâu rồi thì gửi ngay).
+            // Tin thứ 2: giả soạn ~1s; trong lúc đó khách nhắn thêm → hủy tin này, trả lời tin mới.
+            const typingMs = Math.min(TYPING_MAX_MS, TYPING_MIN_MS + messages[i].length * 5);
+            const waitMs = i > 0 ? SECOND_MSG_HOLD_MS : Math.max(0, typingMs - (Date.now() - typingStartedAt));
+            await sleep(waitMs);
             // Kiểm tra lần cuối ngay trước khi gửi từng tin
             if (await superseded()) {
               console.log("Khách nhắn thêm ngay trước lúc gửi → dừng, chờ tin mới nhất:", text);
@@ -286,7 +309,10 @@ export async function POST(req) {
         if (openedProductId) {
           // Câu mở đầu quảng cáo: gửi ẢNH MẪU trước, rồi mới gửi câu mở đầu (giá, ưu đãi...)
           await sendImages();
-          if (images.length) await fbAction(senderId, "typing_on", pageToken);
+          if (images.length) {
+            await fbAction(senderId, "typing_on", pageToken);
+            typingStartedAt = Date.now();
+          }
           await sendTexts();
         } else {
           const sent = await sendTexts();
@@ -749,6 +775,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
   else if (!parsed && raw.trim()) list = salvageMessages(raw);
   let messages = list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m)).slice(0, 2);
+  // Khách nhắn liền nhiều tin → gộp thành MỘT tin trả lời (không gửi 2 tin rời làm khách rối)
+  if (burstNote && messages.length > 1) {
+    const joined = messages.join("\n\n");
+    if (joined.length <= 1900) messages = [joined];
+  }
   const openingRequested = !!parsed?.use_opening_product;
 
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
