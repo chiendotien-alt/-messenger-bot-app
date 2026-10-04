@@ -978,14 +978,27 @@ export default function ChatAdminPage() {
   const [teachEver, setTeachEver] = useState(false); // đã mở Dạy bot ít nhất 1 lần (giữ đoạn chat đang soạn khi bấm sang chat khác)
   const [phoneOnly, setPhoneOnly] = useState(false); // chỉ hiện khách đã để lại số điện thoại
   const phoneOnlyRef = useRef(false);
+  const [searchInput, setSearchInput] = useState(""); // chữ đang gõ trong ô tìm tên
+  const [search, setSearch] = useState(""); // chữ tìm đã chốt (sau khi ngừng gõ ~0,3 giây)
+  const searchRef = useRef("");
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const v = searchInput.trim();
+      searchRef.current = v;
+      setSearch(v);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [searchInput]);
 
   const loadConversations = useCallback(async () => {
     const filter = pageFilter;
     const onlyPhone = phoneOnly;
     const from = dateFrom;
     const to = dateTo;
+    const q = search;
     try {
       const params = [];
+      if (q) params.push(`q=${encodeURIComponent(q)}`);
       if (filter !== "all") params.push(`pageId=${encodeURIComponent(filter)}`);
       if (onlyPhone) params.push("phone=1");
       if (from) params.push(`from=${from}`);
@@ -995,9 +1008,9 @@ export default function ChatAdminPage() {
       if (!res.ok) return; // lỗi tạm thời: giữ nguyên danh sách cũ
       const data = await res.json();
       // Bỏ kết quả về muộn của Page đã đổi đi (tránh nhảy lẫn danh sách)
-      if (Array.isArray(data) && pageFilterRef.current === filter && phoneOnlyRef.current === onlyPhone && rangeRef.current === `${from}|${to}`) setConversations(data);
+      if (Array.isArray(data) && pageFilterRef.current === filter && phoneOnlyRef.current === onlyPhone && rangeRef.current === `${from}|${to}` && searchRef.current === q) setConversations(data);
     } catch {}
-  }, [pageFilter, phoneOnly, dateFrom, dateTo]);
+  }, [pageFilter, phoneOnly, dateFrom, dateTo, search]);
 
   const loadPages = useCallback(async () => {
     try {
@@ -1358,6 +1371,25 @@ export default function ChatAdminPage() {
             onToggleBot={isOwner ? togglePageBot : undefined}
             globalBotEnabled={botEnabled}
           />
+          {/* Ô tìm khách theo tên */}
+          <div style={{ padding: "10px 16px 0", position: "relative" }}>
+            <input
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="🔍 Tìm khách theo tên..."
+              aria-label="Tìm khách theo tên"
+              style={{ width: "100%", boxSizing: "border-box", height: 36, padding: "0 32px 0 12px", fontSize: 13.5, border: "1px solid #d1d5db", borderRadius: 9, outline: "none", background: "#f9fafb" }}
+            />
+            {searchInput && (
+              <button
+                onClick={() => setSearchInput("")}
+                aria-label="Xóa chữ tìm"
+                style={{ position: "absolute", right: 24, top: 17, width: 22, height: 22, border: "none", borderRadius: "50%", background: "#d1d5db", color: "#374151", cursor: "pointer", padding: 0, lineHeight: "22px", fontSize: 14 }}
+              >
+                ×
+              </button>
+            )}
+          </div>
           {/* Thanh công cụ: Tất cả / Có SĐT + Dạy bot */}
           <div style={{ padding: "10px 16px", borderBottom: "1px solid #f0f0f0", display: "flex", gap: 10, alignItems: "center" }}>
             <div style={{ display: "flex", flex: 1, background: "#f3f4f6", borderRadius: 9, padding: 3 }}>
@@ -1583,7 +1615,7 @@ export default function ChatAdminPage() {
           <div style={{ flex: 1, overflowY: "auto" }}>
           {shownConversations.length === 0 && (
             <p style={{ padding: 16, color: "#888" }}>
-              {filtering ? "Không có cuộc chat nào khớp bộ lọc." : phoneOnly ? "Chưa có khách nào để lại số điện thoại." : "Chưa có khách nào nhắn tin."}
+              {search ? "Không tìm thấy khách nào có tên này." : filtering ? "Không có cuộc chat nào khớp bộ lọc." : phoneOnly ? "Chưa có khách nào để lại số điện thoại." : "Chưa có khách nào nhắn tin."}
             </p>
           )}
           {shownConversations.map((c) => (

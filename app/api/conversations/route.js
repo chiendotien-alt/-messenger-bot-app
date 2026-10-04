@@ -13,14 +13,15 @@ export async function GET(req) {
     const okDate = (v) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null);
     const from = okDate(params.get("from")); // YYYY-MM-DD (giờ Việt Nam)
     const to = okDate(params.get("to"));
+    const search = (params.get("q") || "").slice(0, 60);
     const scope = await getScope(req);
     if (!scope.isOwner) {
       // Member: chỉ thấy chat của các Page được cấp quyền
       if (pageId && !scope.pageIds.has(String(pageId))) return NextResponse.json([], { headers: { "Cache-Control": "no-store" } });
-      const list = await listConversations(pageId, phoneOnly, from, to, [...scope.pageIds]);
+      const list = await listConversations(pageId, phoneOnly, from, to, [...scope.pageIds], search);
       return NextResponse.json(list, { headers: { "Cache-Control": "no-store" } });
     }
-    const list = await listConversations(pageId, phoneOnly, from, to);
+    const list = await listConversations(pageId, phoneOnly, from, to, null, search);
     return NextResponse.json(list, { headers: { "Cache-Control": "no-store" } });
   } catch (err) {
     console.error("Lỗi đọc danh sách hội thoại:", err);
