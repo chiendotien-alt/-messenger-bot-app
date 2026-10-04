@@ -959,6 +959,7 @@ export default function ChatAdminPage() {
   const rangeRef = useRef("|");
   const [cleanup, setCleanup] = useState({ phase: "idle", count: 0, msg: "" }); // idle | loading | confirm | deleting | done | error
   const [orderFilter, setOrderFilter] = useState("all"); // all | none | draft | shipped | delivered | returned
+  const [bc, setBc] = useState({ phase: "idle", count: 0, text: "", msg: "", sent: 0, failed: 0 }); // idle | loading | edit | sending | done | error
 
   const loadOrders = useCallback(async () => {
     try {
@@ -1105,6 +1106,60 @@ export default function ChatAdminPage() {
       loadConversations();
     } catch (e) {
       setCleanup({ phase: "error", count: 0, msg: "Xóa không thành công: " + (e.message || e) });
+    }
+  }
+
+  // Nhắn 1 câu tự viết cho tất cả khách im lặng quá 3 giờ
+  async function startBroadcast() {
+    let saved = "";
+    try {
+      saved = localStorage.getItem("bcText") || "";
+    } catch {}
+    setBc({ phase: "loading", count: 0, text: saved, msg: "", sent: 0, failed: 0 });
+    try {
+      const qs = pageFilter !== "all" ? `?pageId=${encodeURIComponent(pageFilter)}` : "";
+      const res = await fetch("/api/conversations/broadcast" + qs, { cache: "no-store" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Lỗi");
+      setBc({ phase: "edit", count: data.count, text: saved, msg: "", sent: 0, failed: 0 });
+    } catch (e) {
+      setBc({ phase: "error", count: 0, text: saved, msg: "Không kiểm tra được: " + (e.message || e), sent: 0, failed: 0 });
+    }
+  }
+
+  async function confirmBroadcast() {
+    const text = bc.text.trim();
+    if (!text) return;
+    try {
+      localStorage.setItem("bcText", text);
+    } catch {}
+    setBc((b) => ({ ...b, phase: "sending", sent: 0, failed: 0, msg: "" }));
+    let sent = 0;
+    const failedIds = [];
+    let lastErr = "";
+    try {
+      for (let round = 0; round < 60; round++) {
+        const res = await fetch("/api/conversations/broadcast", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ pageId: pageFilter !== "all" ? pageFilter : null, text, excludeIds: failedIds }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || "Lỗi");
+        sent += data.sent;
+        failedIds.push(...(data.failedIds || []));
+        if (data.errors?.length) lastErr = data.errors[0];
+        setBc((b) => ({ ...b, sent, failed: failedIds.length }));
+        if (!data.remaining) break;
+      }
+      const msg =
+        `Đã gửi cho ${sent} khách.` +
+        (failedIds.length ? ` ${failedIds.length} khách gửi không được${lastErr ? ` (${lastErr})` : ""}.` : "");
+      setBc({ phase: "done", count: 0, text, msg, sent, failed: failedIds.length });
+      loadConversations();
+    } catch (e) {
+      setBc({ phase: "error", count: 0, text, msg: `Đã gửi ${sent} khách rồi bị dừng: ` + (e.message || e), sent, failed: failedIds.length });
+      loadConversations();
     }
   }
 
@@ -1436,18 +1491,67 @@ export default function ChatAdminPage() {
             {/* Dọn chat không có SĐT quá 48 giờ */}
             {isOwner && (
 <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #e5e7eb" }}>
-              {cleanup.phase === "idle" || cleanup.phase === "done" || cleanup.phase === "error" ? (
+              {["idle", "done", "error"].includes(cleanup.phase) && ["idle", "done", "error"].includes(bc.phase) ? (
                 <>
-                  <button
-                    onClick={startCleanup}
-                    style={{ width: "100%", height: 34, borderRadius: 8, border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", fontSize: 13, fontWeight: 600, cursor: "pointer" }}
-                  >
-                    Dọn chat không có SĐT quá 48 giờ
-                  </button>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button
+                      onClick={startCleanup}
+                      style={{ flex: 1, minHeight: 34, borderRadius: 8, border: "1px solid #fca5a5", background: "#fff", color: "#b91c1c", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "4px 6px" }}
+                    >
+                      Dọn chat không có SĐT quá 48 giờ
+                    </button>
+                    <button
+                      onClick={startBroadcast}
+                      style={{ flex: 1, minHeight: 34, borderRadius: 8, border: "1px solid #a5b4fc", background: "#fff", color: "#4338ca", fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: "4px 6px" }}
+                    >
+                      Nhắn khách im quá 3 giờ
+                    </button>
+                  </div>
                   {cleanup.msg && (
                     <div style={{ marginTop: 6, fontSize: 12.5, color: cleanup.phase === "error" ? "#b91c1c" : "#166534" }}>{cleanup.msg}</div>
                   )}
+                  {bc.msg && (
+                    <div style={{ marginTop: 6, fontSize: 12.5, color: bc.phase === "error" ? "#b91c1c" : "#166534" }}>{bc.msg}</div>
+                  )}
                 </>
+              ) : bc.phase === "loading" ? (
+                <div style={{ fontSize: 13, color: "#6b7280" }}>Đang kiểm tra...</div>
+              ) : bc.phase === "edit" || bc.phase === "sending" ? (
+                <div style={{ background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: 10, padding: 12 }}>
+                  <div style={{ fontSize: 13, color: "#312e81", lineHeight: 1.5 }}>
+                    Có <strong>{bc.count}</strong> khách{pageFilter !== "all" ? " của Fanpage đang chọn" : " (tất cả Fanpage)"} chưa để lại số điện thoại, cả shop lẫn khách đều không nhắn hơn 3 giờ và còn trong 24 giờ Facebook cho phép nhắn. Nhập câu muốn gửi:
+                  </div>
+                  <textarea
+                    value={bc.text}
+                    onChange={(e) => setBc((b) => ({ ...b, text: e.target.value }))}
+                    disabled={bc.phase === "sending"}
+                    rows={4}
+                    maxLength={2000}
+                    placeholder="Ví dụ: Dạ mình còn quan tâm sản phẩm bên shop không ạ? Cần shop tư vấn thêm mình cứ nhắn nhé."
+                    style={{ width: "100%", boxSizing: "border-box", marginTop: 8, padding: 8, fontSize: 13, border: "1px solid #c7d2fe", borderRadius: 8, resize: "vertical", fontFamily: "inherit" }}
+                  />
+                  {bc.phase === "sending" && (
+                    <div style={{ marginTop: 6, fontSize: 12.5, color: "#312e81" }}>
+                      Đang gửi... đã gửi {bc.sent}{bc.failed ? `, lỗi ${bc.failed}` : ""}. Đừng đóng trang nhé.
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button
+                      onClick={() => setBc({ phase: "idle", count: 0, text: bc.text, msg: "", sent: 0, failed: 0 })}
+                      disabled={bc.phase === "sending"}
+                      style={{ flex: 1, height: 34, borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", color: "#374151", fontSize: 13, cursor: "pointer" }}
+                    >
+                      Hủy
+                    </button>
+                    <button
+                      onClick={confirmBroadcast}
+                      disabled={bc.phase === "sending" || !bc.text.trim() || !bc.count}
+                      style={{ flex: 2, height: 34, borderRadius: 8, border: "none", background: "#4f46e5", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer", opacity: bc.phase === "sending" || !bc.text.trim() || !bc.count ? 0.5 : 1 }}
+                    >
+                      {bc.phase === "sending" ? "Đang gửi..." : `Gửi cho ${bc.count} khách`}
+                    </button>
+                  </div>
+                </div>
               ) : cleanup.phase === "loading" ? (
                 <div style={{ fontSize: 13, color: "#6b7280" }}>Đang kiểm tra...</div>
               ) : (

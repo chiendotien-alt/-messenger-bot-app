@@ -13,6 +13,7 @@ const EMPTY_FORM = {
   triggerQuestions: "",
   sampleImages: [],
   realImages: [],
+  openingImages: [], // ảnh được TICK để gửi kèm câu mở đầu (theo thứ tự tick)
   imageLabels: {},
 };
 
@@ -84,7 +85,7 @@ async function uploadImage(file) {
   return data.url;
 }
 
-function ImagePicker({ title, hint, urls, labels, onLabel, onChange }) {
+function ImagePicker({ title, hint, urls, labels, onLabel, onChange, ticked, onToggle }) {
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(0);
   const [error, setError] = useState("");
@@ -113,6 +114,11 @@ function ImagePicker({ title, hint, urls, labels, onLabel, onChange }) {
         <div>
           <strong style={{ fontSize: 14 }}>{title}</strong>
           <div style={{ color: "#888", fontSize: 12 }}>{hint}</div>
+          {onToggle && (
+            <div style={{ color: "#16a34a", fontSize: 12, marginTop: 2 }}>
+              ✔ Bấm ô vuông góc trái ảnh để chọn ảnh gửi kèm câu mở đầu (số = thứ tự gửi). Không tick ảnh nào = mở đầu không gửi ảnh.
+            </div>
+          )}
         </div>
         <button
           type="button"
@@ -170,6 +176,31 @@ function ImagePicker({ title, hint, urls, labels, onLabel, onChange }) {
                 >
                   ×
                 </button>
+                {onToggle && (
+                  <button
+                    type="button"
+                    onClick={() => onToggle(u)}
+                    aria-label="Chọn gửi kèm câu mở đầu"
+                    title="Tick để gửi ảnh này kèm câu mở đầu"
+                    style={{
+                      position: "absolute",
+                      top: 4,
+                      left: 4,
+                      minWidth: 26,
+                      height: 26,
+                      borderRadius: 6,
+                      border: ticked?.includes(u) ? "2px solid #16a34a" : "2px solid #fff",
+                      background: ticked?.includes(u) ? "#16a34a" : "rgba(0,0,0,0.45)",
+                      color: "#fff",
+                      cursor: "pointer",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      padding: 0,
+                    }}
+                  >
+                    {ticked?.includes(u) ? ticked.indexOf(u) + 1 : ""}
+                  </button>
+                )}
               </div>
               <input
                 value={labels?.[u] || ""}
@@ -218,7 +249,8 @@ function cleanForm(form) {
     if (keep.has(u) && String(v).trim()) imageLabels[u] = String(v).trim();
   }
   const openingExtras = (form.openingExtras || []).map((t) => String(t || "").trim()).filter(Boolean);
-  return { ...form, imageLabels, openingExtras };
+  const openingImages = (form.openingImages || []).filter((u) => keep.has(u));
+  return { ...form, imageLabels, openingExtras, openingImages };
 }
 
 export default function AdminPage() {
@@ -340,6 +372,13 @@ export default function AdminPage() {
     setSaving(false);
   }
 
+  function toggleOpening(url) {
+    setForm((f) => {
+      const cur = f.openingImages || [];
+      return { ...f, openingImages: cur.includes(url) ? cur.filter((u) => u !== url) : [...cur, url] };
+    });
+  }
+
   function setLabel(url, value) {
     setForm((f) => ({ ...f, imageLabels: { ...f.imageLabels, [url]: value } }));
   }
@@ -356,6 +395,8 @@ export default function AdminPage() {
       triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
+      // sản phẩm cũ chưa tick lần nào: coi như đang tick hết ảnh mẫu (đúng với cách bot đang gửi)
+      openingImages: Array.isArray(p.openingImages) ? p.openingImages : p.sampleImages || [],
       imageLabels: p.imageLabels || {},
     });
     setEditingId(p.id);
@@ -377,6 +418,10 @@ export default function AdminPage() {
           for (const u of add) if (src.imageLabels?.[u]) next.imageLabels[u] = src.imageLabels[u];
         }
       }
+      const srcTicked = Array.isArray(src.openingImages) ? src.openingImages : src.sampleImages || [];
+      const allNow = [...next.sampleImages, ...next.realImages];
+      next.openingImages = [...(f.openingImages || [])];
+      for (const u of srcTicked) if (allNow.includes(u) && !next.openingImages.includes(u)) next.openingImages.push(u);
       return next;
     });
   }
@@ -402,6 +447,8 @@ export default function AdminPage() {
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
+      // sản phẩm cũ chưa tick lần nào: coi như đang tick hết ảnh mẫu (đúng với cách bot đang gửi)
+      openingImages: Array.isArray(p.openingImages) ? p.openingImages : p.sampleImages || [],
       imageLabels: p.imageLabels || {},
     });
     setEditingId(null);
@@ -727,6 +774,8 @@ export default function AdminPage() {
           labels={form.imageLabels}
           onLabel={setLabel}
           onChange={(urls) => setForm((f) => ({ ...f, sampleImages: urls }))}
+          ticked={form.openingImages}
+          onToggle={toggleOpening}
         />
         <ImagePicker
           title="Ảnh sản phẩm thực tế"
@@ -735,6 +784,8 @@ export default function AdminPage() {
           labels={form.imageLabels}
           onLabel={setLabel}
           onChange={(urls) => setForm((f) => ({ ...f, realImages: urls }))}
+          ticked={form.openingImages}
+          onToggle={toggleOpening}
         />
         <div style={{ display: "flex", gap: 8 }}>
           <button

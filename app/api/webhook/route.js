@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList } from "@/lib/products";
 import {
   addMessage,
   ensureProfile,
@@ -304,8 +304,11 @@ export async function POST(req) {
         const sendImages = async () => {
           if (!images.length) return;
           if (await superseded()) return; // khách đã nhắn thêm → không gửi ảnh cũ
-          // Gom toàn bộ ảnh vào 1 tin nhắn (carousel vuốt ngang) thay vì gửi rời từng ảnh
-          await sendImagesGrouped(senderId, imageItems?.length ? imageItems : images.map((url) => ({ url })), pageToken);
+          // Gửi từng ảnh một (mỗi ảnh 1 tin), theo đúng thứ tự
+          for (let i = 0; i < images.length; i++) {
+            if (i > 0) await sleep(600);
+            await sendImage(senderId, images[i], pageToken);
+          }
           await addMessage(senderId, "bot", imageNote, images, pageId).catch(() => {});
         };
 
@@ -429,8 +432,8 @@ function openingAlreadySent(history, p) {
 }
 
 function openingReply(p) {
-  // Mở đầu chỉ gửi ảnh mẫu. Ảnh thực tế để dành, khách hỏi mới gửi.
-  const images = (p.sampleImages || []).slice(0, MAX_OPENING_IMAGES);
+  // Mở đầu chỉ gửi những ảnh chủ shop đã tick. Ảnh không tick để dành, khách hỏi mới gửi.
+  const images = openingImageList(p, MAX_OPENING_IMAGES);
   const labels = p.imageLabels || {};
   return {
     messages: openingMessages(p),
@@ -1066,53 +1069,4 @@ async function sendImage(recipientId, imageUrl, token) {
     message: { attachment: { type: "image", payload: { url: imageUrl, is_reusable: true } } },
     messaging_type: "RESPONSE",
   }, token);
-}
-
-/**
- * Gửi nhiều ảnh trong 1 tin nhắn: Messenger chỉ cho 1 attachment/tin nên dùng template "generic"
- * (carousel vuốt ngang, tối đa 10 thẻ/tin). Chỉ 1 ảnh → gửi ảnh thường.
- * Nếu Facebook từ chối carousel thì tự quay về gửi từng ảnh theo thứ tự.
- */
-const APP_BASE_URL = (
-  process.env.APP_BASE_URL ||
-  (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "https://messenger-bot-app.vercel.app")
-).replace(/\/$/, "");
-// Ảnh trong carousel đi qua /api/img: thu nhỏ + viền trắng để không bị cắt chân ảnh. Đặt CAROUSEL_RESIZE=0 để dùng ảnh gốc.
-// &v=4: đổi số này khi sửa kiểu ảnh để Facebook không dùng lại ảnh cũ đã lưu tạm (cache theo link)
-function cardImageUrl(url, showArrow) {
-  if (process.env.CAROUSEL_RESIZE === "0") return url;
-  return `${APP_BASE_URL}/api/img?v=4&a=${showArrow ? 1 : 0}&u=${encodeURIComponent(url)}`;
-}
-
-async function sendImagesGrouped(recipientId, items, token) {
-  if (items.length === 1) return void (await sendImage(recipientId, items[0].url, token));
-
-  for (let i = 0; i < items.length; i += 10) {
-    const chunk = items.slice(i, i + 10);
-    const ok = await fbPost({
-      recipient: { id: recipientId },
-      message: {
-        attachment: {
-          type: "template",
-          payload: {
-            template_type: "generic",
-            image_aspect_ratio: "square",
-            elements: chunk.map((it, j) => {
-              const n = i + j + 1;
-              return {
-                title: String(it.title || "Ảnh sản phẩm").slice(0, 80), // title là bắt buộc
-                // Gợi ý vuốt ngay trên từng thẻ để khách biết còn ảnh/màu khác
-                // Không dùng dòng phụ → khung chữ dưới ảnh thấp, gọn
-                image_url: cardImageUrl(it.url, j < chunk.length - 1),
-              };
-            }),
-          },
-        },
-      },
-      messaging_type: "RESPONSE",
-    }, token);
-    if (!ok) {
-      for (const it of chunk) await sendImage(recipientId, it.url, token);
-    }
-  }
 }
