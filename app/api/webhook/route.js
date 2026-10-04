@@ -28,9 +28,11 @@ import {
   hasNewerDifferentCustomerMessage,
   getCustomerInfo,
   getLastOutgoingAgeMs,
+  getRecentOutgoingTexts,
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
+import { isRepeatedQuestion } from "@/lib/replyDedupe";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
@@ -82,6 +84,8 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 2500;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
+// Bot không hỏi lại câu hỏi gần giống 1 trong N tin chữ gần nhất của bot/shop gửi cho khách này (mặc định 3). Đặt 0 để tắt.
+const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
 const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 1000;
 // Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau 1s (câu ngắn) đến 1,5s (câu dài). AI soạn lâu hơn thì gửi ngay khi soạn xong.
 const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1000;
@@ -287,6 +291,14 @@ export async function POST(req) {
               console.log("Khách nhắn thêm ngay trước lúc gửi → dừng, chờ tin mới nhất:", text);
               if (i === 0 && openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
               return false;
+            }
+            // Câu hỏi này gần giống câu bot/shop vừa hỏi (vd 2 luồng trả lời chồng nhau) → bỏ câu này, gửi tiếp các câu khác
+            if (NO_REPEAT_QUESTION_LAST > 0 && !reply.openingProductId) {
+              const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
+              if (isRepeatedQuestion(messages[i], recent)) {
+                console.log("Bỏ câu hỏi lặp lại câu đã hỏi:", messages[i]);
+                continue;
+              }
             }
             const delivered = await sendMessage(senderId, messages[i], pageToken);
             if (!delivered) {
