@@ -32,7 +32,8 @@ import {
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
-import { isRepeatedQuestion } from "@/lib/replyDedupe";
+import { removeRepeatedAsks } from "@/lib/replyDedupe";
+import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
@@ -84,8 +85,10 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 2500;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
-// Bot không hỏi lại câu hỏi gần giống 1 trong N tin chữ gần nhất của bot/shop gửi cho khách này (mặc định 3). Đặt 0 để tắt.
+// Bot không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất của bot/shop gửi cho khách này (mặc định 3). Đặt 0 để tắt.
 const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
+// Mỗi khách chỉ 1 lượt trả lời chạy cùng lúc; tin đến sau xếp hàng chờ tối đa ngần này ms (25s). Đặt 0 để tắt.
+const REPLY_LOCK_WAIT_MS = process.env.REPLY_LOCK_WAIT_MS !== undefined ? Number(process.env.REPLY_LOCK_WAIT_MS) : 25000;
 const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 1000;
 // Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau 1s (câu ngắn) đến 1,5s (câu dài). AI soạn lâu hơn thì gửi ngay khi soạn xong.
 const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1000;
@@ -145,6 +148,7 @@ export async function POST(req) {
       if (!senderId || event.message?.is_echo || (!text && !fbImages.length)) continue;
 
       let openedProductId = null; // sản phẩm vừa giữ chỗ gửi câu mở đầu (để trả lại nếu gửi lỗi)
+      let lockToken = null; // khóa trả lời của khách này (trả lại ở cuối, dù thành công hay lỗi)
       try {
         // Facebook có thể gửi lại đúng sự kiện này (khi webhook chậm) → chỉ xử lý 1 lần
         if (!(await claimEvent(mid).catch(() => true))) continue;
@@ -228,6 +232,21 @@ export async function POST(req) {
           continue;
         }
 
+        // Xếp hàng: nếu bot đang soạn/gửi trả lời cho CHÍNH khách này thì chờ lượt đó xong rồi mới soạn,
+        // để lượt này thấy đủ những gì bot vừa nói. Khách khác không bị ảnh hưởng.
+        lockToken = await acquireReplyLock(senderId, { waitMs: REPLY_LOCK_WAIT_MS });
+        // Chờ xong mà khách đã nhắn thêm tin mới → bỏ lượt này, để tin mới nhất trả lời gộp
+        if (
+          lockToken &&
+          !firstContact &&
+          !event.postback &&
+          messageId &&
+          (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false))
+        ) {
+          console.log("Khách đã nhắn thêm trong lúc xếp hàng → bỏ lượt này, chờ tin mới nhất:", text);
+          continue;
+        }
+
         // Hiện "đã xem" + "đang gõ" ngay lập tức (gửi song song cho nhanh)
         let typingStartedAt = Date.now();
         await Promise.all([
@@ -295,9 +314,11 @@ export async function POST(req) {
             // Câu hỏi này gần giống câu bot/shop vừa hỏi (vd 2 luồng trả lời chồng nhau) → bỏ câu này, gửi tiếp các câu khác
             if (NO_REPEAT_QUESTION_LAST > 0 && !reply.openingProductId) {
               const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
-              if (isRepeatedQuestion(messages[i], recent)) {
-                console.log("Bỏ câu hỏi lặp lại câu đã hỏi:", messages[i]);
-                continue;
+              const cleaned = removeRepeatedAsks(messages[i], recent);
+              if (cleaned !== messages[i]) {
+                console.log("Bỏ câu hỏi/xin lặp lại điều đã hỏi:", messages[i], "→", cleaned || "(bỏ cả tin)");
+                if (!cleaned) continue;
+                messages[i] = cleaned; // vẫn gửi phần còn lại của tin
               }
             }
             const delivered = await sendMessage(senderId, messages[i], pageToken);
@@ -346,6 +367,8 @@ export async function POST(req) {
             pageToken
           ).catch(() => {});
         }
+      } finally {
+        if (lockToken) await releaseReplyLock(senderId, lockToken);
       }
     }
   }
