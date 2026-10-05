@@ -71,30 +71,6 @@ export async function isRecentOutgoingDuplicate(senderId, text, windowSec = 60) 
   return rows.length > 0;
 }
 
-/** `limit` tin chữ gần nhất của bot/chủ shop gửi cho khách (mới nhất trước). windowSec > 0 thì chỉ lấy trong ngần đó giây; 0 = không giới hạn thời gian. Dùng để chặn bot hỏi lặp. */
-export async function getRecentOutgoingTexts(senderId, windowSec = 0, limit = 3) {
-  const sql = await getSql();
-  const rows = await sql`SELECT text FROM messages
-                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')
-                           AND text IS NOT NULL AND text <> ''
-                           AND (${windowSec}::int <= 0 OR created_at > now() - (${windowSec}::int * interval '1 second'))
-                         ORDER BY id DESC
-                         LIMIT ${limit}::int`;
-  return rows.map((r) => r.text);
-}
-
-/** Các tin bot/chủ shop gửi gần nhất, MỚI NHẤT TRƯỚC, kèm cách đây bao nhiêu mili giây: [{ text, ageMs }]. */
-export async function getRecentOutgoingWithAge(senderId, limit = 15) {
-  const sql = await getSql();
-  const rows = await sql`SELECT text, EXTRACT(EPOCH FROM (now() - created_at)) * 1000 AS age
-                         FROM messages
-                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')
-                           AND text IS NOT NULL AND text <> ''
-                         ORDER BY id DESC
-                         LIMIT ${limit}::int`;
-  return rows.map((r) => ({ text: r.text, ageMs: Number(r.age) }));
-}
-
 /** Khách này đã từng được bot/chủ shop nhắn lại chưa? (chưa = khách mới, đang nhắn lần đầu) */
 export async function hasOutgoingMessage(senderId) {
   const sql = await getSql();
@@ -121,14 +97,6 @@ export async function getLatestCustomerMessageId(senderId) {
   return rows[0]?.id ?? null;
 }
 
-/** ID tin mới nhất do bot/chủ shop gửi trong cuộc chat (để biết có ai vừa trả lời trong lúc mình đang soạn). */
-export async function getMaxOutgoingId(senderId) {
-  const sql = await getSql();
-  const rows = await sql`SELECT MAX(id) AS id FROM messages
-                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')`;
-  return rows[0]?.id ?? null;
-}
-
 /** Các tin khách đã gửi kể từ lần cuối bot/chủ shop nhắn lại (cũ → mới). */
 export async function getPendingCustomerMessages(senderId) {
   const sql = await getSql();
@@ -137,16 +105,6 @@ export async function getPendingCustomerMessages(senderId) {
                      AND id > COALESCE((SELECT MAX(id) FROM messages
                                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')), 0)
                    ORDER BY id ASC`;
-}
-
-/** Tin gần nhất do bot/chủ shop gửi cách đây bao nhiêu mili giây? Chưa có → null. */
-export async function getLastOutgoingAgeMs(senderId) {
-  const sql = await getSql();
-  const rows = await sql`SELECT EXTRACT(EPOCH FROM (now() - MAX(created_at))) * 1000 AS age
-                         FROM messages
-                         WHERE conversation_id = ${senderId} AND sender IN ('bot', 'admin')`;
-  const age = rows[0]?.age;
-  return age === null || age === undefined ? null : Number(age);
 }
 
 /** Tin đầu tiên của khách (chưa ai trả lời) đã nhắn cách đây bao nhiêu mili giây? Không có → null. */
@@ -316,7 +274,7 @@ export async function ensureProfile(senderId, pageToken) {
 
 /** pageId để trống → lấy hội thoại của tất cả các Page. */
 // Số điện thoại Việt Nam trong tin nhắn khách: 0912345678, 0912 345 678, 0912.345.678, +84912345678, 84912345678, số bàn 02...
-export const PHONE_SQL =
+const PHONE_SQL =
   "(^|[^0-9])(0|[+]?84)[[:space:].-]?([35789]([[:space:].-]?[0-9]){8}|2([[:space:].-]?[0-9]){9})([^0-9]|$)";
 const PHONE_JS = /(?<![0-9])(?:0|\+?84)[\s.-]?(?:[35789](?:[\s.-]?[0-9]){8}|2(?:[\s.-]?[0-9]){9})(?![0-9])/;
 
@@ -330,28 +288,9 @@ export function extractPhone(text) {
  * Danh sách hội thoại. phoneOnly=true → chỉ giữ khách đã để lại số điện thoại (trong tin nhắn của khách).
  * Mỗi hội thoại trả thêm `phone` (số gần nhất khách để lại, hoặc null).
  */
-/** from/to dạng "YYYY-MM-DD" (giờ Việt Nam): chỉ lấy cuộc chat có tin nhắn gần nhất trong khoảng đó. */
-// Bảng đổi chữ có dấu → không dấu để tìm tên không phân biệt dấu (SQL translate)
-const VI_FROM = "àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ";
-const VI_TO = [...VI_FROM].map((ch) => (ch === "đ" ? "d" : ch.normalize("NFD").replace(/[\u0300-\u036f]/g, ""))).join("");
-const searchKey = (t) =>
-  String(t || "")
-    .toLowerCase()
-    .normalize("NFC")
-    .replace(/[%_\\]/g, " ")
-    .trim()
-    .replace(/\s+/g, " ")
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/g, "d");
-
-export async function listConversations(pageId = null, phoneOnly = false, from = null, to = null, allowedPageIds = null, search = "") {
+export async function listConversations(pageId = null, phoneOnly = false) {
   const sql = await getSql();
-  const q = searchKey(search).slice(0, 60);
-  const qLike = q ? `%${q}%` : null;
   const pid = pageId ? String(pageId) : null;
-  // allowedPageIds = null → chủ shop (thấy hết); mảng → member chỉ thấy các Page này
-  const allowed = Array.isArray(allowedPageIds) ? allowedPageIds.map(String) : null;
   const rows = await sql`SELECT c.id, c.name, c.avatar,
                           c.page_id AS "pageId",
                           c.last_message AS "lastMessage",
@@ -366,15 +305,9 @@ export async function listConversations(pageId = null, phoneOnly = false, from =
                      ORDER BY m.id DESC LIMIT 1
                    ) ph ON true
                    WHERE (${pid}::text IS NULL OR c.page_id = ${pid})
-                     AND (${allowed}::text[] IS NULL OR c.page_id = ANY(${allowed}::text[]))
                      AND (${phoneOnly}::boolean = false OR ph.text IS NOT NULL)
-                     AND (${qLike}::text IS NULL
-                          OR translate(normalize(lower(COALESCE(c.name, '')), NFC), ${VI_FROM}, ${VI_TO}) LIKE ${qLike}
-                          OR c.id LIKE ${qLike})
-                     AND (${from}::date IS NULL OR c.last_time >= (${from}::date)::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh')
-                     AND (${to}::date IS NULL OR c.last_time < ((${to}::date + 1)::timestamp AT TIME ZONE 'Asia/Ho_Chi_Minh'))
                    ORDER BY c.last_time DESC
-                   LIMIT ${from || to || q ? 400 : 100}::int`;
+                   LIMIT 100`;
   return rows.map(({ phoneText, ...c }) => ({ ...c, phone: extractPhone(phoneText) }));
 }
 
@@ -434,51 +367,6 @@ export async function getRecentMessages(senderId, limit = 22, burstMs = 0) {
 }
 
 /** Xóa toàn bộ tin nhắn và hồ sơ của một khách. */
-const STALE_HOURS = 48; // cố định 48 giờ để tránh xóa nhầm
-
-/** Tìm các cuộc chat "chưa có giá trị": không có SĐT, không có đơn hàng, và không có tin mới quá 48 giờ. */
-async function findStaleNoPhoneIds(pageId) {
-  const sql = await getSql();
-  const pid = pageId ? String(pageId) : null;
-  const rows = await sql`SELECT c.id FROM conversations c
-                         WHERE (${pid}::text IS NULL OR c.page_id = ${pid})
-                           AND c.last_time < now() - (${STALE_HOURS}::int * interval '1 hour')
-                           AND COALESCE(c.info->>'phone', '') = ''
-                           AND NOT EXISTS (
-                             SELECT 1 FROM messages m
-                             WHERE m.conversation_id = c.id AND m.sender = 'customer' AND m.text ~ ${PHONE_SQL}
-                           )
-                           AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.conversation_id = c.id)
-                         LIMIT 3000`;
-  return rows.map((r) => r.id);
-}
-
-export async function countStaleNoPhone(pageId = null) {
-  return (await findStaleNoPhoneIds(pageId)).length;
-}
-
-export async function deleteStaleNoPhone(pageId = null) {
-  const ids = await findStaleNoPhoneIds(pageId);
-  if (!ids.length) return 0;
-  const sql = await getSql();
-  for (let i = 0; i < ids.length; i += 200) {
-    const chunk = ids.slice(i, i + 200);
-    // Xóa ảnh khách gửi đã lưu trong Blob (không đụng ảnh sản phẩm)
-    try {
-      const imgs = await sql`SELECT images FROM messages
-                             WHERE conversation_id = ANY(${chunk}::text[]) AND sender = 'customer' AND images IS NOT NULL`;
-      const urls = imgs.flatMap((r) => r.images || []).filter((u) => u.includes("/chat-images/"));
-      for (let j = 0; j < urls.length; j += 100) await del(urls.slice(j, j + 100));
-    } catch (e) {
-      console.error("Không dọn được ảnh khách:", e.message);
-    }
-    await sql`DELETE FROM messages WHERE conversation_id = ANY(${chunk}::text[])`;
-    await sql`DELETE FROM opening_sent WHERE conversation_id = ANY(${chunk}::text[])`;
-    await sql`DELETE FROM conversations WHERE id = ANY(${chunk}::text[])`;
-  }
-  return ids.length;
-}
-
 export async function deleteConversation(senderId) {
   const sql = await getSql();
   // Xóa ảnh khách gửi đã lưu trong Blob (KHÔNG đụng vào ảnh sản phẩm mà bot đã gửi)
@@ -493,48 +381,4 @@ export async function deleteConversation(senderId) {
   await sql`DELETE FROM messages WHERE conversation_id = ${senderId}`;
   await sql`DELETE FROM opening_sent WHERE conversation_id = ${senderId}`;
   await sql`DELETE FROM conversations WHERE id = ${senderId}`;
-}
-
-
-/**
- * Sau khi chờ gom tin: còn tin NÀO MỚI HƠN của khách không (để tin mới nhất trả lời chung cho cả loạt)?
- * Tin mới giống hệt tin này (>= 8 ký tự, không ảnh) không tính — loại đó đã bị bỏ qua ở bước "tin trùng".
- */
-export async function hasNewerDifferentCustomerMessage(senderId, messageId, text) {
-  if (!messageId) return false;
-  const sql = await getSql();
-  const t = text || "";
-  const rows = await sql`SELECT 1 FROM messages
-                         WHERE conversation_id = ${senderId} AND sender = 'customer' AND id > ${messageId}
-                           AND NOT (length(text) >= 8 AND text = ${t} AND images IS NULL)
-                         LIMIT 1`;
-  return rows.length > 0;
-}
-
-const INFO_KEYS = ["name", "phone", "address", "variant"];
-const INFO_MAX = { name: 80, phone: 20, address: 300, variant: 120 };
-
-/** Thông tin khách bot đã ghi nhớ: { name, phone, address, variant } (thiếu thì không có khóa). */
-export async function getCustomerInfo(senderId) {
-  const sql = await getSql();
-  const rows = await sql`SELECT info FROM conversations WHERE id = ${senderId}`;
-  const info = rows[0]?.info;
-  return info && typeof info === "object" ? info : {};
-}
-
-/** Gộp thông tin mới vào thông tin cũ (chỉ ghi các ô có chữ; ô trống không xóa thông tin cũ). */
-export async function mergeCustomerInfo(senderId, patch) {
-  if (!patch || typeof patch !== "object") return;
-  const clean = {};
-  for (const k of INFO_KEYS) {
-    const v = patch[k];
-    if (typeof v !== "string") continue;
-    const t = v.replace(/\s+/g, " ").trim().slice(0, INFO_MAX[k]);
-    if (t) clean[k] = k === "phone" ? t.replace(/[\s.-]/g, "") : t;
-  }
-  if (!Object.keys(clean).length) return;
-  const sql = await getSql();
-  await sql`UPDATE conversations
-            SET info = COALESCE(info, '{}'::jsonb) || ${JSON.stringify(clean)}::jsonb
-            WHERE id = ${senderId}`;
 }
