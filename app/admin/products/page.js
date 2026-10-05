@@ -602,17 +602,17 @@ export default function AdminPage() {
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={nudgeOn} onChange={(e) => setNudgeOn(e.target.checked)} />
-            Khách im quá số giây trên → bot nhắn bồi 1 câu hỏi lấy thông tin (bồi sớm nhất sau khoảng 30–60 giây)
+            Khách im quá số giây trên → bot nhắn thêm 1 câu chốt đơn ngắn, vd “Em lên đơn váy vàng nhé chị?” (sớm nhất sau khoảng 30–60 giây; lỡ quá giờ thì bỏ, không nhắn trễ)
           </label>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-            Chỉ bồi khách chưa để lại SĐT, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ bồi 1 câu. Câu bồi (mỗi dòng 1 câu, bot chọn ngẫu nhiên; để trống = AI tự soạn theo cuộc chat):
+            Chỉ nhắn khách chưa để lại SĐT, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
             rows={3}
             value={nudgeText}
             onChange={(e) => setNudgeText(e.target.value)}
-            placeholder={"Ví dụ:\nChị lấy màu nào để shop lên đơn cho chị nha?\nMình cho shop xin số điện thoại để shop giữ hàng cho mình nhé"}
+            placeholder={"Ví dụ:\nEm lên đơn {sp} {mau} nhé chị?\nMình chốt {sp} để em lên đơn luôn nha?"}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
             <button
