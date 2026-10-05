@@ -33,7 +33,7 @@ import {
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -325,6 +325,8 @@ export async function POST(req) {
                 const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
                 const { topics } = recentAskedTopics(rows, askGapMs);
                 cleaned = removeInfoAsks(cleaned, topics);
+                // Đã hết thời gian chờ mà hỏi lại cùng thông tin → đổi sang câu NGẮN hơn, khác cách nói (lần đầu hỏi thì giữ nguyên)
+                if (cleaned) cleaned = softenRepeatedInfoAsks(cleaned, rows);
                 // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
                 if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
                   const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
@@ -821,10 +823,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   // Shop vừa hỏi khách xin thông tin (màu, size, SĐT...) chưa quá "thời gian hỏi lại" → dặn AI chỉ trả lời, chưa hỏi lại
   let askNote = "";
+  let askRows = [];
   const askGapMs = readAskConfig(settings).askGapMs;
   if (askGapMs > 0 && !firstContact) {
     const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
     const { topics, ageMs } = recentAskedTopics(rows, askGapMs);
+    askRows = rows;
     if (topics.size) {
       const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
       askNote =
@@ -833,7 +837,20 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi.";
     }
   }
-  const finalPrompt = systemPrompt + burstNote + followupNote + askNote;
+  // Đã hỏi thông tin này từ trước (quá "thời gian hỏi lại") mà giờ cần hỏi lại → dặn AI hỏi NGẮN hơn và đổi cách nói
+  let reaskNote = "";
+  if (askGapMs > 0 && !firstContact) {
+    const waiting = recentAskedTopics(askRows, askGapMs).topics;
+    const older = [...recentAskedTopics(askRows, Infinity).topics].filter((t) => !waiting.has(t));
+    if (older.length) {
+      reaskNote =
+        "\n\nLƯU Ý KHI HỎI LẠI: trước đó shop đã hỏi khách xin [" + older.join(", ") + "]. " +
+        "Nếu lượt này cần hỏi lại phần nào khách chưa trả lời thì phải viết câu NGẮN GỌN HƠN và ĐỔI CÁCH DIỄN ĐẠT, nội dung vẫn tương tự, " +
+        "không chép lại câu cũ (vd cũ: \"Chị cho shop xin chiều cao và cân nặng để em chọn size vừa cho mình nha.\" → mới: \"Chị cho em xin chiều cao cân nặng nha?\"). " +
+        "Phần khách đã trả lời rồi thì không hỏi lại.";
+    }
+  }
+  const finalPrompt = systemPrompt + burstNote + followupNote + askNote + reaskNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
