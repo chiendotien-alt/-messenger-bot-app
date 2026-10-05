@@ -598,14 +598,14 @@ export default function AdminPage() {
           </div>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0 10px" }}>
             Bot vẫn trả lời khách bình thường. Lần đầu bot hỏi xin thông tin (màu, size, SĐT, địa chỉ...) thì hỏi luôn, không chờ.
-            Sau đó, khách hỏi chuyện khác thì bot chỉ trả lời, chưa hỏi lại; đủ số giây này mới được hỏi lại (60 giây = 1 phút, 180 = 3 phút). Nhập 0 = dùng luật cũ (không hỏi lại trong 3 tin gần nhất).
+            Sau đó, khách hỏi chuyện khác thì bot chỉ trả lời, chưa hỏi lại. Số giây này được đếm TỪ TIN CUỐI CỦA BOT (mỗi lần bot nhắn là đếm lại); đủ giờ mà khách vẫn chưa đưa thì bot xin tiếp thông tin còn thiếu (màu/size → SĐT → địa chỉ) (60 giây = 1 phút, 180 = 3 phút). Nhập 0 = dùng luật cũ (không hỏi lại trong 3 tin gần nhất).
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={nudgeOn} onChange={(e) => setNudgeOn(e.target.checked)} />
-            Khách im quá số giây trên → bot nhắn thêm 1 câu chốt đơn ngắn, vd “Em lên đơn váy vàng nhé chị?” (sớm nhất sau khoảng 30–60 giây; lỡ quá giờ thì bỏ, không nhắn trễ)
+            Khách im lặng đủ số giây trên kể từ tin cuối của bot → bot nhắn thêm 1 câu xin thông tin còn thiếu, vd “Mình cho em xin số điện thoại và địa chỉ để em lên đơn nhé?” (khách đã đưa đủ thì không nhắn; lỡ quá giờ thì bỏ, không nhắn trễ)
           </label>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-            Chỉ nhắn khách chưa để lại SĐT, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
+            Chỉ nhắn khách còn thiếu thông tin, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ 1 câu. Câu nhắn tự viết (mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn và xin đúng phần khách còn thiếu — nên để trống):
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}

@@ -33,7 +33,7 @@ import {
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, nextMissing, topicLabels } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -828,9 +828,19 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (topics.size) {
       const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
       askNote =
-        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + [...topics].join(", ") + "] cách đây khoảng " + secs + " giây. " +
+        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + topicLabels([...topics]) + "] cách đây khoảng " + secs + " giây. " +
         "Nếu khách chưa trả lời phần đó thì lượt này CHỈ trả lời đúng điều khách vừa hỏi, KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin này (hệ thống sẽ tự hỏi lại khi đủ thời gian). " +
         "Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi.";
+    } else if (rows.length) {
+      // Đã đủ "thời gian hỏi lại" kể từ TIN CUỐI CỦA BOT → nếu còn thiếu thông tin thì trả lời xong rồi xin tiếp phần tiếp theo
+      const need = nextMissing(customerInfo, rows);
+      if (need.length) {
+        const secs = Math.max(1, Math.round(Number(rows[0].ageMs) / 1000));
+        askNote =
+          "\n\nĐẾN LÚC XIN THÊM THÔNG TIN: tin cuối của shop cách đây khoảng " + secs + " giây và khách CHƯA đưa [" + topicLabels(need) + "]. " +
+          "Lượt này hãy trả lời đúng điều khách vừa hỏi trước, rồi ở cuối tin hỏi ĐÚNG 1 câu ngắn, nói khác câu shop đã hỏi trước đó, để xin [" + topicLabels(need) + "] (không xin mục nào khác). " +
+          "Nếu tin mới của khách đã đưa phần này thì ghi nhận và KHÔNG hỏi lại phần đó; khách đã đưa đủ thì không hỏi thêm.";
+      }
     }
   }
   const finalPrompt = systemPrompt + burstNote + followupNote + askNote;
