@@ -22,6 +22,7 @@ import {
   getMaxOutgoingId,
   getPendingCustomerMessages,
   getLastOpeningAgeMs,
+  getRecentOutgoingWithAge,
   isInOpeningWindow,
   getFirstPendingCustomerAgeMs,
   hasAdminMessage,
@@ -32,7 +33,8 @@ import {
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
-import { removeRepeatedAsks } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics } from "@/lib/replyDedupe";
+import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
@@ -85,7 +87,8 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 2500;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
-// Bot không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất của bot/shop gửi cho khách này (mặc định 3). Đặt 0 để tắt.
+// Luật CŨ (chỉ dùng khi "Thời gian hỏi lại thông tin" = 0 giây): không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất (mặc định 3). Đặt 0 để tắt.
+// Luật MỚI (mặc định): câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) chỉ được hỏi lại sau "Thời gian hỏi lại thông tin" giây (cài ở trang sản phẩm).
 const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
 // Mỗi khách chỉ 1 lượt trả lời chạy cùng lúc; tin đến sau xếp hàng chờ tối đa ngần này ms (25s). Đặt 0 để tắt.
 const REPLY_LOCK_WAIT_MS = process.env.REPLY_LOCK_WAIT_MS !== undefined ? Number(process.env.REPLY_LOCK_WAIT_MS) : 25000;
@@ -294,6 +297,8 @@ export async function POST(req) {
           !!messageId &&
           (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false));
 
+        const askGapMs = readAskConfig(settings).askGapMs;
+        let sentCount = 0;
         const sendTexts = async () => {
           for (let i = 0; i < messages.length; i++) {
             if (i > 0) {
@@ -311,12 +316,26 @@ export async function POST(req) {
               if (i === 0 && openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
               return false;
             }
-            // Câu hỏi này gần giống câu bot/shop vừa hỏi (vd 2 luồng trả lời chồng nhau) → bỏ câu này, gửi tiếp các câu khác
-            if (NO_REPEAT_QUESTION_LAST > 0 && !reply.openingProductId) {
-              const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
-              const cleaned = removeRepeatedAsks(messages[i], recent);
+            // Chống hỏi lặp. Luật mới: câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) mà bot/shop vừa hỏi chưa quá
+            // "Thời gian hỏi lại" thì bỏ câu hỏi đó, vẫn gửi phần trả lời. Lần đầu hỏi thì hỏi luôn, không chờ.
+            // "Thời gian hỏi lại" = 0 → dùng luật cũ (so với N tin gần nhất).
+            if (!reply.openingProductId) {
+              let cleaned = messages[i];
+              if (askGapMs > 0) {
+                const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
+                const { topics } = recentAskedTopics(rows, askGapMs);
+                cleaned = removeInfoAsks(cleaned, topics);
+                // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
+                if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
+                  const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
+                  cleaned = removeRepeatedAsks(cleaned, recent, { skipInfo: true });
+                }
+              } else if (NO_REPEAT_QUESTION_LAST > 0) {
+                const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
+                cleaned = removeRepeatedAsks(cleaned, recent);
+              }
               if (cleaned !== messages[i]) {
-                console.log("Bỏ câu hỏi/xin lặp lại điều đã hỏi:", messages[i], "→", cleaned || "(bỏ cả tin)");
+                console.log("Bỏ câu hỏi/xin thông tin hỏi lại quá sớm:", messages[i], "→", cleaned || "(bỏ cả tin)");
                 if (!cleaned) continue;
                 messages[i] = cleaned; // vẫn gửi phần còn lại của tin
               }
@@ -330,7 +349,9 @@ export async function POST(req) {
             await addMessage(senderId, "bot", messages[i], [], pageId).catch((e) =>
               console.error("Không lưu được tin của bot:", e.message)
             );
+            sentCount++;
           }
+          if (!sentCount) await fbAction(senderId, "typing_off", pageToken); // bỏ hết câu (toàn câu hỏi quá sớm) → tắt "đang gõ"
           return true;
         };
 
@@ -370,6 +391,15 @@ export async function POST(req) {
       } finally {
         if (lockToken) await releaseReplyLock(senderId, lockToken);
       }
+    }
+  }
+
+  // Nhắn "bồi" 1 câu lấy thông tin cho khách im lặng quá thời gian đã cài (chạy kèm, tối đa ~14 giây, chỉ khi còn dư thời gian)
+  if (Date.now() - startedAt < 30000) {
+    try {
+      await maybeRunNudge(await getSettings());
+    } catch (e) {
+      console.error("Lỗi nhắn bồi (chạy kèm):", e.message);
     }
   }
 
@@ -789,7 +819,21 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Không lặp lại ý đã nói ở tin shop vừa gửi, không hỏi lại điều khách vừa trả lời (vd khách đã nói màu thì đừng hỏi màu nữa), không chào lại.";
     }
   }
-  const finalPrompt = systemPrompt + burstNote + followupNote;
+  // Shop vừa hỏi khách xin thông tin (màu, size, SĐT...) chưa quá "thời gian hỏi lại" → dặn AI chỉ trả lời, chưa hỏi lại
+  let askNote = "";
+  const askGapMs = readAskConfig(settings).askGapMs;
+  if (askGapMs > 0 && !firstContact) {
+    const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
+    const { topics, ageMs } = recentAskedTopics(rows, askGapMs);
+    if (topics.size) {
+      const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
+      askNote =
+        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + [...topics].join(", ") + "] cách đây khoảng " + secs + " giây. " +
+        "Nếu khách chưa trả lời phần đó thì lượt này CHỈ trả lời đúng điều khách vừa hỏi, KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin này (hệ thống sẽ tự hỏi lại khi đủ thời gian). " +
+        "Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi.";
+    }
+  }
+  const finalPrompt = systemPrompt + burstNote + followupNote + askNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);

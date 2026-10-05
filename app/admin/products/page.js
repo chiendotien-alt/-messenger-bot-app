@@ -265,6 +265,12 @@ export default function AdminPage() {
   const [firstWait, setFirstWait] = useState("12"); // giây chờ trước khi bot trả lời câu đầu tiên của khách mới
   const [firstWaitSaved, setFirstWaitSaved] = useState("12");
   const [firstWaitStatus, setFirstWaitStatus] = useState("");
+  // Hỏi lại thông tin + nhắn bồi khi khách im
+  const [askGap, setAskGap] = useState("180"); // giây
+  const [nudgeOn, setNudgeOn] = useState(false);
+  const [nudgeText, setNudgeText] = useState("");
+  const [askSaved, setAskSaved] = useState({ gap: "180", on: false, text: "" });
+  const [askStatus, setAskStatus] = useState("");
   const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
   const [copyFromId, setCopyFromId] = useState("");
   const [copyParts, setCopyParts] = useState({
@@ -305,6 +311,19 @@ export default function AdminPage() {
         const w = s.firstContactWaitSec === undefined || s.firstContactWaitSec === null || s.firstContactWaitSec === "" ? "12" : String(s.firstContactWaitSec);
         setFirstWait(w);
         setFirstWaitSaved(w);
+        // Bản cũ lưu bằng phút (askGapMin) → đổi sang giây
+        const g =
+          s.askGapSec !== undefined && s.askGapSec !== null && s.askGapSec !== ""
+            ? String(s.askGapSec)
+            : s.askGapMin !== undefined && s.askGapMin !== null && s.askGapMin !== ""
+              ? String(Math.round(Number(s.askGapMin) * 60))
+              : "180";
+        const on = s.nudgeEnabled === true;
+        const tx = typeof s.nudgeText === "string" ? s.nudgeText : "";
+        setAskGap(g);
+        setNudgeOn(on);
+        setNudgeText(tx);
+        setAskSaved({ gap: g, on, text: tx });
       })
       .catch(() => {});
   }, []);
@@ -329,6 +348,28 @@ export default function AdminPage() {
       setFirstWaitStatus("Lưu thất bại, thử lại nhé");
     }
     setTimeout(() => setFirstWaitStatus(""), 2500);
+  }
+
+  async function saveAskSettings() {
+    const n = Number(askGap);
+    if (askGap === "" || !Number.isFinite(n) || n < 0 || n > 14400) {
+      setAskStatus("Nhập số giây từ 0 đến 14400");
+      return;
+    }
+    setAskStatus("Đang lưu...");
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ askGapSec: Math.round(n), askGapMin: null, nudgeEnabled: nudgeOn, nudgeText }),
+    });
+    if (res.ok) {
+      setAskGap(String(Math.round(n)));
+      setAskSaved({ gap: String(Math.round(n)), on: nudgeOn, text: nudgeText });
+      setAskStatus("Đã lưu ✓");
+    } else {
+      setAskStatus("Lưu thất bại, thử lại nhé");
+    }
+    setTimeout(() => setAskStatus(""), 2500);
   }
 
   async function savePrompt() {
@@ -539,6 +580,56 @@ export default function AdminPage() {
           <span style={{ color: "#2d7a3a", fontSize: 13 }}>{firstWaitStatus}</span>
           <div style={{ width: "100%", color: "#666", fontSize: 12 }}>
             Khách mới nhắn lần đầu: bot chờ ngần này giây (cho khách gõ xong) rồi mới gửi ảnh mẫu + câu mở đầu. Nhập 0 = trả lời ngay.
+          </div>
+        </div>
+        <div style={{ margin: "12px 0", padding: "10px 12px", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <strong style={{ fontSize: 14 }}>Thời gian hỏi lại thông tin:</strong>
+            <input
+              type="number"
+              min="0"
+              max="14400"
+              step="1"
+              value={askGap}
+              onChange={(e) => setAskGap(e.target.value)}
+              style={{ ...inputStyle, width: 70 }}
+            />
+            <span style={{ fontSize: 14 }}>giây</span>
+          </div>
+          <div style={{ color: "#666", fontSize: 12, margin: "6px 0 10px" }}>
+            Bot vẫn trả lời khách bình thường. Lần đầu bot hỏi xin thông tin (màu, size, SĐT, địa chỉ...) thì hỏi luôn, không chờ.
+            Sau đó, khách hỏi chuyện khác thì bot chỉ trả lời, chưa hỏi lại; đủ số giây này mới được hỏi lại (60 giây = 1 phút, 180 = 3 phút). Nhập 0 = dùng luật cũ (không hỏi lại trong 3 tin gần nhất).
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
+            <input type="checkbox" checked={nudgeOn} onChange={(e) => setNudgeOn(e.target.checked)} />
+            Khách im quá số giây trên → bot nhắn bồi 1 câu hỏi lấy thông tin (bồi sớm nhất sau khoảng 30–60 giây)
+          </label>
+          <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
+            Chỉ bồi khách chưa để lại SĐT, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ bồi 1 câu. Câu bồi (mỗi dòng 1 câu, bot chọn ngẫu nhiên; để trống = AI tự soạn theo cuộc chat):
+          </div>
+          <textarea
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
+            rows={3}
+            value={nudgeText}
+            onChange={(e) => setNudgeText(e.target.value)}
+            placeholder={"Ví dụ:\nChị lấy màu nào để shop lên đơn cho chị nha?\nMình cho shop xin số điện thoại để shop giữ hàng cho mình nhé"}
+          />
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
+            <button
+              type="button"
+              onClick={saveAskSettings}
+              disabled={askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text}
+              style={{
+                ...btn,
+                background: "#111",
+                color: "#fff",
+                border: "none",
+                opacity: askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text ? 0.5 : 1,
+              }}
+            >
+              Lưu
+            </button>
+            <span style={{ color: "#2d7a3a", fontSize: 13 }}>{askStatus}</span>
           </div>
         </div>
         <p style={{ color: "#666", fontSize: 13 }}>
