@@ -33,7 +33,7 @@ import {
   mergeCustomerInfo,
   extractPhone,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, nextMissing, topicLabels } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -67,9 +67,8 @@ const MODEL_CHAIN = [
   ),
 ];
 // Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
-const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 12000; // mỗi lần gọi chờ tối đa 12s (quá thì bỏ, dùng model dự phòng)
-const GEMINI_HEDGE_MS = Number(process.env.GEMINI_HEDGE_MS) || 4500; // chưa có kết quả sau 4,5s → bắn thêm 1 yêu cầu sang model khác chạy song song
-const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 30000; // tổng thời gian dành cho AI trong 1 tin nhắn
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 18000; // mỗi lần gọi chờ tối đa 18s (Gemini đang chậm thì 9s là quá ngắn)
+const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
 // Khách mới (chưa ai trả lời) → chờ ngần này ms KỂ TỪ TIN ĐẦU TIÊN (12s), hết giờ mới gửi ảnh mẫu + câu mở đầu.
 // Mọi tin khách gõ trong lúc chờ đều bỏ qua (AI không đọc), bot chỉ gửi mở đầu 1 lần.
@@ -153,7 +152,6 @@ export async function POST(req) {
 
       let openedProductId = null; // sản phẩm vừa giữ chỗ gửi câu mở đầu (để trả lại nếu gửi lỗi)
       let lockToken = null; // khóa trả lời của khách này (trả lại ở cuối, dù thành công hay lỗi)
-      let profileP = null; // việc cập nhật hồ sơ khách đang chạy nền
       try {
         // Facebook có thể gửi lại đúng sự kiện này (khi webhook chậm) → chỉ xử lý 1 lần
         if (!(await claimEvent(mid).catch(() => true))) continue;
@@ -163,18 +161,19 @@ export async function POST(req) {
         const messageId = await addMessage(senderId, "customer", text, savedImages, pageId, event.timestamp).catch((e) =>
           console.error("Không lưu được tin của khách:", e.message)
         );
-        // Hồ sơ khách (tên/ảnh) chạy nền song song với các bước chờ bên dưới; sẽ chờ xong trước khi soạn câu trả lời
-        profileP = ensureProfile(senderId, pageToken).catch((e) => console.error("Lỗi hồ sơ khách:", e.message));
+        await ensureProfile(senderId, pageToken).catch((e) =>
+          console.error("Lỗi hồ sơ khách:", e.message)
+        );
         // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
         const phoneInMsg = extractPhone(text);
         if (phoneInMsg) await mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {});
 
-        const [settings, pageBotOn] = await Promise.all([getSettings(), isPageBotEnabled(pageId)]);
+        const settings = await getSettings();
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
           continue;
         }
-        if (!pageBotOn) {
+        if (!(await isPageBotEnabled(pageId))) {
           // Bot của riêng Page này đang tắt — chỉ lưu tin nhắn
           continue;
         }
@@ -260,7 +259,6 @@ export async function POST(req) {
 
         // Soạn câu trả lời. Nếu trong lúc soạn mà có tin khác của bot/chủ shop vừa được gửi (do 2 luồng chạy song song),
         // soạn lại 1 lần với lịch sử mới để không lặp lại/xác nhận lại điều đã nói.
-        if (profileP) await profileP; // đảm bảo đã có tên khách trước khi soạn
         let reply;
         for (let pass = 0; pass < 2; pass++) {
           const outBefore = await getMaxOutgoingId(senderId).catch(() => null);
@@ -391,7 +389,6 @@ export async function POST(req) {
           ).catch(() => {});
         }
       } finally {
-        if (profileP) await profileP;
         if (lockToken) await releaseReplyLock(senderId, lockToken);
       }
     }
@@ -702,19 +699,13 @@ function isEchoOfShopReply(history, customerMessage) {
 async function generateReply(senderId, customerMessage, customerImages, settings, pageId, firstContact = false, hardDeadline = Date.now() + 50000) {
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
-  // Bắn song song các truy vấn DB độc lập (trước đây chạy nối đuôi nhau → cộng dồn độ trễ)
-  const productsP = getProducts();
-  const historyP = getRecentMessages(senderId, 22, OPENING_BURST_MS);
-  historyP.catch(() => {}); // tránh cảnh báo unhandled; lỗi vẫn được bắt ở try bên dưới
-  const apiKeysP = getAllRawKeys().catch(() => []);
-
   // Chỉ lấy sản phẩm của đúng Page đang nhận tin (+ sản phẩm dùng chung cho mọi Page)
-  const products = filterProductsForPage(await productsP, pageId);
+  const products = filterProductsForPage(await getProducts(), pageId);
 
   let history = [];
   try {
     // Bộ nhớ 22 tin gần nhất, nhưng bỏ các tin khách gõ trong loạt tin đầu (chỉ để kích hoạt ảnh + câu mở đầu)
-    history = await historyP;
+    history = await getRecentMessages(senderId, 22, OPENING_BURST_MS);
     // Lịch sử bắt đầu bằng tin của bot (câu mở đầu) → thêm 1 dòng giữ chỗ để AI biết bot đã gửi mở đầu rồi
     if (history.length && history[0].from !== "customer") {
       history.unshift({ from: "customer", text: "(khách mới nhắn hỏi thông tin sản phẩm)", images: [] });
@@ -788,14 +779,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     return { skip: true };
   }
 
-  const [customerName, customerInfo, pendingAll] = await Promise.all([
-    getCustomerName(senderId).catch(() => null),
-    getCustomerInfo(senderId).catch(() => ({})),
-    firstContact ? Promise.resolve([]) : getPendingCustomerMessages(senderId).catch(() => []),
-  ]);
+  const customerName = await getCustomerName(senderId).catch(() => null);
+  const customerInfo = await getCustomerInfo(senderId).catch(() => ({}));
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
   // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
-  const pendingMsgs = pendingAll;
+  const pendingMsgs = firstContact ? [] : await getPendingCustomerMessages(senderId).catch(() => []);
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
   const trainingText = await getTrainingForPrompt(currentProduct?.id, trainQueries).catch(() => "");
   const systemPrompt = buildSystemPrompt(
@@ -840,26 +828,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (topics.size) {
       const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
       askNote =
-        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + topicLabels([...topics]) + "] cách đây khoảng " + secs + " giây. " +
+        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + [...topics].join(", ") + "] cách đây khoảng " + secs + " giây. " +
         "Nếu khách chưa trả lời phần đó thì lượt này CHỈ trả lời đúng điều khách vừa hỏi, KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin này (hệ thống sẽ tự hỏi lại khi đủ thời gian). " +
         "Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi.";
-    } else if (rows.length) {
-      // Đã đủ "thời gian hỏi lại" kể từ TIN CUỐI CỦA BOT → nếu còn thiếu thông tin thì trả lời xong rồi xin tiếp phần tiếp theo
-      const need = nextMissing(customerInfo, rows);
-      if (need.length) {
-        const secs = Math.max(1, Math.round(Number(rows[0].ageMs) / 1000));
-        askNote =
-          "\n\nĐẾN LÚC XIN THÊM THÔNG TIN: tin cuối của shop cách đây khoảng " + secs + " giây và khách CHƯA đưa [" + topicLabels(need) + "]. " +
-          "Lượt này hãy trả lời đúng điều khách vừa hỏi trước, rồi ở cuối tin hỏi ĐÚNG 1 câu ngắn, nói khác câu shop đã hỏi trước đó, để xin [" + topicLabels(need) + "] (không xin mục nào khác). " +
-          "Nếu tin mới của khách đã đưa phần này thì ghi nhận và KHÔNG hỏi lại phần đó; khách đã đưa đủ thì không hỏi thêm.";
-      }
     }
   }
   const finalPrompt = systemPrompt + burstNote + followupNote + askNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
-  const apiKeys = await apiKeysP;
+  const apiKeys = await getAllRawKeys();
 
   // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản hơn.
   // Mỗi lần thử đều tự chạy qua danh sách model dự phòng (xem callGemini).
@@ -983,177 +961,103 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 }
 
 /**
- * Gọi Gemini theo kiểu "bắn dự phòng song song" (hedged request) để bot không bị đứng khi AI chập chờn:
- *  - Gửi yêu cầu tới ứng viên đầu tiên (model chính + key). Nếu sau GEMINI_HEDGE_MS (mặc định 4,5s) chưa có kết quả
- *    thì bắn THÊM 1 yêu cầu sang model KHÁC cùng lúc (không hủy yêu cầu đầu). Ai trả lời hợp lệ trước thì dùng, hủy phần còn lại.
- *  - Lỗi nhanh (429/503/404/401/500/rỗng) → chuyển NGAY sang ứng viên kế tiếp, không chờ hết giờ.
- *  - Mỗi lần gọi chờ tối đa GEMINI_TIMEOUT_MS (mặc định 12s). Model bị timeout/503 sẽ được "cho nghỉ" vài chục giây để tin sau khỏi mất công chờ lại.
- *  - Tối đa 2 yêu cầu chạy song song (không đốt quota).
+ * Gọi Gemini, thử lần lượt: mỗi model × mỗi API key (nhiều key = nhiều hạn mức/phút cộng lại).
+ *  - 429 (hết quota key này) → thử NGAY key khác với cùng model đó (không đổi model vội, giữ chất lượng)
+ *  - 404 (model không tồn tại) → bỏ hẳn model đó, sang model kế tiếp
+ *  - 401/403 (key này sai/bị khoá) → bỏ hẳn key đó, thử key khác
+ *  - 500/503/timeout (quá tải) → nghỉ ngắn rồi thử key khác của model đó
+ *  - 400 do thinkingConfig (model không hỗ trợ) → gọi lại không kèm thinkingConfig
  * Trả về { text, model }; text rỗng nếu tất cả model + key đều lỗi.
  */
-function buildCandidates(keys) {
-  const now = Date.now();
-  const lastModel = MODEL_CHAIN[MODEL_CHAIN.length - 1];
-  const cands = [];
-  for (const model of MODEL_CHAIN) {
-    if ((modelDown.get(model) || 0) > now && model !== lastModel) continue; // model đang quá tải/chậm → bỏ qua
-    let ks = keys.filter((k) => (modelCooldown.get(`${model}::${k.id}`) || 0) <= now);
-    if (!ks.length) ks = keys; // mọi key đang "nghỉ" với model này → thử lại hết
-    // Xoay vòng key để dàn đều hạn mức; mỗi model chỉ thử tối đa 2 key
-    const off = Math.floor(Math.random() * ks.length);
-    ks = ks.slice(off).concat(ks.slice(0, off));
-    for (const k of ks.slice(0, 2)) cands.push({ model, keyObj: k });
-  }
-  return cands;
-}
-
-/** Gọi 1 ứng viên (1 model + 1 key). Không bao giờ throw. Trả { text, skipModel }. */
-async function callOne(cand, systemPrompt, contents, generationConfig, ctx) {
-  const { model, keyObj } = cand;
-  const cooldownKey = `${model}::${keyObj.id}`;
-  let config = generationConfig;
-
-  for (let pass = 0; pass < 2; pass++) {
-    let res;
-    try {
-      res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": keyObj.key || "" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemPrompt }] },
-          contents,
-          generationConfig: config,
-        }),
-        signal: ctx.signal,
-      });
-    } catch (e) {
-      if (ctx.timedOut) {
-        console.error(`Gemini ${model} (key ${keyObj.id}) quá ${GEMINI_TIMEOUT_MS}ms chưa trả lời → cho model nghỉ 20s`);
-        modelDown.set(model, Date.now() + 20 * 1000);
-      } else if (!ctx.signal.aborted) {
-        console.error(`Gemini ${model} (key ${keyObj.id}) lỗi mạng:`, e.message);
-        modelCooldown.set(cooldownKey, Date.now() + 20 * 1000);
-      } // else: bị hủy vì ứng viên khác đã trả lời xong → không phải lỗi
-      return { text: "" };
-    }
-
-    const data = await res.json().catch(() => ({}));
-    if (ctx.signal.aborted) return { text: "" };
-
-    if (!res.ok) {
-      const err = data.error || {};
-      console.error(`Lỗi Gemini API [${model}] (key ${keyObj.id}) HTTP ${res.status}:`, JSON.stringify(err));
-
-      if (res.status === 400 && config.thinkingConfig && pass === 0 && /think/i.test(err.message || "")) {
-        const { thinkingConfig, ...rest } = config; // model này không nhận thinkingConfig → gọi lại không kèm
-        config = rest;
-        continue;
-      }
-      if (res.status === 401 || res.status === 403) {
-        modelCooldown.set(cooldownKey, Date.now() + 30 * 60 * 1000); // key sai/bị khoá
-        return { text: "" };
-      }
-      if (res.status === 404) {
-        modelDown.set(model, Date.now() + 30 * 60 * 1000); // tên model sai/đã tắt
-        return { text: "", skipModel: true };
-      }
-      if (res.status === 429) {
-        modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút
-        return { text: "" };
-      }
-      if (res.status === 503) {
-        modelDown.set(model, Date.now() + 45 * 1000); // quá tải cả model → đổi key không giúp
-        return { text: "", skipModel: true };
-      }
-      if (res.status >= 500) {
-        modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
-        return { text: "" };
-      }
-      return { text: "" }; // 400 khác
-    }
-
-    const cand0 = data.candidates?.[0];
-    const text = cand0?.content?.parts?.map((p) => p.text || "").join("") || "";
-    if (text.trim()) return { text };
-    console.warn(
-      `Gemini ${model} (key ${keyObj.id}) không trả nội dung. finishReason=${cand0?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
-    );
-    return { text: "", skipModel: true }; // rỗng → sang model khác (đổi key không ích gì)
-  }
-  return { text: "" };
-}
-
 async function callGemini(systemPrompt, contents, generationConfig, deadline, apiKeys) {
   const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
-  const queue = buildCandidates(keys);
-  const lastModel = MODEL_CHAIN[MODEL_CHAIN.length - 1];
-  const skipModels = new Set(); // model đã báo lỗi/rỗng trong lượt gọi này
-  const inflight = new Set();
-  const ctrls = new Set();
 
-  return new Promise((resolve) => {
-    let done = false;
-    let hedgeTimer = null;
+  for (const model of MODEL_CHAIN) {
+    // Model vừa báo quá tải (503) → nhảy thẳng sang model kế tiếp; riêng model cuối luôn được thử
+    if ((modelDown.get(model) || 0) > Date.now() && model !== MODEL_CHAIN[MODEL_CHAIN.length - 1]) continue;
 
-    const finish = (val) => {
-      if (done) return;
-      done = true;
-      clearTimeout(hedgeTimer);
-      for (const c of ctrls) c.abort(); // hủy các yêu cầu còn lại, khỏi tốn quota
-      resolve(val);
-    };
+    let config = generationConfig;
+    let stripped = false;
 
-    const usable = (c) =>
-      !skipModels.has(c.model) && !((modelDown.get(c.model) || 0) > Date.now() && c.model !== lastModel);
+    const now = Date.now();
+    let keyChain = keys.filter((k) => (modelCooldown.get(`${model}::${k.id}`) || 0) <= now);
+    if (!keyChain.length) keyChain = keys; // toàn bộ key đang "nghỉ" với model này thì thử lại hết
 
-    // Lấy ứng viên kế tiếp. Khi "bắn dự phòng" thì ưu tiên model KHÁC các model đang chạy (chậm thường là do cả model)
-    const takeNext = (avoid) => {
-      let idx = -1;
-      if (avoid && avoid.size) idx = queue.findIndex((c) => usable(c) && !avoid.has(c.model));
-      if (idx < 0) idx = queue.findIndex(usable);
-      return idx < 0 ? null : queue.splice(idx, 1)[0];
-    };
-
-    const launch = (hedge) => {
-      if (done) return;
-      clearTimeout(hedgeTimer);
-      if (hedge && inflight.size >= 2) return; // tối đa 2 yêu cầu song song
+    for (const keyObj of keyChain) {
+      const cooldownKey = `${model}::${keyObj.id}`;
       const remaining = deadline - Date.now();
-      const cand = remaining >= 2500 ? takeNext(hedge ? new Set([...inflight].map((c) => c.model)) : null) : null;
-      if (!cand) {
-        if (!inflight.size) {
-          if (remaining < 2500) console.warn("Hết thời gian dành cho AI, dừng thử.");
-          finish({ text: "", model: null });
-        }
-        return;
+      if (remaining < 3000) {
+        console.warn("Hết thời gian dành cho AI, dừng thử.");
+        return { text: "", model: null };
       }
 
-      inflight.add(cand);
-      const ctrl = new AbortController();
-      ctrls.add(ctrl);
-      const ctx = { signal: ctrl.signal, timedOut: false };
-      const timer = setTimeout(() => {
-        ctx.timedOut = true;
-        ctrl.abort();
-      }, Math.min(GEMINI_TIMEOUT_MS, remaining));
-      hedgeTimer = setTimeout(() => launch(true), GEMINI_HEDGE_MS); // con này chậm → bắn thêm 1 con dự phòng
-
-      callOne(cand, systemPrompt, contents, generationConfig, ctx)
-        .catch(() => ({ text: "" }))
-        .then((r) => {
-          clearTimeout(timer);
-          inflight.delete(cand);
-          if (r.skipModel) skipModels.add(cand.model);
-          if (r.text) {
-            if (inflight.size) console.log(`Gemini: ${cand.model} trả lời trước, hủy yêu cầu dự phòng còn lại.`);
-            return finish({ text: r.text, model: cand.model });
-          }
-          if (!done && inflight.size < 2) launch(false); // lỗi → chuyển NGAY sang ứng viên kế tiếp
+      let res;
+      try {
+        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-goog-api-key": keyObj.key || "" },
+          body: JSON.stringify({
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            contents,
+            generationConfig: config,
+          }),
+          signal: AbortSignal.timeout(Math.min(GEMINI_TIMEOUT_MS, remaining)),
         });
-    };
+      } catch (e) {
+        console.error(`Gemini ${model} (key ${keyObj.id}) timeout/lỗi mạng:`, e.message);
+        modelCooldown.set(cooldownKey, Date.now() + 20 * 1000);
+        continue; // thử key khác cùng model
+      }
 
-    launch(false);
-  });
+      const data = await res.json().catch(() => ({}));
+
+      if (!res.ok) {
+        const err = data.error || {};
+        console.error(`Lỗi Gemini API [${model}] (key ${keyObj.id}) HTTP ${res.status}:`, JSON.stringify(err));
+
+        if (res.status === 401 || res.status === 403) {
+          // Key này sai/bị khoá — nghỉ lâu, thử key khác
+          modelCooldown.set(cooldownKey, Date.now() + 30 * 60 * 1000);
+          continue;
+        }
+        if (res.status === 400 && config.thinkingConfig && !stripped && /think/i.test(err.message || "")) {
+          const { thinkingConfig, ...rest } = config; // model này không nhận thinkingConfig
+          config = rest;
+          stripped = true;
+          continue; // thử lại đúng key này với cấu hình mới, không tính là lỗi
+        }
+        if (res.status === 404) {
+          // Tên model sai/đã tắt — không liên quan tới key, nghỉ hẳn model này rồi sang model kế tiếp
+          for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 30 * 60 * 1000);
+          break;
+        }
+        if (res.status === 429) {
+          modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút → nghỉ 1 phút, thử key khác
+          continue;
+        }
+        if (res.status === 503) {
+          // "Model đang quá tải" là lỗi của CẢ model (đổi key không giúp) → nghỉ model này 45s, sang model kế tiếp ngay
+          modelDown.set(model, Date.now() + 45 * 1000);
+          break;
+        }
+        if (res.status >= 500) {
+          modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
+          continue; // lỗi máy chủ khác → thử key khác
+        }
+        continue; // 400 khác → thử key khác của model này
+      }
+
+      const cand = data.candidates?.[0];
+      const text = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
+      if (text.trim()) return { text, model };
+
+      console.warn(
+        `Gemini ${model} (key ${keyObj.id}) không trả nội dung. finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
+      );
+      break; // rỗng → thử model kế tiếp (không phải lỗi key, đổi key không ích gì)
+    }
+  }
+  return { text: "", model: null };
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
