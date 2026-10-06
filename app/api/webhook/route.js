@@ -67,7 +67,7 @@ const MODEL_CHAIN = [
   ),
 ];
 // Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
-const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 18000; // mỗi lần gọi chờ tối đa 18s (Gemini đang chậm thì 9s là quá ngắn)
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 10000; // mỗi lần gọi chờ tối đa 10s rồi chuyển model/key khác (trước là 18s → khách phải chờ lâu khi model đầu chậm)
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
 // Khách mới (chưa ai trả lời) → chờ ngần này ms KỂ TỪ TIN ĐẦU TIÊN (12s), hết giờ mới gửi ảnh mẫu + câu mở đầu.
@@ -85,17 +85,17 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // Bot trả lời 2 tin liên tiếp: giữ tin thứ 2 ngần này ms (hiện "đang gõ"); trong lúc giữ mà khách nhắn thêm → hủy tin thứ 2, trả lời tin mới.
 // Khách nhắn dồn dập (tin thứ 2, 3... khi tin trước chưa được trả lời, hoặc nhắn tiếp ngay sau khi bot vừa trả lời):
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
-const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 2500;
+const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 1200;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
 // Luật CŨ (chỉ dùng khi "Thời gian hỏi lại thông tin" = 0 giây): không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất (mặc định 3). Đặt 0 để tắt.
 // Luật MỚI (mặc định): câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) chỉ được hỏi lại sau "Thời gian hỏi lại thông tin" giây (cài ở trang sản phẩm).
 const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
 // Mỗi khách chỉ 1 lượt trả lời chạy cùng lúc; tin đến sau xếp hàng chờ tối đa ngần này ms (25s). Đặt 0 để tắt.
 const REPLY_LOCK_WAIT_MS = process.env.REPLY_LOCK_WAIT_MS !== undefined ? Number(process.env.REPLY_LOCK_WAIT_MS) : 25000;
-const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 1000;
+const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 600;
 // Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau 1s (câu ngắn) đến 1,5s (câu dài). AI soạn lâu hơn thì gửi ngay khi soạn xong.
-const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1000;
-const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 1500;
+const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 600;
+const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 900;
 // Khách nhắn thêm trong ngần này ms sau tin bot vừa gửi → dặn AI: câu trước trả lời hơi sớm, chỉ trả lời phần mới, không hỏi lại/lặp lại.
 const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? Number(process.env.FOLLOWUP_AFTER_BOT_MS) : 10000;
 // AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
@@ -161,19 +161,20 @@ export async function POST(req) {
         const messageId = await addMessage(senderId, "customer", text, savedImages, pageId, event.timestamp).catch((e) =>
           console.error("Không lưu được tin của khách:", e.message)
         );
-        await ensureProfile(senderId, pageToken).catch((e) =>
-          console.error("Lỗi hồ sơ khách:", e.message)
-        );
+        // Chạy SONG SONG (trước đây chờ lần lượt từng việc): hồ sơ khách, lưu SĐT, đọc cài đặt, kiểm tra bot của Page
         // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
         const phoneInMsg = extractPhone(text);
-        if (phoneInMsg) await mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {});
-
-        const settings = await getSettings();
+        const [, , settings, pageBotOn] = await Promise.all([
+          ensureProfile(senderId, pageToken).catch((e) => console.error("Lỗi hồ sơ khách:", e.message)),
+          phoneInMsg ? mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {}) : null,
+          getSettings(),
+          isPageBotEnabled(pageId),
+        ]);
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
           continue;
         }
-        if (!(await isPageBotEnabled(pageId))) {
+        if (!pageBotOn) {
           // Bot của riêng Page này đang tắt — chỉ lưu tin nhắn
           continue;
         }
@@ -212,8 +213,10 @@ export async function POST(req) {
         if (!firstContact && !event.postback && messageId) {
           let waitMs = REPLY_DEBOUNCE_MS;
           if (BURST_WAIT_MS > 0) {
-            const pend = await getPendingCustomerMessages(senderId).catch(() => []);
-            const outAge = await getLastOutgoingAgeMs(senderId).catch(() => null);
+            const [pend, outAge] = await Promise.all([
+              getPendingCustomerMessages(senderId).catch(() => []),
+              getLastOutgoingAgeMs(senderId).catch(() => null),
+            ]);
             if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
           if (waitMs > 0) await sleep(waitMs);
@@ -251,8 +254,9 @@ export async function POST(req) {
         }
 
         // Hiện "đã xem" + "đang gõ" ngay lập tức (gửi song song cho nhanh)
+        // (không chờ Facebook trả lời — gửi song song với lúc AI soạn, chờ xong ở ngay sau đó)
         let typingStartedAt = Date.now();
-        await Promise.all([
+        const typingP = Promise.all([
           fbAction(senderId, "mark_seen", pageToken),
           fbAction(senderId, "typing_on", pageToken),
         ]);
@@ -270,6 +274,7 @@ export async function POST(req) {
           if (reply.openingProductId) await releaseOpening(senderId, reply.openingProductId).catch(() => {});
           if (pass === 1) reply = { skip: true }; // vẫn bị đổi lần nữa → dừng, tránh trả lời lặp
         }
+        await typingP; // đảm bảo "đang gõ" đã gửi xong trước khi gửi tin / tắt "đang gõ"
         if (reply.skip) {
           await fbAction(senderId, "typing_off", pageToken);
           continue;
@@ -322,14 +327,16 @@ export async function POST(req) {
             if (!reply.openingProductId) {
               let cleaned = messages[i];
               if (askGapMs > 0) {
-                const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
+                const [rows, recent] = await Promise.all([
+                  getRecentOutgoingWithAge(senderId, 15).catch(() => []),
+                  NO_REPEAT_QUESTION_LAST > 0 ? getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []) : [],
+                ]);
                 const { topics } = recentAskedTopics(rows, askGapMs);
                 cleaned = removeInfoAsks(cleaned, topics);
                 // Đã hết thời gian chờ mà hỏi lại cùng thông tin → đổi sang câu NGẮN hơn, khác cách nói (lần đầu hỏi thì giữ nguyên)
                 if (cleaned) cleaned = softenRepeatedInfoAsks(cleaned, rows);
                 // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
                 if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
-                  const recent = await getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []);
                   cleaned = removeRepeatedAsks(cleaned, recent, { skipInfo: true });
                 }
               } else if (NO_REPEAT_QUESTION_LAST > 0) {
@@ -702,12 +709,21 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const fallback = { messages: [FALLBACK_TEXT], images: [], imageItems: [], imageNote: "" };
 
   // Chỉ lấy sản phẩm của đúng Page đang nhận tin (+ sản phẩm dùng chung cho mọi Page)
-  const products = filterProductsForPage(await getProducts(), pageId);
+  // Đọc sản phẩm + lịch sử chat SONG SONG
+  const [allProducts, historyRes] = await Promise.all([
+    getProducts(),
+    getRecentMessages(senderId, 22, OPENING_BURST_MS).then(
+      (h) => ({ ok: true, h }),
+      (e) => ({ ok: false, e })
+    ),
+  ]);
+  const products = filterProductsForPage(allProducts, pageId);
 
   let history = [];
   try {
     // Bộ nhớ 22 tin gần nhất, nhưng bỏ các tin khách gõ trong loạt tin đầu (chỉ để kích hoạt ảnh + câu mở đầu)
-    history = await getRecentMessages(senderId, 22, OPENING_BURST_MS);
+    if (!historyRes.ok) throw historyRes.e;
+    history = historyRes.h;
     // Lịch sử bắt đầu bằng tin của bot (câu mở đầu) → thêm 1 dòng giữ chỗ để AI biết bot đã gửi mở đầu rồi
     if (history.length && history[0].from !== "customer") {
       history.unshift({ from: "customer", text: "(khách mới nhắn hỏi thông tin sản phẩm)", images: [] });
@@ -726,12 +742,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       if (mm && (!match || (mm.exact && !match.exact))) match = mm;
     }
   }
-  if (match) await setCurrentProduct(senderId, match.product.id).catch(() => {});
-  let currentId = match?.product.id || (await getCurrentProduct(senderId).catch(() => null));
+  // Ghi nhớ sản phẩm / đọc sản phẩm đang hỏi / kiểm tra chủ shop đã nhắn chưa — chạy song song
+  const [, storedProductId, adminHandled] = await Promise.all([
+    match ? setCurrentProduct(senderId, match.product.id).catch(() => {}) : null,
+    match ? null : getCurrentProduct(senderId).catch(() => null),
+    // Chủ shop đã tự nhắn hỏi khách hộ bot → khách trả lời thì AI trả lời luôn, không gửi câu mở đầu quảng cáo nữa
+    firstContact ? false : hasAdminMessage(senderId).catch(() => false),
+  ]);
+  let currentId = match?.product.id || storedProductId;
   if (!currentId && products.length === 1) currentId = products[0].id;
   const currentProduct = products.find((p) => String(p.id) === String(currentId)) || null;
-  // Chủ shop đã tự nhắn hỏi khách hộ bot → khách trả lời thì AI trả lời luôn, không gửi câu mở đầu quảng cáo nữa
-  const adminHandled = firstContact ? false : await hasAdminMessage(senderId).catch(() => false);
 
   // Khách MỚI (dù nhắn 1 hay nhiều tin, nội dung gì cũng được): chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm.
   // Những gì khách hỏi thêm sẽ được trả lời ở lần khách nhắn tiếp theo.
@@ -781,13 +801,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     return { skip: true };
   }
 
-  const customerName = await getCustomerName(senderId).catch(() => null);
-  const customerInfo = await getCustomerInfo(senderId).catch(() => ({}));
+  const askGapMs = readAskConfig(settings).askGapMs;
+  // Đọc cùng lúc: tên + thông tin khách, tin chờ trả lời, tuổi tin bot gần nhất, các tin bot vừa gửi, khóa API
+  const [customerName, customerInfo, pendingMsgs, outAgeMs, askRows, apiKeys] = await Promise.all([
+    getCustomerName(senderId).catch(() => null),
+    getCustomerInfo(senderId).catch(() => ({})),
+    // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
+    firstContact ? [] : getPendingCustomerMessages(senderId).catch(() => []),
+    firstContact ? null : getLastOutgoingAgeMs(senderId).catch(() => null),
+    askGapMs > 0 && !firstContact ? getRecentOutgoingWithAge(senderId, 15).catch(() => []) : [],
+    getAllRawKeys(),
+  ]);
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
-  // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
-  const pendingMsgs = firstContact ? [] : await getPendingCustomerMessages(senderId).catch(() => []);
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
-  const trainingText = await getTrainingForPrompt(currentProduct?.id, trainQueries).catch(() => "");
+  // Tìm câu đã dạy và tải ảnh khách gửi (để AI nhìn) chạy song song
+  const [trainingText, contents] = await Promise.all([
+    getTrainingForPrompt(currentProduct?.id, trainQueries).catch(() => ""),
+    buildContents(history, customerMessage, customerImages),
+  ]);
   const systemPrompt = buildSystemPrompt(
     formatProductsForPrompt(products),
     settings.botPrompt,
@@ -796,7 +827,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     customerInfo,
     trainingText
   );
-  const contents = await buildContents(history, customerMessage, customerImages);
 
   // Khách vừa nhắn LIÊN TIẾP nhiều tin (chưa ai trả lời) → dặn AI đọc hết rồi trả lời gộp 1 lần
   let burstNote = "";
@@ -813,7 +843,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Khách nhắn thêm NGAY SAU tin bot vừa gửi (câu trước trả lời hơi sớm) → chỉ trả lời phần mới
   let followupNote = "";
   if (!firstContact && pendingMsgs.length) {
-    const outAge = await getLastOutgoingAgeMs(senderId).catch(() => null);
+    const outAge = outAgeMs;
     if (outAge !== null && outAge < FOLLOWUP_AFTER_BOT_MS) {
       followupNote =
         "\n\nLƯU Ý: khách vừa nhắn thêm chỉ vài giây sau tin shop vừa gửi, có thể khách nhắn tiếp khi chưa nói hết ý (tin shop vừa rồi có thể trả lời hơi sớm). " +
@@ -823,12 +853,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   // Shop vừa hỏi khách xin thông tin (màu, size, SĐT...) chưa quá "thời gian hỏi lại" → dặn AI chỉ trả lời, chưa hỏi lại
   let askNote = "";
-  let askRows = [];
-  const askGapMs = readAskConfig(settings).askGapMs;
   if (askGapMs > 0 && !firstContact) {
-    const rows = await getRecentOutgoingWithAge(senderId, 15).catch(() => []);
-    const { topics, ageMs } = recentAskedTopics(rows, askGapMs);
-    askRows = rows;
+    const { topics, ageMs } = recentAskedTopics(askRows, askGapMs);
     if (topics.size) {
       const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
       askNote =
@@ -854,7 +880,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
-  const apiKeys = await getAllRawKeys();
 
   // Thử lần 1: JSON + suy nghĩ ít. Nếu lỗi/rỗng, thử lần 2 với cấu hình đơn giản hơn.
   // Mỗi lần thử đều tự chạy qua danh sách model dự phòng (xem callGemini).

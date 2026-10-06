@@ -1062,7 +1062,7 @@ export default function ChatAdminPage() {
 
   useEffect(() => {
     loadConversations();
-    const t = setInterval(loadConversations, 3000);
+    const t = setInterval(() => { if (!document.hidden) loadConversations(); }, 1500); // chỉ tải khi tab đang mở (đỡ tốn lượt gọi)
     return () => clearInterval(t);
   }, [loadConversations]);
 
@@ -1071,6 +1071,20 @@ export default function ChatAdminPage() {
     const t = setInterval(loadOrders, 10000);
     return () => clearInterval(t);
   }, [loadOrders]);
+
+  // Trang quản trị đang mở → cứ 20 giây gọi 1 lượt "nhắn lại khi khách im" (không cần cron-job.org).
+  // Gọi trùng nhiều tab cũng không sao: server giữ chỗ từng khách nên mỗi khách chỉ bị nhắn 1 lần.
+  useEffect(() => {
+    const run = () => {
+      if (!document.hidden) fetch("/api/nudge/run", { cache: "no-store" }).catch(() => {});
+    };
+    const first = setTimeout(run, 5000);
+    const t = setInterval(run, 20000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(t);
+    };
+  }, []);
 
   // Page đang xem đã bị gỡ → quay về "Tất cả"
   useEffect(() => {
@@ -1081,7 +1095,7 @@ export default function ChatAdminPage() {
     if (!selectedId) return;
     setCurrent({ name: null, avatar: null, messages: [] });
     loadMessages(selectedId);
-    const t = setInterval(() => loadMessages(selectedId), 3000);
+    const t = setInterval(() => { if (!document.hidden) loadMessages(selectedId); }, 1500);
     return () => clearInterval(t);
   }, [selectedId, loadMessages]);
 
