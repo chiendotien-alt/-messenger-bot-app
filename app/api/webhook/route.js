@@ -40,6 +40,8 @@ import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
 import { buildSystemPrompt } from "@/lib/botPrompt";
+import { listOrders } from "@/lib/orders";
+import { buildOrderContext } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
@@ -803,7 +805,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   const askGapMs = readAskConfig(settings).askGapMs;
   // Đọc cùng lúc: tên + thông tin khách, tin chờ trả lời, tuổi tin bot gần nhất, các tin bot vừa gửi, khóa API
-  const [customerName, customerInfo, pendingMsgs, outAgeMs, askRows, apiKeys] = await Promise.all([
+  const [customerName, customerInfo, pendingMsgs, outAgeMs, askRows, apiKeys, customerOrders] = await Promise.all([
     getCustomerName(senderId).catch(() => null),
     getCustomerInfo(senderId).catch(() => ({})),
     // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
@@ -811,7 +813,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     firstContact ? null : getLastOutgoingAgeMs(senderId).catch(() => null),
     askGapMs > 0 && !firstContact ? getRecentOutgoingWithAge(senderId, 15).catch(() => []) : [],
     getAllRawKeys(),
+    // Đơn khách đã đặt (để bot biết khách đặt từ ngày nào, đã bao nhiêu ngày) — lỗi thì bỏ qua
+    listOrders(senderId).catch(() => []),
   ]);
+  const orderContext = buildOrderContext(customerOrders, settings.botPrompt);
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
   // Tìm câu đã dạy và tải ảnh khách gửi (để AI nhìn) chạy song song
@@ -825,7 +830,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     currentProduct,
     customerName,
     customerInfo,
-    trainingText
+    trainingText,
+    orderContext
   );
 
   // Khách vừa nhắn LIÊN TIẾP nhiều tin (chưa ai trả lời) → dặn AI đọc hết rồi trả lời gộp 1 lần
