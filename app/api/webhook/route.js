@@ -32,6 +32,7 @@ import {
   getRecentOutgoingTexts,
   mergeCustomerInfo,
   extractPhone,
+  isConversationBotOff,
 } from "@/lib/conversations";
 import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -166,11 +167,12 @@ export async function POST(req) {
         // Chạy SONG SONG (trước đây chờ lần lượt từng việc): hồ sơ khách, lưu SĐT, đọc cài đặt, kiểm tra bot của Page
         // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
         const phoneInMsg = extractPhone(text);
-        const [, , settings, pageBotOn] = await Promise.all([
+        const [, , settings, pageBotOn, convBotOff] = await Promise.all([
           ensureProfile(senderId, pageToken).catch((e) => console.error("Lỗi hồ sơ khách:", e.message)),
           phoneInMsg ? mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {}) : null,
           getSettings(),
           isPageBotEnabled(pageId),
+          isConversationBotOff(senderId).catch(() => false),
         ]);
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
@@ -178,6 +180,10 @@ export async function POST(req) {
         }
         if (!pageBotOn) {
           // Bot của riêng Page này đang tắt — chỉ lưu tin nhắn
+          continue;
+        }
+        if (convBotOff) {
+          // Bot đang tắt riêng cho khách này — chỉ lưu tin nhắn để chủ shop tự trả lời
           continue;
         }
 
@@ -243,6 +249,11 @@ export async function POST(req) {
         // Xếp hàng: nếu bot đang soạn/gửi trả lời cho CHÍNH khách này thì chờ lượt đó xong rồi mới soạn,
         // để lượt này thấy đủ những gì bot vừa nói. Khách khác không bị ảnh hưởng.
         lockToken = await acquireReplyLock(senderId, { waitMs: REPLY_LOCK_WAIT_MS });
+        // Trong lúc chờ, chủ shop có thể vừa tắt bot của khách này → kiểm tra lại cho chắc
+        if (await isConversationBotOff(senderId).catch(() => false)) {
+          console.log("Bot vừa bị tắt cho khách này, bỏ qua:", text);
+          continue;
+        }
         // Chờ xong mà khách đã nhắn thêm tin mới → bỏ lượt này, để tin mới nhất trả lời gộp
         if (
           lockToken &&

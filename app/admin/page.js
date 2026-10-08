@@ -56,6 +56,48 @@ function timeAgo(iso) {
 }
 
 // Bộ chọn Fanpage ở đầu cột hội thoại: thấy tên + ảnh Page đang xem, bấm để đổi sang Page khác
+// Thanh gạt bật/tắt bot cho 1 khách (xanh = bot đang trả lời khách này)
+function ConvSwitch({ botOff, onToggle, size = "small" }) {
+  const on = !botOff;
+  const w = size === "small" ? 34 : 40;
+  const h = size === "small" ? 18 : 22;
+  const d = h - 4;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle(!botOff);
+      }}
+      title={on ? "Bot đang BẬT với khách này — bấm để tắt" : "Bot đang TẮT với khách này — bấm để bật lại"}
+      aria-label={on ? "Tắt bot với khách này" : "Bật bot với khách này"}
+      style={{
+        width: w,
+        height: h,
+        borderRadius: h / 2,
+        border: "none",
+        background: on ? "#16a34a" : "#c4c4c4",
+        position: "relative",
+        cursor: "pointer",
+        flexShrink: 0,
+        padding: 0,
+      }}
+    >
+      <span
+        style={{
+          position: "absolute",
+          top: 2,
+          left: on ? w - d - 2 : 2,
+          width: d,
+          height: d,
+          borderRadius: "50%",
+          background: "#fff",
+          transition: "left 0.15s",
+        }}
+      />
+    </button>
+  );
+}
+
 function PageSwitcher({ pages, value, onChange, onManage, onToggleBot, globalBotEnabled }) {
   const [open, setOpen] = useState(false);
   const boxRef = useRef(null);
@@ -1258,6 +1300,24 @@ export default function ChatAdminPage() {
     }
   }
 
+  // Bật/tắt bot riêng cho 1 khách
+  async function toggleConvBot(id, off) {
+    setConversations((list) => list.map((x) => (x.id === id ? { ...x, botOff: off } : x)));
+    setCurrent((cur) => (selectedId === id ? { ...cur, botOff: off } : cur));
+    try {
+      const res = await fetch(`/api/conversations/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botOff: off }),
+      });
+      if (!res.ok) throw new Error("fail");
+    } catch {
+      alert("Không đổi được, thử lại nhé.");
+      setConversations((list) => list.map((x) => (x.id === id ? { ...x, botOff: !off } : x)));
+      setCurrent((cur) => (selectedId === id ? { ...cur, botOff: !off } : cur));
+    }
+  }
+
   async function toggleBot() {
     const next = !botEnabled;
     setBotEnabled(next);
@@ -1673,7 +1733,10 @@ export default function ChatAdminPage() {
                   >
                     {displayName(c.name, c.id)}
                   </span>
-                  <span style={{ fontSize: 11, color: "#aaa", flexShrink: 0 }}>{timeAgo(c.lastTime)}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                    <span style={{ fontSize: 11, color: "#aaa" }}>{timeAgo(c.lastTime)}</span>
+                    <ConvSwitch botOff={c.botOff === true} onToggle={(off) => toggleConvBot(c.id, off)} />
+                  </span>
                 </div>
                 <div
                   style={{
@@ -1756,6 +1819,14 @@ export default function ChatAdminPage() {
                       Chưa lấy được tên từ Facebook: {current.profileError}
                     </div>
                   )}
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: (current.botOff ?? selected?.botOff) ? "#999" : "#166534" }}>
+                  <span>{(current.botOff ?? selected?.botOff) ? "Bot tắt" : "Bot bật"}</span>
+                  <ConvSwitch
+                    size="big"
+                    botOff={(current.botOff ?? selected?.botOff) === true}
+                    onToggle={(off) => toggleConvBot(selectedId, off)}
+                  />
                 </div>
                 {isOwner && (
 <button

@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { getConversation, addMessage, deleteConversation, getConversationPageId } from "@/lib/conversations";
+import { getConversation, addMessage, deleteConversation, getConversationPageId, setConversationBotOff } from "@/lib/conversations";
 import { getPageToken } from "@/lib/pages";
 import { getScope, canSeePage } from "@/lib/auth";
 
@@ -57,6 +57,23 @@ export async function POST(req, { params }) {
 
   await addMessage(params.id, "admin", text);
   return NextResponse.json({ ok: true });
+}
+
+// Bật/tắt bot riêng cho 1 khách: { botOff: true | false }
+export async function PATCH(req, { params }) {
+  try {
+    const { botOff } = await req.json();
+    if (typeof botOff !== "boolean") {
+      return NextResponse.json({ error: "Thiếu botOff (true/false)" }, { status: 400 });
+    }
+    const pageId = await getConversationPageId(params.id);
+    if (!canSeePage(await getScope(req), pageId)) return NOT_FOUND();
+    await setConversationBotOff(params.id, botOff);
+    return NextResponse.json({ ok: true, botOff });
+  } catch (err) {
+    console.error("Lỗi đổi bot của khách:", err);
+    return NextResponse.json({ error: String(err.message || err) }, { status: 500 });
+  }
 }
 
 // Xóa cuộc trò chuyện (để test lại từ đầu hoặc ẩn khách không tiềm năng)
