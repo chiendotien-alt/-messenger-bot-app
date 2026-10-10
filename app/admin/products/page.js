@@ -13,6 +13,7 @@ const EMPTY_FORM = {
   triggerQuestions: "",
   sampleImages: [],
   realImages: [],
+  catalogImages: [], // ảnh TỔNG HỢP tất cả mẫu mã/màu — bot gửi khi khách hỏi "có mấy màu / mẫu nào"
   openingImages: [], // ảnh được TICK để gửi kèm câu mở đầu (theo thứ tự tick)
   imageLabels: {},
 };
@@ -202,13 +203,13 @@ function ImagePicker({ title, hint, urls, labels, onLabel, onChange, ticked, onT
                   </button>
                 )}
               </div>
-              <input
+              {onLabel && <input
                 value={labels?.[u] || ""}
                 onChange={(e) => onLabel(u, e.target.value)}
                 placeholder="Tên ảnh (vd: Váy trắng)"
                 aria-label="Tên ảnh"
                 style={{ width: "100%", boxSizing: "border-box", marginTop: 4, padding: "5px 6px", fontSize: 12, border: "1px solid #ddd", borderRadius: 5 }}
-              />
+              />}
             </div>
           ))}
         </div>
@@ -280,6 +281,7 @@ export default function AdminPage() {
     triggerQuestions: false,
     sampleImages: true,
     realImages: true,
+    catalogImages: true,
   });
   const [copyNotice, setCopyNotice] = useState("");
   const [pages, setPages] = useState([]); // danh sách Fanpage
@@ -436,6 +438,7 @@ export default function AdminPage() {
       triggerQuestions: p.triggerQuestions || "",
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
+      catalogImages: p.catalogImages || [],
       // sản phẩm cũ chưa tick lần nào: coi như đang tick hết ảnh mẫu (đúng với cách bot đang gửi)
       openingImages: Array.isArray(p.openingImages) ? p.openingImages : p.sampleImages || [],
       imageLabels: p.imageLabels || {},
@@ -452,8 +455,9 @@ export default function AdminPage() {
         if (parts[key]) next[key] = src[key] || "";
       }
       if (parts.openingScript) next.openingExtras = Array.isArray(src.openingExtras) ? [...src.openingExtras] : [];
-      for (const key of ["sampleImages", "realImages"]) {
+      for (const key of ["sampleImages", "realImages", "catalogImages"]) {
         if (parts[key]) {
+          next[key] = next[key] || [];
           const add = (src[key] || []).filter((u) => !next[key].includes(u));
           next[key] = [...next[key], ...add];
           for (const u of add) if (src.imageLabels?.[u]) next.imageLabels[u] = src.imageLabels[u];
@@ -488,6 +492,7 @@ export default function AdminPage() {
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
       sampleImages: p.sampleImages || [],
       realImages: p.realImages || [],
+      catalogImages: p.catalogImages || [],
       // sản phẩm cũ chưa tick lần nào: coi như đang tick hết ảnh mẫu (đúng với cách bot đang gửi)
       openingImages: Array.isArray(p.openingImages) ? p.openingImages : p.sampleImages || [],
       imageLabels: p.imageLabels || {},
@@ -722,6 +727,7 @@ export default function AdminPage() {
                 ["triggerQuestions", "Câu hỏi có sẵn"],
                 ["sampleImages", "Ảnh mẫu"],
                 ["realImages", "Ảnh thực tế"],
+                ["catalogImages", "Ảnh tổng hợp mẫu mã"],
               ].map(([key, label]) => (
                 <label key={key} style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
                   <input
@@ -878,6 +884,12 @@ export default function AdminPage() {
           ticked={form.openingImages}
           onToggle={toggleOpening}
         />
+        <ImagePicker
+          title="Ảnh TỔNG HỢP tất cả mẫu mã / màu"
+          hint="Khách hỏi chung kiểu “có mấy màu”, “có mẫu nào”, “xin màu” thì bot tự gửi ảnh này (nên làm 1 ảnh gom tất cả màu/mẫu). Không cần đặt tên ảnh."
+          urls={form.catalogImages || []}
+          onChange={(urls) => setForm((f) => ({ ...f, catalogImages: urls }))}
+        />
         <div style={{ display: "flex", gap: 8 }}>
           <button
             type="submit"
@@ -1002,6 +1014,7 @@ export default function AdminPage() {
                     )}
                     <Thumbs label="Ảnh mẫu" urls={p.sampleImages} labels={p.imageLabels} />
                     <Thumbs label="Ảnh thực tế" urls={p.realImages} labels={p.imageLabels} />
+                    <Thumbs label="Ảnh tổng hợp mẫu mã" urls={p.catalogImages} labels={{}} />
                     {isOwner && pages.length > 0 && (
                       <div style={{ marginTop: 12 }}>
                         <div style={{ fontSize: 13, color: "#666", marginBottom: 6 }}>Áp dụng cho Page (tick để bật/tắt ngay):</div>

@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion } from "@/lib/products";
 import {
   addMessage,
   ensureProfile,
@@ -1062,6 +1062,26 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         const names = picked.map((x) => x.label).filter(Boolean);
         imageNote = `📷 [Bot đã gửi ${images.length} ảnh của "${p.name}"${names.length ? ": " + names.join(", ") : ""}]`;
       }
+    }
+  }
+
+  // Khách hỏi chung "có mấy màu / mẫu nào..." → gửi ẢNH TỔNG HỢP tất cả mẫu mã mà chủ shop đã chọn trong cài đặt sản phẩm.
+  // AI tự quyết (send_catalog) + có luật dự phòng theo từ khóa, vì AI hay chỉ trả lời chữ mà quên gửi ảnh.
+  if (!images.length) {
+    const cp =
+      (req?.product_id && products.find((x) => String(x.id) === String(req.product_id))) ||
+      currentProduct ||
+      (products.length === 1 ? products[0] : null);
+    const cat = catalogImageList(cp);
+    const wantCatalog = parsed?.send_catalog === true || isCatalogQuestion(customerMessage);
+    const sentRecently = history
+      .slice(-8)
+      .some((m) => m.from !== "customer" && String(m.text || "").includes("ảnh tổng hợp mẫu mã"));
+    if (cat.length && wantCatalog && !sentRecently) {
+      images = cat;
+      imageItems = cat.map((url) => ({ url, title: cp.name }));
+      imageNote = `📷 [Bot đã gửi ảnh tổng hợp mẫu mã của "${cp.name}"]`;
+      console.log("Gửi ảnh tổng hợp mẫu mã cho khách:", customerMessage);
     }
   }
 
