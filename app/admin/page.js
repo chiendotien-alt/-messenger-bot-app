@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, useCallback } from "react";
+import { Fragment, useEffect, useRef, useState, useCallback } from "react";
 import { BoxIcon, KeyIcon, ReceiptIcon, SettingsIcon, UsersIcon, navButtonStyle } from "./icons";
 import MembersModal from "./MembersModal";
 import TeachChat from "./TeachChat";
@@ -655,7 +655,7 @@ const ORDER_STATUS = {
   draft: { label: "Mới tạo", color: "#6b7280" },
   shipped: { label: "Đã gửi hàng", color: "#2563eb" },
   delivered: { label: "Đã giao", color: "#16a34a" },
-  returned: { label: "Hoàn / Hủy", color: "#dc2626" },
+  returned: { label: "Đã hủy", color: "#dc2626" },
 };
 const statusOf = (o) => (ORDER_STATUS[o?.status] ? o.status : "draft");
 const filterFieldStyle = { height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, color: "#111827", width: "100%", boxSizing: "border-box", outline: "none" };
@@ -932,9 +932,14 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
         {saved.length === 0 && !formOpen && (
           <div style={{ fontSize: 13, color: "#9ca3af", fontStyle: "italic" }}>Khách này chưa có đơn nào.</div>
         )}
-        {saved.map((o) => (
+        {[...saved.filter((x) => statusOf(x) !== "returned"), ...saved.filter((x) => statusOf(x) === "returned")].map((o, idx, arr) => (
+          <Fragment key={o.id}>
+          {statusOf(o) === "returned" && (idx === 0 || statusOf(arr[idx - 1]) !== "returned") && (
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#dc2626", margin: "12px 0 6px" }}>
+              Đơn đã hủy ({arr.filter((x) => statusOf(x) === "returned").length})
+            </div>
+          )}
           <div
-            key={o.id}
             style={{ border: orderId === o.id ? "1px solid #16a34a" : "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10, fontSize: 13, background: "#fff", overflow: "hidden" }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: ORDER_STATUS[statusOf(o)].color, color: "#fff" }}>
@@ -944,7 +949,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
                 <button onClick={() => removeSaved(o.id)} title="Xóa đơn" aria-label="Xóa đơn" style={{ ...iconBtn, color: "#fff" }}>🗑</button>
               </span>
             </div>
-            <div style={{ padding: "8px 10px", lineHeight: 1.65 }}>
+            <div style={{ padding: "8px 10px", lineHeight: 1.65, ...(statusOf(o) === "returned" ? { opacity: 0.6, textDecoration: "line-through" } : {}) }}>
               <div>👤 {o.customerName}{o.phone ? ` — ${o.phone}` : ""}</div>
               <div>📍 {o.address}</div>
               <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
@@ -953,19 +958,19 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
               <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
               <div style={{ color: "#999", fontSize: 12 }}>{fmtDateTime(o.createdAt)}</div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e5e7eb" }}>
-                {[["shipped", "Đã gửi hàng"], ["delivered", "Đã giao"], ["returned", "Hoàn / Hủy"]].map(([k, label]) => {
-                  const st = statusOf(o);
-                  const checked = k === "shipped" ? st === "shipped" || st === "delivered" : st === k;
+                {(() => {
+                  const checked = statusOf(o) === "returned";
                   return (
-                    <label key={k} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 13, color: checked ? ORDER_STATUS[k].color : "#555", fontWeight: checked ? 600 : 400 }}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleStatus(o, k)} style={{ width: 16, height: 16, cursor: "pointer" }} />
-                      {label}
+                    <label style={{ display: "flex", alignItems: "center", gap: 5, cursor: "pointer", fontSize: 13, color: checked ? "#dc2626" : "#555", fontWeight: checked ? 600 : 400 }}>
+                      <input type="checkbox" checked={checked} onChange={() => toggleStatus(o, "returned")} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                      Hủy đơn
                     </label>
                   );
-                })}
+                })()}
               </div>
             </div>
           </div>
+          </Fragment>
         ))}
       </div>
     </aside>
@@ -1580,7 +1585,7 @@ export default function ChatAdminPage() {
               <option value="draft">Mới tạo (chưa gửi)</option>
               <option value="shipped">Đã gửi hàng</option>
               <option value="delivered">Đã giao</option>
-              <option value="returned">Hoàn / Hủy</option>
+              <option value="returned">Đã hủy</option>
             </select>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 12.5, color: "#6b7280" }}>
               <span>

@@ -848,7 +848,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     listOrders(senderId).catch(() => []),
   ]);
   // Đơn hệ thống TỰ TẠO khi khách để lại SĐT mà chủ shop chưa xác nhận thì chưa tính là khách đã đặt hàng (bot vẫn chat/hỏi thông tin như bình thường)
-  const orderContext = buildOrderContext(customerOrders.filter((o) => !isUnconfirmedAuto(o)), settings.botPrompt);
+  const orderContext = buildOrderContext(customerOrders.filter((o) => !isUnconfirmedAuto(o) && o.status !== "returned"), settings.botPrompt);
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
   // Tìm câu đã dạy và tải ảnh khách gửi (để AI nhìn) chạy song song
