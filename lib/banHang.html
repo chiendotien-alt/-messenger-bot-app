@@ -134,6 +134,13 @@ function toast(m){const t=$('#toast');t.textContent=m;t.style.opacity=1;clearTim
 
 /* ===== ĐƠN TỪ KHUNG CHAT (bot tự tạo khi khách để lại SĐT) ===== */
 let OR=[],ordOk=false,ordErr='',ordF='new',ordQ='',ordAuto=true,PG={},OF={},ordSig='';
+let dfD='';
+function dfRange(){return dfD?[dfD,dfD]:null}
+function dfLabel(){return dfD?'ngày '+dfD.split('-').reverse().join('/'):''}
+function dfInRange(o){return !dfD||odate(o)===dfD}
+function dfBar(){
+  return `<div class="row" style="margin-bottom:10px"><span class="mut" style="flex:0 0 auto">📅 Xem theo ngày:</span><input type="date" data-k="dfd" value="${dfD}" style="flex:1 1 150px"><button class="btn ${dfD===TODAY?'':'g'}" data-act="dfset" data-v="${TODAY}">Hôm nay</button><button class="btn ${dfD===addD(TODAY,-1)?'':'g'}" data-act="dfset" data-v="${addD(TODAY,-1)}">Hôm qua</button><button class="btn ${dfD?'g':''}" data-act="dfset" data-v="">Tất cả</button></div>`;
+}
 const nk=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/đ/g,'d').replace(/[^a-z0-9]+/g,' ').trim();
 const odate=o=>{const d=new Date(o.createdAt);return isNaN(d)?TODAY:iso(d)};
 const otime=o=>{const d=new Date(o.createdAt);return isNaN(d)?'':pad(d.getDate())+'/'+pad(d.getMonth()+1)+' '+pad(d.getHours())+':'+pad(d.getMinutes())};
@@ -265,14 +272,16 @@ function oCard(o){
   <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label><button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
 }
 function vOrd(){
-  const nCx=OR.filter(isCx).length,nNew=OR.filter(o=>!isCx(o)&&!isRec(o)).length,nRec=OR.filter(o=>!isCx(o)&&isRec(o)).length;
-  const list=OR.filter(o=>ordF==='all'||(ordF==='cx'?isCx(o):ordF==='rec'?(!isCx(o)&&isRec(o)):(!isCx(o)&&!isRec(o))));
-  const chips=[['new','Chưa ghi',nNew],['rec','Đã ghi',nRec],['cx','Đã hủy',nCx],['all','Tất cả',OR.length]].map(c=>`<button class="chip ${ordF===c[0]?'on':''}" data-act="ordf" data-v="${c[0]}">${c[1]}<small>${c[2]}</small></button>`).join('');
+  const BASE=OR.filter(dfInRange);
+  const nCx=BASE.filter(isCx).length,nNew=BASE.filter(o=>!isCx(o)&&!isRec(o)).length,nRec=BASE.filter(o=>!isCx(o)&&isRec(o)).length;
+  const list=BASE.filter(o=>ordF==='all'||(ordF==='cx'?isCx(o):ordF==='rec'?(!isCx(o)&&isRec(o)):(!isCx(o)&&!isRec(o))));
+  const chips=[['new','Chưa ghi',nNew],['rec','Đã ghi',nRec],['cx','Đã hủy',nCx],['all','Tất cả',BASE.length]].map(c=>`<button class="chip ${ordF===c[0]?'on':''}" data-act="ordf" data-v="${c[0]}">${c[1]}<small>${c[2]}</small></button>`).join('');
   return `<div class="card"><div class="row"><b style="flex:1 1 180px">📨 Đơn từ khung chat</b><button class="btn ${ordAuto?'':'g'}" data-act="autot">🤖 Tự tạo đơn: ${ordAuto?'BẬT':'TẮT'}</button><button class="btn g" data-act="ordrf">↻ Làm mới</button></div>
   <p class="mut" style="margin:8px 0 0">Khi khách để lại số điện thoại trong chat, đơn tự hiện ở đây (tên, SĐT, địa chỉ, sản phẩm lấy từ chat). Kiểm tra rồi bấm <b>Ghi vào doanh thu</b> để đơn được tính vào tab Bán hàng và Báo cáo.${ordErr?` <span class="bad">Không tải được đơn: ${esc(ordErr)}</span>`:''}</p></div>
   <div class="chips">${chips}</div>
+  ${dfBar()}${dfD?`<div class="card" style="margin-bottom:10px"><b>Ngày ${dfD.split('-').reverse().join('/')}: ${list.length} đơn</b>${list.length?`<div class="mut" style="margin-top:6px">${list.map(o=>esc(o.customerName||'(chưa có tên)')+(isCx(o)?' (hủy)':'')).join(' · ')}</div>`:'<div class="mut" style="margin-top:6px">Không có đơn nào trong ngày này.</div>'}</div>`:''}
   <input id="oq" placeholder="Tìm theo tên, SĐT, sản phẩm, địa chỉ…" value="${esc(ordQ)}" style="width:100%;margin-bottom:10px">
-  ${!ordOk&&!ordErr?'<p class="mut">Đang tải đơn…</p>':list.length?list.slice(0,200).map(oCard).join(''):`<p class="mut">${ordF==='new'?'Không có đơn nào đang chờ ghi. 🎉':ordF==='cx'?'Chưa có đơn nào bị hủy.':'Chưa có đơn nào.'}</p>`}
+  ${!ordOk&&!ordErr?'<p class="mut">Đang tải đơn…</p>':list.length?list.slice(0,200).map(oCard).join(''):`<p class="mut">${dfRange()&&OR.length?'Không có đơn nào trong khoảng thời gian này.':ordF==='new'?'Không có đơn nào đang chờ ghi. 🎉':ordF==='cx'?'Chưa có đơn nào bị hủy.':'Chưa có đơn nào.'}</p>`}
   ${list.length>200?'<p class="mut">Chỉ hiện 200 đơn mới nhất.</p>':''}`
 }
 function commit(){save();render()}
@@ -371,6 +380,7 @@ function act(a,d,t){
   else if(a==='goday'){day=d.v;tab='sale';render();scrollTo(0,0)}
   else if(a==='clr'){if(confirm('Xóa toàn bộ đơn bán mẫu và chi phí mẫu?')){S.sales=[];S.days={};S.sample=false;commit()}}
   else if(a==='ordf'){ordF=d.v;render()}
+  else if(a==='dfset'){dfD=d.v;render()}
   else if(a==='ordrf')loadOrders(true);
   else if(a==='autot')toggleAuto();
   else if(a==='rec')recOrder(d.id);
@@ -386,7 +396,8 @@ document.addEventListener('input',e=>{if(!S)return;if(['fp','fv','fq','fd'].incl
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['fq','fd'].includes(e.target.id))act('add',{})});
 document.addEventListener('change',e=>{
   const t=e.target,k=t.dataset.k,id=t.dataset.id,v=t.value,ym=ry+'-'+pad(rm);if(!k||!S)return;
-  if(/^(of|ost)/.test(k)){ordChange(k,id,k==='ost'?(t.checked?'1':'0'):v);return}
+  if(k==='dfd'){dfD=v;render();return}
+    if(/^(of|ost)/.test(k)){ordChange(k,id,k==='ost'?(t.checked?'1':'0'):v);return}
   const s=S.sales.find(x=>x.id===id),p=S.products.find(x=>x.id===id),f=findV(id),D=()=>S.days[day]||(S.days[day]={});
   if(k==='fp'){fp=v;const c=S.products.find(x=>x.id===v),w=$('#fv');w.innerHTML=vOpts(c);w.style.display=c.variants.length>1?'':'none';prev();return}
   if(k==='dt'){if(v)day=v}

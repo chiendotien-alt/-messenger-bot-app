@@ -699,6 +699,48 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
   const [msg, setMsg] = useState("");
   const [aiOk, setAiOk] = useState(false);
 
+  // Ghi chú riêng về khách này (tự lưu sau khi ngừng gõ ~1 giây)
+  const [note, setNote] = useState("");
+  const [noteState, setNoteState] = useState(""); // "", "saving", "saved", "error"
+  const noteLoaded = useRef(false);
+  const noteTimer = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    noteLoaded.current = false;
+    fetch(`/api/conversations/${encodeURIComponent(conversationId)}/note`, { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : { note: "" }))
+      .then((d) => { if (alive) { setNote(d.note || ""); noteLoaded.current = true; } })
+      .catch(() => { noteLoaded.current = true; });
+    return () => { alive = false; clearTimeout(noteTimer.current); };
+  }, [conversationId]);
+
+  async function saveNote(text) {
+    if (!noteLoaded.current) return;
+    setNoteState("saving");
+    try {
+      const res = await fetch(`/api/conversations/${encodeURIComponent(conversationId)}/note`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ note: text }),
+      });
+      setNoteState(res.ok ? "saved" : "error");
+    } catch {
+      setNoteState("error");
+    }
+  }
+
+  function onNoteChange(text) {
+    setNote(text);
+    setNoteState("");
+    clearTimeout(noteTimer.current);
+    noteTimer.current = setTimeout(() => saveNote(text), 1000);
+  }
+
+  function onNoteBlur() {
+    clearTimeout(noteTimer.current);
+    if (noteState === "") saveNote(note);
+  }
+
   const loadSaved = useCallback(async () => {
     try {
       const res = await fetch(`/api/orders?conversationId=${encodeURIComponent(conversationId)}`, { cache: "no-store" });
@@ -867,6 +909,24 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
         >
           🧾 Tạo đơn
         </button>
+
+        {/* Ô ghi chú riêng về khách này */}
+        <div style={{ marginTop: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#444" }}>📝 Ghi chú về khách này</span>
+            <span style={{ fontSize: 11.5, color: noteState === "error" ? "#dc2626" : "#16a34a" }}>
+              {noteState === "saving" ? "Đang lưu..." : noteState === "saved" ? "Đã lưu ✓" : noteState === "error" ? "Lưu lỗi, thử lại" : ""}
+            </span>
+          </div>
+          <textarea
+            value={note}
+            onChange={(e) => onNoteChange(e.target.value)}
+            onBlur={onNoteBlur}
+            placeholder="Ghi chú cho khách này (VD: hẹn gọi lại tối, khách khó tính...)"
+            rows={3}
+            style={{ width: "100%", boxSizing: "border-box", padding: "8px 10px", borderRadius: 8, border: "1px solid #e5e7eb", background: "#fffbeb", fontSize: 13, fontFamily: "inherit", resize: "vertical", minHeight: 60 }}
+          />
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: "auto", padding: "12px 16px" }}>
