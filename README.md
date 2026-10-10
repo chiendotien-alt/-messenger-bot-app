@@ -75,3 +75,9 @@ messenger-bot-app/
 ├── .env.local.example      # mẫu biến môi trường
 └── package.json
 ```
+
+## Web Quản lý bán hàng (/admin/ban-hang)
+
+- Mở bằng nút 🧾 trên thanh trên cùng của trang chat (cùng mật khẩu, chỉ chủ shop thấy).
+- Khi khách để lại số điện thoại trong chat, hệ thống tự tạo đơn (nhãn "🤖 Tự tạo") → hiện ở tab "Đơn chat" → bấm "Ghi vào doanh thu".
+- Tắt/bật tự tạo đơn bằng nút trong tab "Đơn chat". Không cần thêm biến môi trường nào.

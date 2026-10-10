@@ -69,3 +69,14 @@ export function UsersIcon({ size = 20 }) {
     </svg>
   );
 }
+
+export function ReceiptIcon({ size = 20 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M6 2h12v20l-3-2-3 2-3-2-3 2V2z" />
+      <path d="M9 7h6" />
+      <path d="M9 11h6" />
+      <path d="M9 15h3" />
+    </svg>
+  );
+}

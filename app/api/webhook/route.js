@@ -41,7 +41,8 @@ import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
 import { buildSystemPrompt } from "@/lib/botPrompt";
-import { listOrders } from "@/lib/orders";
+import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
+import { syncAutoOrder } from "@/lib/autoOrder";
 import { buildOrderContext } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
 
@@ -155,6 +156,10 @@ export async function POST(req) {
 
       let openedProductId = null; // sản phẩm vừa giữ chỗ gửi câu mở đầu (để trả lại nếu gửi lỗi)
       let lockToken = null; // khóa trả lời của khách này (trả lại ở cuối, dù thành công hay lỗi)
+      let phoneInMsg = null; // SĐT có trong tin khách vừa nhắn (nếu có)
+      let settingsNow = null; // cài đặt hiện tại (dùng lại ở bước cuối)
+      let orderP = null; // việc TỰ TẠO ĐƠN khi khách để lại SĐT (chạy song song với lúc bot soạn tin)
+      let wantOrderSync = false; // tin này đã xử lý xong → sau khi nhả khóa, điền thêm thông tin cho đơn tự tạo
       try {
         // Facebook có thể gửi lại đúng sự kiện này (khi webhook chậm) → chỉ xử lý 1 lần
         if (!(await claimEvent(mid).catch(() => true))) continue;
@@ -166,7 +171,7 @@ export async function POST(req) {
         );
         // Chạy SONG SONG (trước đây chờ lần lượt từng việc): hồ sơ khách, lưu SĐT, đọc cài đặt, kiểm tra bot của Page
         // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
-        const phoneInMsg = extractPhone(text);
+        phoneInMsg = extractPhone(text);
         const [, , settings, pageBotOn, convBotOff] = await Promise.all([
           ensureProfile(senderId, pageToken).catch((e) => console.error("Lỗi hồ sơ khách:", e.message)),
           phoneInMsg ? mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {}) : null,
@@ -174,16 +179,22 @@ export async function POST(req) {
           isPageBotEnabled(pageId),
           isConversationBotOff(senderId).catch(() => false),
         ]);
+        settingsNow = settings;
+        // Khách để lại SĐT → tự tạo đơn nháp (chạy song song, không làm bot trả lời chậm đi). Làm cả khi bot đang tắt.
+        if (phoneInMsg) orderP = syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings, ai: false }).catch((e) => console.error("Lỗi tự tạo đơn:", e.message));
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
+          wantOrderSync = true;
           continue;
         }
         if (!pageBotOn) {
           // Bot của riêng Page này đang tắt — chỉ lưu tin nhắn
+          wantOrderSync = true;
           continue;
         }
         if (convBotOff) {
           // Bot đang tắt riêng cho khách này — chỉ lưu tin nhắn để chủ shop tự trả lời
+          wantOrderSync = true;
           continue;
         }
 
@@ -290,6 +301,7 @@ export async function POST(req) {
         await typingP; // đảm bảo "đang gõ" đã gửi xong trước khi gửi tin / tắt "đang gõ"
         if (reply.skip) {
           await fbAction(senderId, "typing_off", pageToken);
+          wantOrderSync = true;
           continue;
         }
 
@@ -400,6 +412,7 @@ export async function POST(req) {
           const sent = await sendTexts();
           if (sent) await sendImages();
         }
+        wantOrderSync = true;
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
         if (openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
@@ -412,6 +425,13 @@ export async function POST(req) {
         }
       } finally {
         if (lockToken) await releaseReplyLock(senderId, lockToken);
+        // Sau khi đã nhả khóa (khách nhắn tiếp không bị chờ): hoàn tất việc tự tạo đơn, rồi điền thêm địa chỉ/sản phẩm cho đơn đó
+        if (orderP) await orderP;
+        if (wantOrderSync && settingsNow) {
+          await syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings: settingsNow, ai: true, budgetMs: 52000 - (Date.now() - startedAt) }).catch((e) =>
+            console.error("Lỗi cập nhật đơn tự tạo:", e.message)
+          );
+        }
       }
     }
   }
@@ -827,7 +847,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     // Đơn khách đã đặt (để bot biết khách đặt từ ngày nào, đã bao nhiêu ngày) — lỗi thì bỏ qua
     listOrders(senderId).catch(() => []),
   ]);
-  const orderContext = buildOrderContext(customerOrders, settings.botPrompt);
+  // Đơn hệ thống TỰ TẠO khi khách để lại SĐT mà chủ shop chưa xác nhận thì chưa tính là khách đã đặt hàng (bot vẫn chat/hỏi thông tin như bình thường)
+  const orderContext = buildOrderContext(customerOrders.filter((o) => !isUnconfirmedAuto(o)), settings.botPrompt);
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
   // Tìm câu đã dạy và tải ảnh khách gửi (để AI nhìn) chạy song song

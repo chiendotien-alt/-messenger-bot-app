@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState, useCallback } from "react";
-import { BoxIcon, KeyIcon, SettingsIcon, UsersIcon, navButtonStyle } from "./icons";
+import { BoxIcon, KeyIcon, ReceiptIcon, SettingsIcon, UsersIcon, navButtonStyle } from "./icons";
 import MembersModal from "./MembersModal";
 import TeachChat from "./TeachChat";
 
@@ -938,7 +938,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
             style={{ border: orderId === o.id ? "1px solid #16a34a" : "1px solid #e5e7eb", borderRadius: 10, marginBottom: 10, fontSize: 13, background: "#fff", overflow: "hidden" }}
           >
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: ORDER_STATUS[statusOf(o)].color, color: "#fff" }}>
-              <strong>Đơn #{o.id} · {ORDER_STATUS[statusOf(o)].label}</strong>
+              <strong>Đơn #{o.id} · {ORDER_STATUS[statusOf(o)].label}{o.auto ? " · 🤖 tự tạo, cần kiểm tra" : ""}</strong>
               <span style={{ display: "flex", alignItems: "center", gap: 2 }}>
                 <button onClick={() => startEdit(o)} title="Sửa đơn" aria-label="Sửa đơn" style={{ ...iconBtn, color: "#fff" }}>✏️</button>
                 <button onClick={() => removeSaved(o.id)} title="Xóa đơn" aria-label="Xóa đơn" style={{ ...iconBtn, color: "#fff" }}>🗑</button>
@@ -1415,6 +1415,11 @@ export default function ChatAdminPage() {
         <a href="/admin/products" title={isOwner ? "Quản lý sản phẩm" : "Xem sản phẩm"} aria-label="Sản phẩm" style={navButtonStyle}>
           <BoxIcon />
         </a>
+        {isOwner && (
+          <a href="/admin/ban-hang" title="Quản lý bán hàng (đơn, doanh thu, quảng cáo)" aria-label="Quản lý bán hàng" style={navButtonStyle}>
+            <ReceiptIcon />
+          </a>
+        )}
         {isOwner && (
 <button
           onClick={toggleBot}
