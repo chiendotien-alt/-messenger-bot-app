@@ -138,6 +138,7 @@ const nk=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f
 const odate=o=>{const d=new Date(o.createdAt);return isNaN(d)?TODAY:iso(d)};
 const otime=o=>{const d=new Date(o.createdAt);return isNaN(d)?'':pad(d.getDate())+'/'+pad(d.getMonth()+1)+' '+pad(d.getHours())+':'+pad(d.getMinutes())};
 const isRec=o=>S.sales.some(s=>s.oid===o.id);
+const custOf=s=>{if(!s.oid)return '';const o=OR.find(x=>x.id===s.oid);return (o&&o.customerName)||s.cn||''};
 const isCx=o=>o.status==='returned';
 function syncCx(){let ch=false;OR.forEach(o=>{const w=isCx(o);S.sales.forEach(s=>{if(s.oid!==o.id)return;if(w&&!s.x){s.x=1;ch=true}else if(!w&&s.x){delete s.x;ch=true}})});return ch}
 const pending=()=>OR.filter(o=>!isRec(o)&&o.status!=='returned');
@@ -157,7 +158,7 @@ async function loadOrders(manual){
     OR.forEach(o=>{if(o.auto&&isRec(o))confirmOrd(o)});
     if(syncCx()){save();if(!editing())render()}
     if(manual)toast('Đã làm mới: '+OR.length+' đơn');
-    if(ch||manual){if(tab==='ord'&&!editing())render();else renderNav()}
+    if(ch||manual){if((tab==='ord'||tab==='sale')&&!editing())render();else renderNav()}
   }catch(e){ordErr=e.message;if(tab==='ord'&&!editing())render()}
 }
 async function loadExtra(){
@@ -187,7 +188,7 @@ function recOrder(id){
   const q=Math.max(1,num(f.qty)||1),pr=num(f.price)||v.price;
   if(f.pid==='new')S.products.push(p);
   if(S.sample){S.sales=[];S.days={};S.sample=false}
-  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:q,price:pr,disc:0,cost:v.cost,oid:o.id});
+  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:q,price:pr,disc:0,cost:v.cost,oid:o.id,cn:o.customerName||''});
   delete OF[o.id];confirmOrd(o);commit();
   toast(f.pid==='new'?'Đã ghi. Sản phẩm mới "'+p.name+'" chưa có giá vốn, vào tab Sản phẩm nhập giá vốn nhé.':'Đã ghi vào doanh thu ngày '+odate(o).split('-').reverse().join('/'))
 }
@@ -287,7 +288,8 @@ function vSale(){
   const pa=(S.days[day]||{}).pa||{};
   const adRows=S.products.length?'<div class="row">'+S.products.map(p=>{const a=+pa[p.id]||0,L=st.LV.filter(s=>(s.pn||s.name)===p.name),r=sum(L.map(rev)),c=sum(L.map(cst));
     return `<label class="mut" style="flex:1 1 150px"><b style="color:var(--tx)">${esc(p.name)}</b><br><input inputmode="numeric" value="${a?fmt(a):''}" placeholder="0" data-k="pad" data-id="${p.id}" style="width:100%"><div>${a||r?`DT ${sh(r)} · lãi sau QC <span class="${cls(r-c-a)}">${sh(r-c-a)}</span>${a&&r?` · ROAS ${(r/a).toFixed(1)}`:''}`:'&nbsp;'}</div></label>`}).join('')+'</div>':'<p class="mut">Chưa có sản phẩm.</p>';
-  const rows=st.L.map(s=>s.x?`<tr class="cx"><td>${esc(s.name)} 📨 (đã hủy)<div class="mut">${esc(s.cat)}</div></td><td>${s.qty}</td><td>${fmt(s.price)}</td><td></td><td>${fmt(rev(s))}</td><td>—</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa hẳn dòng này">✕</button></td></tr>`:`<tr><td>${esc(s.name)}${s.oid?' 📨':''}<div class="mut">${esc(s.cat)}</div></td>
+  const rows=st.L.map(s=>s.x?`<tr class="cx"><td>${esc(s.name)} 📨 (đã hủy)<div class="mut">${esc(s.cat)}</div></td><td style="text-align:left">${esc(custOf(s))}</td><td>${s.qty}</td><td>${fmt(s.price)}</td><td></td><td>${fmt(rev(s))}</td><td>—</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa hẳn dòng này">✕</button></td></tr>`:`<tr><td>${esc(s.name)}${s.oid?' 📨':''}<div class="mut">${esc(s.cat)}</div></td>
+   <td style="text-align:left">${custOf(s)?'👤 '+esc(custOf(s)):'<span class="mut">—</span>'}</td>
    <td><input class="s" inputmode="numeric" value="${s.qty}" data-k="qty" data-id="${s.id}"></td>
    <td>${fmt(s.price)}</td><td><input inputmode="numeric" value="${s.disc?fmt(s.disc):''}" placeholder="0" data-k="disc" data-id="${s.id}"></td>
    <td><b>${fmt(rev(s))}</b></td><td class="${cls(rev(s)-cst(s))}">${fmt(rev(s)-cst(s))}</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa">✕</button></td></tr>`).join('');
@@ -296,7 +298,7 @@ function vSale(){
   <div class="card"><h3>Thêm đơn bán</h3>${S.products.length?`<div class="chips">${chips}</div>${vch}
   <div class="row"><select id="fp" data-k="fp" style="flex:2 1 140px">${opts}</select><select id="fv" style="flex:2 1 140px;${cp&&cp.variants.length>1?'':'display:none'}">${vOpts(cp)}</select><input id="fq" inputmode="numeric" value="1" placeholder="Số lượng" style="flex:1 1 70px"><input id="fd" inputmode="numeric" placeholder="Giảm giá (đ)"><button class="btn" data-act="add">+ Thêm</button></div>
   <div class="mut" id="fpv" style="margin-top:6px"></div>`:'<p class="mut">Chưa có sản phẩm. Sang tab Sản phẩm để thêm.</p>'}</div>
-  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
+  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
   <div class="card"><h3>Tiền quảng cáo từng sản phẩm (ngày ${day.split('-').reverse().join('/')})</h3>${adRows}</div>
   <div class="card"><h3>Chi phí trong ngày</h3><div class="row"><label class="mut" style="flex:1 1 140px">QC chung (không chia sản phẩm)<br><input inputmode="numeric" value="${st.gen?fmt(st.gen):''}" placeholder="0" data-k="ad" style="width:100%"></label><label class="mut" style="flex:1 1 140px">Chi phí khác<br><input inputmode="numeric" value="${st.ot?fmt(st.ot):''}" placeholder="0" data-k="other" style="width:100%"></label></div>
   <p class="mut" style="margin:8px 0 0">Lãi ròng = Doanh thu − Giá vốn − Quảng cáo − Chi phí khác${st.ad?` · ROAS ngày: ${(st.r/st.ad).toFixed(1)}`:''}</p></div>`;

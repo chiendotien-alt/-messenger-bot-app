@@ -658,6 +658,8 @@ const ORDER_STATUS = {
   returned: { label: "Đã hủy", color: "#dc2626" },
 };
 const statusOf = (o) => (ORDER_STATUS[o?.status] ? o.status : "draft");
+// Tổng thu của 1 đơn (đơn cũ chưa lưu "total" thì tính lại: đơn giá × số lượng + ship)
+const orderTotal = (o) => (Number(o?.total) > 0 ? Number(o.total) : (Number(o?.unitPrice) || 0) * (Number(o?.quantity) || 1) + (Number(o?.shipFee) || 0));
 const filterFieldStyle = { height: 34, padding: "0 10px", borderRadius: 8, border: "1px solid #d1d5db", background: "#fff", fontSize: 13, color: "#111827", width: "100%", boxSizing: "border-box", outline: "none" };
 const filterLabelStyle = { fontSize: 11, fontWeight: 600, letterSpacing: 0.4, color: "#6b7280", textTransform: "uppercase", marginBottom: 5 };
 const filterChipStyle = (active) => ({
@@ -1764,6 +1766,15 @@ export default function ChatAdminPage() {
                 {(ordersByConv[c.id] || []).length > 0 && (
                   <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>
                     🧾 {ordersByConv[c.id].length} đơn
+                    {(() => {
+                      // Đơn mới nhất chưa hủy (danh sách đã xếp mới → cũ)
+                      const latest = ordersByConv[c.id].find((o) => statusOf(o) !== "returned");
+                      return latest ? (
+                        <span style={{ marginLeft: 6, fontWeight: 600 }} title={`Đơn mới nhất · ${ORDER_STATUS[statusOf(latest)].label}`}>
+                          · mới nhất {money(orderTotal(latest))}
+                        </span>
+                      ) : null;
+                    })()}
                     {(() => {
                       const n = ordersByConv[c.id].filter((o) => statusOf(o) === "returned").length;
                       return n ? (

@@ -45,6 +45,7 @@ import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
 import { buildOrderContext } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
+import { detectSituation, shouldClassify, classifySituation, situationNote } from "@/lib/situation";
 
 const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 // GOOGLE_API_KEY (biến môi trường) + các key thêm bằng nút 🔑 trên trang quản trị — xem lib/apiKeys.js
@@ -598,7 +599,7 @@ function stripBotNotes(t) {
 }
 
 /** AI đôi khi nhét tên trường kỹ thuật (send_images, customer_info...) vào danh sách tin nhắn → tuyệt đối không gửi cho khách. */
-const isInternalToken = (t) => /^[\W_]*(send_images|use_opening_product|customer_info|no_reply|messages)\b/i.test(String(t || ""));
+const isInternalToken = (t) => /^[\W_]*(send_images|use_opening_product|customer_info|no_reply|messages|tinh_huong)\b/i.test(String(t || ""));
 
 /** Đổi lịch sử chat trong DB thành contents của Gemini (xen kẽ user/model, kết thúc bằng user). */
 async function buildContents(history, latestText, latestImages) {
@@ -648,7 +649,7 @@ async function buildContents(history, latestText, latestImages) {
 function salvageMessages(raw) {
   const t = String(raw || "").replace(/```json|```/g, "").trim();
   if (!t || isErrorText(t)) return [];
-  if (!/^[\[{]/.test(t) && !/"messages"\s*:/.test(t) && !/"use_opening_product"|"send_images"|"customer_info"/.test(t)) {
+  if (!/^[\[{]/.test(t) && !/"messages"\s*:/.test(t) && !/"use_opening_product"|"send_images"|"customer_info"|"tinh_huong"/.test(t)) {
     return [t]; // chữ bình thường, không phải JSON
   }
   const out = [];
@@ -854,10 +855,40 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const orderContext = buildOrderContext(customerOrders.filter((o) => !isUnconfirmedAuto(o) && o.status !== "returned"), settings.botPrompt);
   // Các câu trả lời chuẩn chủ shop đã dạy ở trang "Dạy bot" (lỗi thì bỏ qua, không ảnh hưởng việc trả lời khách)
   const trainQueries = [customerMessage, ...pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean).slice(-4).reverse()];
-  // Tìm câu đã dạy và tải ảnh khách gửi (để AI nhìn) chạy song song
+  // ---- Đoán tình huống & ngữ cảnh khách trước khi trả lời ----
+  // Lớp 2: nhãn tình huống bằng luật từ khoá (không tốn AI) → tìm câu đã dạy đúng nhóm hơn.
+  const ruleLabel = detectSituation(trainQueries);
+  // Lớp 3: AI phân loại riêng (model nhẹ, tối đa ~4,5s) — CHỈ khi tin dễ hiểu sai: phàn nàn, mặc cả, đổi trả, phân vân, tin quá ngắn, khách đã có đơn.
+  // Lỗi / timeout / không chắc → bỏ qua, bot chạy như cũ.
+  const classifyNow =
+    !firstContact &&
+    shouldClassify({
+      customerMessage,
+      label: ruleLabel,
+      hasOrder: !!orderContext,
+      hasImages: customerImages.length > 0,
+      historyLen: history.length,
+    });
+  const situationPromise = classifyNow
+    ? classifySituation({
+        history,
+        customerMessage,
+        pendingTexts: pendingMsgs.map((m) => (m.text || "").trim()).filter(Boolean),
+        orderBrief: orderContext,
+        productName: currentProduct?.name || "",
+        keys: apiKeys,
+      }).catch(() => null)
+    : Promise.resolve(null);
+  const contentsPromise = buildContents(history, customerMessage, customerImages); // tải ảnh khách gửi chạy song song với lớp phân loại
+  const situation = await situationPromise;
+  if (classifyNow) console.log("---- Phân loại tình huống (lớp 3):", situation ? JSON.stringify(situation) : "(bỏ qua / lỗi)");
+  const aiLabelOk = !!situation && situation.do_chac !== "thap" && situation.nhom !== "khac" && situation.nhom !== "dong_y_ngan";
+  const situationLabel = aiLabelOk ? situation.nhom : ruleLabel;
+
+  // Tìm câu đã dạy (ưu tiên đúng nhóm tình huống) + lịch sử đã dựng
   const [trainingText, contents] = await Promise.all([
-    getTrainingForPrompt(currentProduct?.id, trainQueries).catch(() => ""),
-    buildContents(history, customerMessage, customerImages),
+    getTrainingForPrompt(currentProduct?.id, trainQueries, { label: situationLabel, strong: aiLabelOk }).catch(() => ""),
+    contentsPromise,
   ]);
   const systemPrompt = buildSystemPrompt(
     formatProductsForPrompt(products),
@@ -917,7 +948,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Phần khách đã trả lời rồi thì không hỏi lại.";
     }
   }
-  const finalPrompt = systemPrompt + burstNote + followupNote + askNote + reaskNote;
+  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
@@ -944,6 +975,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   console.log(`---- Bot trả lời (${usedModel || "không có model nào trả lời"}):`, raw || "(không có nội dung)");
 
   const parsed = parseModelJson(raw);
+  if (parsed?.tinh_huong) console.log(`---- Tình huống AI tự ghi (nhãn luật: ${ruleLabel}):`, String(parsed.tinh_huong).slice(0, 300));
 
   // Lấy danh sách tin từ JSON (chịu được vài kiểu trả về lệch chuẩn); không phải JSON thì coi cả đoạn là câu trả lời
   let list = [];

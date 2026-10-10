@@ -81,3 +81,15 @@ messenger-bot-app/
 - Mở bằng nút 🧾 trên thanh trên cùng của trang chat (cùng mật khẩu, chỉ chủ shop thấy).
 - Khi khách để lại số điện thoại trong chat, hệ thống tự tạo đơn (nhãn "🤖 Tự tạo") → hiện ở tab "Đơn chat" → bấm "Ghi vào doanh thu".
 - Tắt/bật tự tạo đơn bằng nút trong tab "Đơn chat". Không cần thêm biến môi trường nào.
+
+## Đoán tình huống & ngữ cảnh khách (3 lớp)
+
+Trước khi trả lời, bot hiểu tình huống của khách theo 3 lớp từ rẻ đến đắt:
+
+1. **AI tự ghi `tinh_huong` trong JSON trả lời** (lib/botPrompt.js) — khách muốn gì, đang ở bước nào, cần tránh gì. Không tốn thêm lần gọi AI. Xem trong log Vercel: `Tình huống AI tự ghi`.
+2. **Nhãn tình huống bằng luật từ khoá** (lib/situation.js → `detectSituation`) — hỏi giá, mặc cả, ship, đổi trả, phàn nàn... Dùng để tìm câu đã dạy ở trang "Dạy bot" đúng nhóm hơn (lib/training.js). Không gọi AI.
+3. **AI phân loại riêng, chỉ khi cần** (`shouldClassify` + `classifySituation`) — khi khách phàn nàn / xin giảm giá / đổi trả / đang phân vân, tin quá ngắn ("vậy hả", "thôi", "ok"), hoặc khách đã có đơn mà hỏi tiếp. Dùng model nhẹ, tối đa ~4,5 giây; lỗi/timeout/không chắc thì bỏ qua, bot chạy như cũ. Xem log: `Phân loại tình huống (lớp 3)`.
+
+Biến môi trường (không bắt buộc):
+- `SITUATION_LAYER=off` — tắt lớp 3 (lớp 1 và 2 vẫn chạy, không tốn quota).
+- `SITUATION_BUDGET_MS` — thời gian tối đa cho lớp 3 (mặc định 4500).
