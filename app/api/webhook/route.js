@@ -597,6 +597,9 @@ function stripBotNotes(t) {
     .trim();
 }
 
+/** AI đôi khi nhét tên trường kỹ thuật (send_images, customer_info...) vào danh sách tin nhắn → tuyệt đối không gửi cho khách. */
+const isInternalToken = (t) => /^[\W_]*(send_images|use_opening_product|customer_info|no_reply|messages)\b/i.test(String(t || ""));
+
 /** Đổi lịch sử chat trong DB thành contents của Gemini (xen kẽ user/model, kết thúc bằng user). */
 async function buildContents(history, latestText, latestImages) {
   const items = [];
@@ -948,7 +951,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (typeof parsed?.messages === "string") list = [parsed.messages];
   else if (typeof parsed?.reply === "string") list = [parsed.reply];
   else if (!parsed && raw.trim()) list = salvageMessages(raw);
-  let messages = list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m)).slice(0, 2);
+  // AI nhét chữ "send_images" vào danh sách tin (thay vì đặt đúng trường send_images) → bỏ chữ đó, nhưng vẫn hiểu là khách cần xem ảnh
+  const strayImages = list.some((m) => /^[\W_]*send_images\b/i.test(String(m || "")));
+  let messages = list
+    .map((m) => stripBotNotes(m).slice(0, 1900))
+    .filter((m) => m && !isErrorText(m) && !isInternalToken(m))
+    .slice(0, 2);
   // Khách nhắn liền nhiều tin → gộp thành MỘT tin trả lời (không gửi 2 tin rời làm khách rối)
   if (burstNote && messages.length > 1) {
     const joined = messages.join("\n\n");
@@ -980,7 +988,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let images = [];
   let imageItems = [];
   let imageNote = "";
-  const req = parsed?.send_images;
+  let req = parsed?.send_images;
+  // AI muốn gửi ảnh nhưng ghi sai định dạng (thiếu product_id, hoặc chỉ viết chữ send_images) → dùng sản phẩm khách đang hỏi
+  if (!req?.product_id && (parsed?.send_images || strayImages)) {
+    const pid = currentProduct?.id || (products.length === 1 ? products[0].id : null);
+    req = pid ? { product_id: pid } : null;
+  }
   if (req?.product_id) {
     const p = products.find((x) => String(x.id) === String(req.product_id));
     if (p) {

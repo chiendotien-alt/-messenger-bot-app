@@ -1258,7 +1258,7 @@ export default function ChatAdminPage() {
   const shownConversations = conversations.filter((c) => {
     if (orderFilter === "all") return true;
     const list = ordersByConv[c.id] || [];
-    if (orderFilter === "none") return list.length === 0;
+    if (orderFilter === "has") return list.some((o) => statusOf(o) !== "returned");
     return list.some((o) => statusOf(o) === orderFilter);
   });
   const filtering = timePreset !== "all" || orderFilter !== "all";
@@ -1581,11 +1581,8 @@ export default function ChatAdminPage() {
               aria-label="Lọc theo tình trạng đơn"
             >
               <option value="all">Tất cả</option>
-              <option value="none">Chưa có đơn</option>
-              <option value="draft">Mới tạo (chưa gửi)</option>
-              <option value="shipped">Đã gửi hàng</option>
-              <option value="delivered">Đã giao</option>
-              <option value="returned">Đã hủy</option>
+              <option value="has">Có đơn</option>
+              <option value="returned">Đã hủy (đã tích Hủy đơn)</option>
             </select>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 10, fontSize: 12.5, color: "#6b7280" }}>
               <span>
@@ -1767,14 +1764,12 @@ export default function ChatAdminPage() {
                 {(ordersByConv[c.id] || []).length > 0 && (
                   <div style={{ fontSize: 12, color: "#166534", marginTop: 2 }}>
                     🧾 {ordersByConv[c.id].length} đơn
-                    {Object.keys(ORDER_STATUS).map((k) => {
-                      const n = ordersByConv[c.id].filter((o) => statusOf(o) === k).length;
+                    {(() => {
+                      const n = ordersByConv[c.id].filter((o) => statusOf(o) === "returned").length;
                       return n ? (
-                        <span key={k} style={{ marginLeft: 6, color: ORDER_STATUS[k].color }}>
-                          · {n} {ORDER_STATUS[k].label.toLowerCase()}
-                        </span>
+                        <span style={{ marginLeft: 6, color: ORDER_STATUS.returned.color }}>· {n} đã hủy</span>
                       ) : null;
-                    })}
+                    })()}
                   </div>
                 )}
               </div>
