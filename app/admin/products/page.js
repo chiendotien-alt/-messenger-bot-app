@@ -610,7 +610,7 @@ export default function AdminPage() {
             Khách im quá số giây trên → bot nhắn thêm 1 câu ngắn: nếu bot đang hỏi xin thông tin (size, màu...) mà khách chưa trả lời thì hỏi lại gọn hơn, đổi cách nói (vd “Chị cho em xin chiều cao cân nặng nha?”); không còn gì thiếu thì nhắn câu chốt đơn, vd “Em lên đơn váy vàng nhé chị?” (sớm nhất sau khoảng 30–60 giây; lỡ quá giờ thì bỏ, không nhắn trễ)
           </label>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-            Chỉ nhắn khách chưa để lại SĐT, chưa có đơn, chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
+            Chỉ nhắn khách chưa có đơn thật (đơn nháp tự tạo khi khách để lại SĐT thì vẫn nhắn nếu còn thiếu thông tin như địa chỉ), chủ shop chưa nhắn tay. Chỉ hỏi lại những gì shop hỏi sau tin cuối của khách. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
