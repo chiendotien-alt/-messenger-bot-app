@@ -34,7 +34,7 @@ import {
   extractPhone,
   isConversationBotOff,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -91,6 +91,8 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // Khách nhắn dồn dập (tin thứ 2, 3... khi tin trước chưa được trả lời, hoặc nhắn tiếp ngay sau khi bot vừa trả lời):
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 1200;
+// Khách gửi ẢNH (không kèm chữ) để hỏi: chờ ngần này ms cho khách kịp nhắn thêm câu hỏi rồi mới trả lời. Đặt 0 để tắt.
+const IMAGE_WAIT_MS = process.env.IMAGE_WAIT_MS !== undefined ? Number(process.env.IMAGE_WAIT_MS) : 5000;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
 // Luật CŨ (chỉ dùng khi "Thời gian hỏi lại thông tin" = 0 giây): không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất (mặc định 3). Đặt 0 để tắt.
 // Luật MỚI (mặc định): câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) chỉ được hỏi lại sau "Thời gian hỏi lại thông tin" giây (cài ở trang sản phẩm).
@@ -201,9 +203,11 @@ export async function POST(req) {
 
         // Khách MỚI nhắn liền mấy tin: chờ một chút cho khách gõ xong, chỉ tin CUỐI CÙNG của loạt mới đi tiếp
         // (các tin trước tự dừng) → bot chỉ trả lời 1 lần duy nhất.
-        const firstWaitMs = Number.isFinite(Number(settings.firstContactWaitSec)) && settings.firstContactWaitSec !== "" && settings.firstContactWaitSec !== undefined && settings.firstContactWaitSec !== null
+        const imageOnly = fbImages.length > 0 && !text;
+        let firstWaitMs = Number.isFinite(Number(settings.firstContactWaitSec)) && settings.firstContactWaitSec !== "" && settings.firstContactWaitSec !== undefined && settings.firstContactWaitSec !== null
           ? Math.max(0, Number(settings.firstContactWaitSec)) * 1000
           : FIRST_CONTACT_WAIT_MS;
+        if (imageOnly && firstWaitMs > 0) firstWaitMs = Math.max(firstWaitMs, IMAGE_WAIT_MS);
         const firstContact =
           firstWaitMs > 0 &&
           !!messageId &&
@@ -239,6 +243,7 @@ export async function POST(req) {
             ]);
             if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
+          if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 5 giây cho khách nhắn thêm
           if (waitMs > 0) await sleep(waitMs);
           if (waitMs > 0 && await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
             console.log("Khách nhắn tiếp tin mới → để tin cuối cùng trả lời chung:", text);
@@ -347,20 +352,22 @@ export async function POST(req) {
               if (i === 0 && openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
               return false;
             }
-            // Chống hỏi lặp. Luật mới: câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) mà bot/shop vừa hỏi chưa quá
-            // "Thời gian hỏi lại" thì bỏ câu hỏi đó, vẫn gửi phần trả lời. Lần đầu hỏi thì hỏi luôn, không chờ.
-            // "Thời gian hỏi lại" = 0 → dùng luật cũ (so với N tin gần nhất).
-            if (!reply.openingProductId) {
+            // Chống hỏi lặp. Luật: câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) mà bot/shop ĐÃ hỏi rồi thì bỏ câu hỏi đó, vẫn gửi phần trả lời.
+            // Lần đầu hỏi thì hỏi luôn. Hỏi lại khi khách chưa trả lời là việc của tin nhắn bồi (sau "Thời gian hỏi lại").
+            // "Thời gian hỏi lại" = 0 → dùng luật cũ (so với N tin gần nhất). Tin chốt đơn (khách vừa đưa SĐT/địa chỉ) không bị cắt.
+            if (!reply.openingProductId && !reply.skipAskClean) {
               let cleaned = messages[i];
               if (askGapMs > 0) {
                 const [rows, recent] = await Promise.all([
                   getRecentOutgoingWithAge(senderId, 15).catch(() => []),
                   NO_REPEAT_QUESTION_LAST > 0 ? getRecentOutgoingTexts(senderId, 0, NO_REPEAT_QUESTION_LAST).catch(() => []) : [],
                 ]);
-                const { topics } = recentAskedTopics(rows, askGapMs);
-                cleaned = removeInfoAsks(cleaned, topics);
-                // Đã hết thời gian chờ mà hỏi lại cùng thông tin → đổi sang câu NGẮN hơn, khác cách nói (lần đầu hỏi thì giữ nguyên)
-                if (cleaned) cleaned = softenRepeatedInfoAsks(cleaned, rows, { neutral: !!reply.hasNotes });
+                const unblock = reply.unblockTopics || [];
+                const { topics } = recentAskedTopics(rows, Infinity);
+                // Khách mới đưa MỘT nửa của cặp (chiều cao/cân nặng, SĐT/địa chỉ) → cho hỏi nốt nửa còn lại, không chặn
+                const blocked = new Set([...topics].filter((t) => !unblock.includes(t)));
+                cleaned = removeInfoAsks(cleaned, blocked);
+                if (cleaned && !unblock.length) cleaned = softenRepeatedInfoAsks(cleaned, rows, { neutral: !!reply.hasNotes });
                 // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
                 if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
                   cleaned = removeRepeatedAsks(cleaned, recent, { skipInfo: true });
@@ -670,6 +677,34 @@ function salvageMessages(raw) {
  * Chỉ giữ thông tin mà khách THỰC SỰ đã nhắn (chống AI đoán bừa/bịa rồi lưu làm thật):
  * SĐT phải có đúng dãy số trong tin khách; tên/địa chỉ/màu-size phải có phần lớn từ xuất hiện trong tin khách.
  */
+// ---- Cặp thông tin hỏi gộp: (chiều cao + cân nặng), (SĐT + địa chỉ). Khách mới đưa MỘT nửa → được hỏi nốt nửa còn lại dù shop đã hỏi cặp này trước đó ----
+const HEIGHT_RE = /(?:\b[12]\s?m\s?\d{0,2}\b|\b1[3-9]\d\s?cm\b|\bcao\s+\d)/i;
+const WEIGHT_RE = /\b\d{2,3}(?:[.,]\d)?\s?(?:kg|ky|kí|ký|cân|can)\b/i;
+const PHONE_TEXT_RE = /(?:\+?84|0)\d{9}/;
+
+function partialPairTopics({ history, currentTexts, mergedInfo, verified }) {
+  const out = new Set();
+  const cur = (currentTexts || []).join(" \n ");
+  // SĐT + địa chỉ: tin này khách đưa SĐT mà chưa có địa chỉ, hoặc ngược lại
+  const phoneNow = PHONE_TEXT_RE.test(cur.replace(/[\s.\-]/g, ""));
+  const addrNow = !!String(verified?.address || "").trim();
+  const hasPhone = !!String(mergedInfo?.phone || "").trim() || phoneNow;
+  const hasAddr = !!String(mergedInfo?.address || "").trim();
+  if (phoneNow && !hasAddr) out.add("dia chi");
+  if (addrNow && !hasPhone) out.add("so dien thoai");
+  // Chiều cao + cân nặng: xét các tin khách từ sau lần shop hỏi size ĐẦU TIÊN (gồm cả tin hiện tại)
+  const list = history || [];
+  const firstAsk = list.findIndex((m) => m.from !== "customer" && askedTopics(m.text || "").has("size"));
+  if (firstAsk >= 0) {
+    const before = list.slice(firstAsk + 1).filter((m) => m.from === "customer").map((m) => m.text || "");
+    const all = before.concat(currentTexts || []).join(" \n ");
+    const curH = HEIGHT_RE.test(cur), curW = WEIGHT_RE.test(cur);
+    const hasH = HEIGHT_RE.test(all), hasW = WEIGHT_RE.test(all);
+    if ((curH || curW) && !(hasH && hasW)) out.add("size");
+  }
+  return out;
+}
+
 function verifyCustomerInfo(info, history, latestText) {
   const customerTexts = (history || []).filter((m) => m.from === "customer").map((m) => m.text || "");
   customerTexts.push(latestText || "");
@@ -923,29 +958,17 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Không lặp lại ý đã nói ở tin shop vừa gửi, không hỏi lại điều khách vừa trả lời (vd khách đã nói màu thì đừng hỏi màu nữa), không chào lại.";
     }
   }
-  // Shop vừa hỏi khách xin thông tin (màu, size, SĐT...) chưa quá "thời gian hỏi lại" → dặn AI chỉ trả lời, chưa hỏi lại
+  // Shop ĐÃ hỏi khách xin thông tin (màu, size, SĐT, địa chỉ...) rồi → dặn AI không hỏi lại; hỏi lại là việc của tin nhắn bồi
   let askNote = "";
+  const reaskNote = "";
   if (askGapMs > 0 && !firstContact) {
-    const { topics, ageMs } = recentAskedTopics(askRows, askGapMs);
+    const { topics } = recentAskedTopics(askRows, Infinity);
     if (topics.size) {
-      const secs = Math.max(1, Math.round((ageMs || 0) / 1000));
       askNote =
-        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop vừa hỏi khách xin [" + [...topics].join(", ") + "] cách đây khoảng " + secs + " giây. " +
-        "Nếu khách chưa trả lời phần đó thì lượt này CHỈ trả lời đúng điều khách vừa hỏi, KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin này (hệ thống sẽ tự hỏi lại khi đủ thời gian). " +
-        "Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi.";
-    }
-  }
-  // Đã hỏi thông tin này từ trước (quá "thời gian hỏi lại") mà giờ cần hỏi lại → dặn AI hỏi NGẮN hơn và đổi cách nói
-  let reaskNote = "";
-  if (askGapMs > 0 && !firstContact) {
-    const waiting = recentAskedTopics(askRows, askGapMs).topics;
-    const older = [...recentAskedTopics(askRows, Infinity).topics].filter((t) => !waiting.has(t));
-    if (older.length) {
-      reaskNote =
-        "\n\nLƯU Ý KHI HỎI LẠI: trước đó shop đã hỏi khách xin [" + older.join(", ") + "]. " +
-        "Nếu lượt này cần hỏi lại phần nào khách chưa trả lời thì phải viết câu NGẮN GỌN HƠN và ĐỔI CÁCH DIỄN ĐẠT, nội dung vẫn tương tự, " +
-        "không chép lại câu cũ (vd cũ: \"Chị cho shop xin chiều cao và cân nặng để em chọn size vừa cho mình nha.\" → mới: \"Chị cho em xin chiều cao cân nặng nha?\"). " +
-        "Phần khách đã trả lời rồi thì không hỏi lại.";
+        "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop ĐÃ hỏi khách xin [" + [...topics].join(", ") + "] ở các tin trước. " +
+        "Lượt này KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin đó dù khách chưa trả lời (hệ thống sẽ tự nhắn bồi sau một lúc). " +
+        "Chỉ trả lời đúng điều khách vừa hỏi. Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi, ví dụ khi đã có đủ màu và size thì xin số điện thoại và địa chỉ. " +
+        "NGOẠI LỆ — cặp hỏi gộp (chiều cao + cân nặng) và (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (vd khách mới nói chiều cao → chỉ xin cân nặng; mới gửi SĐT → chỉ xin địa chỉ), không hỏi lại phần khách đã đưa.";
     }
   }
   const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote;
@@ -997,13 +1020,17 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const openingRequested = !!parsed?.use_opening_product;
 
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
+  let verified = null;
   if (parsed?.customer_info && typeof parsed.customer_info === "object") {
-    const verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
+    verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
     await mergeCustomerInfo(senderId, verified).catch((e) =>
       console.error("Không lưu được thông tin khách:", e.message)
     );
   }
 
+  const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
+  const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
+  const unblockTopics = [...partialPairTopics({ history, currentTexts, mergedInfo, verified })];
   // Khách VỪA đưa số điện thoại sau khi shop hỏi xin SĐT/địa chỉ → luôn phải có câu trả lời (hỏi nốt địa chỉ còn thiếu hoặc báo đã nhận thông tin),
   // không được im lặng dù AI trả rỗng hoặc đánh dấu no_reply (SĐT đã được lưu sẵn nên AI hay tưởng khách chỉ lặp lại thông tin cũ).
   const phoneNow = /(?:\+?84|0)\d{9}/.test(String(customerMessage || "").replace(/[\s.\-]/g, ""));
@@ -1114,7 +1141,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
 
   if (!messages.length && !images.length && mustReplyOrderInfo) {
-    return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: !!String(currentProduct?.notes || "").trim() };
+    return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: !!String(currentProduct?.notes || "").trim(), skipAskClean: true, unblockTopics };
   }
   if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
@@ -1136,7 +1163,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return fallback;
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: !!String(currentProduct?.notes || "").trim() };
+  return { messages, images, imageItems, imageNote, hasNotes: !!String(currentProduct?.notes || "").trim(), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
 }
 
 /**

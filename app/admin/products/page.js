@@ -603,14 +603,14 @@ export default function AdminPage() {
           </div>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0 10px" }}>
             Bot vẫn trả lời khách bình thường. Lần đầu bot hỏi xin thông tin (màu, size, SĐT, địa chỉ...) thì hỏi luôn, không chờ.
-            Sau đó, khách hỏi chuyện khác thì bot chỉ trả lời, chưa hỏi lại; đủ số giây này mới được hỏi lại, và câu hỏi lại sẽ ngắn hơn, đổi cách nói so với câu cũ (60 giây = 1 phút, 180 = 3 phút). Nhập 0 = dùng luật cũ (không hỏi lại trong 3 tin gần nhất).
+            Sau đó, khách hỏi chuyện khác thì bot chỉ trả lời, không hỏi lại; việc hỏi lại do tin nhắn bồi lo, sau đúng số giây này kể từ tin cuối của bot, và câu hỏi lại sẽ ngắn hơn, đổi cách nói so với câu cũ (60 giây = 1 phút, 180 = 3 phút). Khi khách đã có đủ màu và size, bot xin luôn SĐT và địa chỉ rồi chốt đơn. Nhập 0 = dùng luật cũ (không hỏi lại trong 3 tin gần nhất).
           </div>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
             <input type="checkbox" checked={nudgeOn} onChange={(e) => setNudgeOn(e.target.checked)} />
             Khách im quá số giây trên → bot nhắn thêm 1 câu ngắn: nếu bot đang hỏi xin thông tin (size, màu...) mà khách chưa trả lời thì hỏi lại gọn hơn, đổi cách nói (vd “Chị cho em xin chiều cao cân nặng nha?”); không còn gì thiếu thì nhắn câu chốt đơn, vd “Em lên đơn váy vàng nhé chị?” (sớm nhất sau khoảng 30–60 giây; lỡ quá giờ thì bỏ, không nhắn trễ)
           </label>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-            Chỉ nhắn khách chưa có đơn thật (đơn nháp tự tạo khi khách để lại SĐT thì vẫn nhắn nếu còn thiếu thông tin như địa chỉ), chủ shop chưa nhắn tay. Chỉ hỏi lại những gì shop hỏi sau tin cuối của khách. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
+            Chỉ nhắn khách chưa có đơn thật (đơn nháp tự tạo khi khách để lại SĐT thì vẫn nhắn nếu còn thiếu thông tin như địa chỉ), chủ shop chưa nhắn tay. Mỗi lần khách nhắn chỉ 1 câu. Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
