@@ -92,7 +92,7 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 // chờ ngần này ms cho khách gõ xong rồi trả lời MỘT lần. Tin ĐẦU của khách vẫn trả lời nhanh, không chờ. Đặt 0 để tắt.
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 1200;
 // Khách gửi ẢNH (không kèm chữ) để hỏi: chờ ngần này ms cho khách kịp nhắn thêm câu hỏi rồi mới trả lời. Đặt 0 để tắt.
-const IMAGE_WAIT_MS = process.env.IMAGE_WAIT_MS !== undefined ? Number(process.env.IMAGE_WAIT_MS) : 5000;
+const IMAGE_WAIT_MS = process.env.IMAGE_WAIT_MS !== undefined ? Number(process.env.IMAGE_WAIT_MS) : 15000;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
 // Luật CŨ (chỉ dùng khi "Thời gian hỏi lại thông tin" = 0 giây): không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất (mặc định 3). Đặt 0 để tắt.
 // Luật MỚI (mặc định): câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) chỉ được hỏi lại sau "Thời gian hỏi lại thông tin" giây (cài ở trang sản phẩm).
@@ -243,7 +243,7 @@ export async function POST(req) {
             ]);
             if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
-          if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 5 giây cho khách nhắn thêm
+          if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 15 giây cho khách nhắn thêm
           if (waitMs > 0) await sleep(waitMs);
           if (waitMs > 0 && await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
             console.log("Khách nhắn tiếp tin mới → để tin cuối cùng trả lời chung:", text);
