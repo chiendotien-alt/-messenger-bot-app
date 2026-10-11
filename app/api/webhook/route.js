@@ -366,7 +366,13 @@ export async function POST(req) {
                 const { topics } = recentAskedTopics(rows, Infinity);
                 // Khách mới đưa MỘT nửa của cặp (chiều cao/cân nặng, SĐT/địa chỉ) → cho hỏi nốt nửa còn lại, không chặn
                 const blocked = new Set([...topics].filter((t) => !unblock.includes(t)));
+                const beforeClean = cleaned;
                 cleaned = removeInfoAsks(cleaned, blocked);
+                // Khách vừa nhắn mà câu duy nhất của bot bị cắt sạch (vd khách nói "tư vấn size giúp mình" khi bot đã hỏi cân nặng)
+                // → KHÔNG được im lặng: gửi lại đúng câu hỏi đó nhưng viết ngắn gọn/khác cách nói.
+                if (!cleaned && sentCount === 0 && i === messages.length - 1) {
+                  cleaned = softenRepeatedInfoAsks(beforeClean, rows, { neutral: !!reply.hasNotes }) || beforeClean;
+                }
                 if (cleaned && !unblock.length) cleaned = softenRepeatedInfoAsks(cleaned, rows, { neutral: !!reply.hasNotes });
                 // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
                 if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
@@ -1071,9 +1077,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     parsed?.customer_info?.phone ||
     parsed?.customer_info?.address
   );
-  const blockImages = orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText);
+  // CHỐT CHẶN 2: khách KHÔNG xin xem ảnh (không có chữ ảnh/hình/xem/video/feedback và không hỏi chung \"có mấy màu/mẫu nào\")
+  // mà AI lỡ yêu cầu gửi ảnh → bỏ yêu cầu ảnh, trả lời bằng chữ. Khách chỉ nhắc tên màu/mẫu (vd \"váy trắng\", \"màu đen có không\") cũng KHÔNG gửi ảnh.
+  // Xét cả các tin khách vừa nhắn liền nhau. Khách tự gửi ảnh cho bot thì vẫn cho gửi.
+  const allCurrent = currentTexts.join(" ");
+  const photoWord = /\b(anh|hinh|video|clip|xem|feedback|review)\b/.test(normKey(allCurrent));
+  const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !customerImages.length && !adminHandled;
+  const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText)) || unaskedImages;
   if (blockImages) {
-    if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách đang chốt đơn, không xin xem ảnh:", msgText.slice(0, 80));
+    if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách không xin xem ảnh:", msgText.slice(0, 80));
     req = null;
   }
   // AI muốn gửi ảnh nhưng ghi sai định dạng (thiếu product_id, hoặc chỉ viết chữ send_images) → dùng sản phẩm khách đang hỏi
