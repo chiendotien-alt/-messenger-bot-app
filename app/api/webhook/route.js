@@ -1004,8 +1004,20 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     );
   }
 
+  // Khách VỪA đưa số điện thoại sau khi shop hỏi xin SĐT/địa chỉ → luôn phải có câu trả lời (hỏi nốt địa chỉ còn thiếu hoặc báo đã nhận thông tin),
+  // không được im lặng dù AI trả rỗng hoặc đánh dấu no_reply (SĐT đã được lưu sẵn nên AI hay tưởng khách chỉ lặp lại thông tin cũ).
+  const phoneNow = /(?:\+?84|0)\d{9}/.test(String(customerMessage || "").replace(/[\s.\-]/g, ""));
+  const lastBotText = ([...history].reverse().find((m) => m.from !== "customer") || {}).text || "";
+  const botAskedInfo = /địa chỉ|số điện thoại|sđt|so dien thoai|dia chi/i.test(String(lastBotText));
+  const mustReplyOrderInfo = phoneNow && botAskedInfo;
+  const orderInfoReply = () => {
+    const hasAddr = !!(customerInfo?.address || parsed?.customer_info?.address);
+    const neutral = !!String(currentProduct?.notes || "").trim();
+    if (!hasAddr) return neutral ? "Cho shop xin địa chỉ nhận hàng nữa ạ?" : "Dạ mình cho shop xin địa chỉ nhận hàng nữa nhé ạ?";
+    return neutral ? "Shop đã nhận được thông tin, sẽ lên đơn và báo lại ạ." : "Dạ shop đã nhận được thông tin, sẽ lên đơn và báo lại mình nhé ạ.";
+  };
   // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
-  if (parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
+  if (!mustReplyOrderInfo && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
     console.log("AI quyết định không trả lời (tin khách chỉ lặp lại thông tin đã chốt):", customerMessage);
     return { skip: true };
   }
@@ -1101,6 +1113,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  if (!messages.length && !images.length && mustReplyOrderInfo) {
+    return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: !!String(currentProduct?.notes || "").trim() };
+  }
   if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
     if (images.length) {
