@@ -360,7 +360,7 @@ export async function POST(req) {
                 const { topics } = recentAskedTopics(rows, askGapMs);
                 cleaned = removeInfoAsks(cleaned, topics);
                 // Đã hết thời gian chờ mà hỏi lại cùng thông tin → đổi sang câu NGẮN hơn, khác cách nói (lần đầu hỏi thì giữ nguyên)
-                if (cleaned) cleaned = softenRepeatedInfoAsks(cleaned, rows);
+                if (cleaned) cleaned = softenRepeatedInfoAsks(cleaned, rows, { neutral: !!reply.hasNotes });
                 // Các câu hỏi KHÁC (không phải lấy thông tin) vẫn không được hỏi y như câu vừa hỏi
                 if (cleaned && NO_REPEAT_QUESTION_LAST > 0) {
                   cleaned = removeRepeatedAsks(cleaned, recent, { skipInfo: true });
@@ -1021,8 +1021,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let imageItems = [];
   let imageNote = "";
   let req = parsed?.send_images;
+  // CHỐT CHẶN: khách đang đưa SĐT/địa chỉ (chốt đơn) mà KHÔNG xin xem ảnh/hỏi màu mẫu → không gửi ảnh dù AI có yêu cầu
+  const msgText = String(customerMessage || "");
+  const askedForPhotos = /ảnh|hình|hinh|cho xem|xem (hàng|hang|mẫu|mau|màu|thử|thu)|feedback|video/i.test(msgText);
+  const phoneInMsg = /(?:\+?84|0)\d{9}/.test(msgText.replace(/[\s.\-]/g, ""));
+  const orderInfoNow = !!(
+    phoneInMsg ||
+    customerInfo?.phone ||
+    customerInfo?.address ||
+    parsed?.customer_info?.phone ||
+    parsed?.customer_info?.address
+  );
+  const blockImages = orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText);
+  if (blockImages) {
+    if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách đang chốt đơn, không xin xem ảnh:", msgText.slice(0, 80));
+    req = null;
+  }
   // AI muốn gửi ảnh nhưng ghi sai định dạng (thiếu product_id, hoặc chỉ viết chữ send_images) → dùng sản phẩm khách đang hỏi
-  if (!req?.product_id && (parsed?.send_images || strayImages)) {
+  if (!blockImages && !req?.product_id && (parsed?.send_images || strayImages)) {
     const pid = currentProduct?.id || (products.length === 1 ? products[0].id : null);
     req = pid ? { product_id: pid } : null;
   }
@@ -1073,7 +1089,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       currentProduct ||
       (products.length === 1 ? products[0] : null);
     const cat = catalogImageList(cp);
-    const wantCatalog = parsed?.send_catalog === true || isCatalogQuestion(customerMessage);
+    const wantCatalog = !blockImages && (parsed?.send_catalog === true || isCatalogQuestion(customerMessage));
     const sentRecently = history
       .slice(-8)
       .some((m) => m.from !== "customer" && String(m.text || "").includes("ảnh tổng hợp mẫu mã"));
@@ -1087,7 +1103,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
-    if (images.length) messages = ["Dạ shop gửi anh/chị xem ảnh nhé ạ."];
+    if (images.length) {
+      // Sản phẩm có "Lưu ý của chủ shop" → câu dẫn không xưng hô anh/chị để không lệch với lưu ý
+      messages = [String(currentProduct?.notes || "").trim() ? "Shop gửi ảnh để xem thử nhé ạ." : "Dạ shop gửi anh/chị xem ảnh nhé ạ."];
+    }
     else {
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
       // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
@@ -1102,7 +1121,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return fallback;
     }
   }
-  return { messages, images, imageItems, imageNote };
+  return { messages, images, imageItems, imageNote, hasNotes: !!String(currentProduct?.notes || "").trim() };
 }
 
 /**
