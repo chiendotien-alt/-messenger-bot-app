@@ -34,7 +34,7 @@ import {
   extractPhone,
   isConversationBotOff,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -1039,8 +1039,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const mustReplyOrderInfo = phoneNow && botAskedInfo;
   const orderInfoReply = () => {
     const hasAddr = !!(customerInfo?.address || parsed?.customer_info?.address);
-    const neutral = !!String(currentProduct?.notes || "").trim();
-    if (!hasAddr) return neutral ? "Cho shop xin địa chỉ nhận hàng nữa ạ?" : "Dạ mình cho shop xin địa chỉ nhận hàng nữa nhé ạ?";
+    const neutral = notesForbidPronouns(currentProduct?.notes);
+    if (!hasAddr) return neutral ? "Shop xin địa chỉ nhận hàng nữa ạ?" : "Dạ mình cho shop xin địa chỉ nhận hàng nữa nhé ạ?";
     return neutral ? "Shop đã nhận được thông tin, sẽ lên đơn và báo lại ạ." : "Dạ shop đã nhận được thông tin, sẽ lên đơn và báo lại mình nhé ạ.";
   };
   // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
@@ -1141,7 +1141,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
 
   if (!messages.length && !images.length && mustReplyOrderInfo) {
-    return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: !!String(currentProduct?.notes || "").trim(), skipAskClean: true, unblockTopics };
+    return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
   if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
@@ -1163,7 +1163,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return fallback;
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: !!String(currentProduct?.notes || "").trim(), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
 }
 
 /**
