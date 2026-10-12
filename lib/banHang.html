@@ -85,7 +85,7 @@ const cls=n=>n<0?'bad':n>0?'ok':'';
 const sel=(a,b)=>a==b?'selected':'';
 const TODAY=iso(new Date());
 
-const mk=(p,v,q,d,date,sh)=>({id:uid(),date,pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat,qty:q,price:v.price,disc:d,cost:v.cost,ship:sh===undefined?(+S.ship||0):sh});
+const mk=(p,v,q,d,date,sh)=>({id:uid(),date,pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat,qty:q,price:v.price,disc:d,cost:v.cost,ship:0});
 const vOpts=p=>p?p.variants.map(v=>`<option value="${v.id}">${esc(v.name||'Mặc định')} — ${fmt(v.price)}đ</option>`).join(''):'';
 function seed(){
   const V=(n,p,c)=>({id:uid(),name:n,price:p,cost:c});
@@ -151,7 +151,7 @@ function syncCx(){let ch=false;OR.forEach(o=>{const w=isCx(o);S.sales.forEach(s=
 const pending=()=>OR.filter(o=>!isRec(o)&&o.status!=='returned');
 function mp(name){const k=nk(name);if(!k)return null;let p=S.products.find(x=>nk(x.name)===k);if(p)return p;return S.products.find(x=>{const a=nk(x.name);return a&&(k.includes(a)||a.includes(k))})||null}
 function mv(p,o){const t=nk((o.variant||'')+' '+(o.productName||''));let v=p.variants.find(x=>x.name&&t.includes(nk(x.name)));if(v)return v;const up=num(o.unitPrice);if(up){v=p.variants.find(x=>x.price===up);if(v)return v}return p.variants[0]}
-function ofs(o){let f=OF[o.id];if(f)return f;const p=mp(o.productName),v=p?mv(p,o):null;return OF[o.id]={pid:p?p.id:(o.productName?'new':''),vid:v?v.id:'',qty:Math.max(1,num(o.quantity)||1),price:num(o.unitPrice)||(v?v.price:0),ship:num(o.shipFee)>0?num(o.shipFee):(+S.ship||0)}}
+function ofs(o){let f=OF[o.id];if(f)return f;const p=mp(o.productName),v=p?mv(p,o):null;return OF[o.id]={pid:p?p.id:(o.productName?'new':''),vid:v?v.id:'',qty:Math.max(1,num(o.quantity)||1),price:num(o.unitPrice)||(v?v.price:0),ship:0}}
 async function api(url,method,body){const r=await fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});if(!r.ok)throw new Error('HTTP '+r.status);return r}
 function confirmOrd(o){o.auto=false;api('/api/orders','PATCH',{id:o.id,confirm:true}).catch(()=>{o.auto=true})}
 function editing(){const a=document.activeElement;return !!a&&$('#app').contains(a)&&/INPUT|SELECT|TEXTAREA/.test(a.tagName)}
@@ -215,7 +215,7 @@ function recOrder(id){
   if(f.pid==='new')S.products.push(p);
   if(S.sample){S.sales=[];S.days={};S.sample=false}
   const sc=saleCalc(v.price,q,pr);
-  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:sc.qty,price:sc.price,disc:sc.disc,lp:num(v.price)||sc.price,cost:v.cost,oid:o.id,cn:o.customerName||'',ship:num(f.ship)});
+  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:sc.qty,price:sc.price,disc:sc.disc,lp:num(v.price)||sc.price,cost:v.cost,oid:o.id,cn:o.customerName||'',ship:0});
   delete OF[o.id];confirmOrd(o);commit();
   toast(f.pid==='new'?'Đã ghi. Sản phẩm mới "'+p.name+'" chưa có giá vốn, vào tab Sản phẩm nhập giá vốn nhé.':'Đã ghi vào doanh thu ngày '+odate(o).split('-').reverse().join('/'))
 }
@@ -238,7 +238,6 @@ function ordChange(k,id,v){
   else if(k==='ofv'){f.vid=v;const p=S.products.find(x=>x.id===f.pid),w=p&&p.variants.find(x=>x.id===v);if(w)f.price=num(o.unitPrice)||w.price;render()}
   else if(k==='ofq')f.qty=Math.max(1,num(v)||1);
   else if(k==='ofpr')f.price=num(v);
-  else if(k==='ofsh')f.ship=num(v);
 }
 async function boot(){
   $('#app').innerHTML='<p class="mut" style="padding:20px 4px">Đang tải dữ liệu…</p>';
@@ -281,7 +280,7 @@ function oForm(o){
   const p=S.products.find(x=>x.id===f.pid);
   const popt='<option value="">— Chọn sản phẩm trong danh sách —</option>'+S.products.map(x=>`<option value="${x.id}" ${sel(x.id,f.pid)}>${esc(x.name)}</option>`).join('')+(o.productName?`<option value="new" ${sel('new',f.pid)}>➕ Sản phẩm mới: ${esc(o.productName)}</option>`:'');
   const vsel=p&&p.variants.length>1?`<select data-k="ofv" data-id="${o.id}" style="flex:2 1 120px">${p.variants.map(v=>`<option value="${v.id}" ${sel(v.id,f.vid)}>${esc(v.name||'Mặc định')} — ${fmt(v.price)}đ</option>`).join('')}</select>`:'';
-  return `<div class="row" style="margin-top:8px"><select data-k="ofp" data-id="${o.id}" style="flex:3 1 170px">${popt}</select>${vsel}<input inputmode="numeric" value="${f.qty}" data-k="ofq" data-id="${o.id}" style="flex:0 1 60px" placeholder="SL" title="Số lượng"><input inputmode="numeric" value="${f.price?fmt(f.price):''}" data-k="ofpr" data-id="${o.id}" style="flex:1 1 100px" placeholder="Giá bán/cái" title="Giá bán 1 cái"><input inputmode="numeric" value="${f.ship?fmt(f.ship):''}" data-k="ofsh" data-id="${o.id}" style="flex:1 1 90px" placeholder="Tiền ship" title="Tiền ship của đơn (đơn bị hủy thì không tính ship)"><button class="btn" data-act="rec" data-id="${o.id}">✓ Ghi vào doanh thu</button></div>`
+  return `<div class="row" style="margin-top:8px"><select data-k="ofp" data-id="${o.id}" style="flex:3 1 170px">${popt}</select>${vsel}<input inputmode="numeric" value="${f.qty}" data-k="ofq" data-id="${o.id}" style="flex:0 1 60px" placeholder="SL" title="Số lượng"><input inputmode="numeric" value="${f.price?fmt(f.price):''}" data-k="ofpr" data-id="${o.id}" style="flex:1 1 100px" placeholder="Giá bán/cái" title="Giá bán 1 cái"><button class="btn" data-act="rec" data-id="${o.id}">✓ Ghi vào doanh thu</button></div>`
 }
 function oCard(o){
   const rec=isRec(o),cx=isCx(o),q=Math.max(1,num(o.quantity)||1);
@@ -291,7 +290,7 @@ function oCard(o){
   const body=cx?(rec?`<div class="mut" style="margin-top:8px">Đơn đã hủy nên <b>không tính</b> vào doanh thu ngày ${odate(o).split('-').reverse().join('/')}.</div>`:'')+`<div class="mut" style="margin-top:6px">Khách không nhận nhưng có trả lại 1 ít tiền thì nhập vào ô bên dưới, số này được cộng vào <b>lãi</b> của ngày ${odate(o).split('-').reverse().join('/')}.</div>`:rec?`<div class="ban" style="margin-top:8px"><span>✓ Đã ghi vào doanh thu ngày <b>${odate(o).split('-').reverse().join('/')}</b>: ${L.map(s=>esc(s.name)+' × '+s.qty+' = '+fmt(rev(s))+'đ').join('; ')}</span><button class="btn g" data-act="unrec" data-id="${o.id}">Bỏ ghi</button></div>`:oForm(o);
   return `<div class="card oc ${cx?'cxo':rec?'rec':''}" data-s="${esc(nk([o.customerName,o.phone,o.productName,o.address].join(' ')))}">
   <div class="row" style="justify-content:space-between"><div><b>${esc(o.customerName||'(chưa có tên)')}</b>${tag}</div><span class="mut">${otime(o)}${pg}</span></div>
-  <div class="ln">📞 ${o.phone?`<a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>`:'<span class="bad">chưa có SĐT</span>'}<br>📍 ${o.address?esc(o.address):'<span class="bad">chưa có địa chỉ</span>'}<br>🛍 ${esc(o.productName||'(chưa rõ sản phẩm)')}${o.variant?' · '+esc(o.variant):''} × ${q}${num(o.unitPrice)?' · '+fmt(o.unitPrice)+'đ':''}${num(o.shipFee)?' · ship '+fmt(o.shipFee)+'đ':''}${o.note?`<br>📝 ${esc(o.note)}`:''}</div>
+  <div class="ln">📞 ${o.phone?`<a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>`:'<span class="bad">chưa có SĐT</span>'}<br>📍 ${o.address?esc(o.address):'<span class="bad">chưa có địa chỉ</span>'}<br>🛍 ${esc(o.productName||'(chưa rõ sản phẩm)')}${o.variant?' · '+esc(o.variant):''} × ${q}${num(o.unitPrice)?' · '+fmt(o.unitPrice)+'đ':''}${o.note?`<br>📝 ${esc(o.note)}`:''}</div>
   ${body}
   <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label>${cx?`<input inputmode="numeric" data-k="rf" data-id="${o.id}" value="${rfOf(o)?fmt(rfOf(o)):''}" placeholder="Tiền khách trả lại (đ)" style="flex:1;min-width:150px;max-width:230px">`:''}<button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
 }
@@ -321,18 +320,18 @@ function vSale(){
   const pa=(S.days[day]||{}).pa||{};
   const adRows=S.products.length?'<div class="row">'+S.products.map(p=>{const a=+pa[p.id]||0,L=st.LV.filter(s=>(s.pn||s.name)===p.name),r=sum(L.map(rev)),c=sum(L.map(cst));
     return `<label class="mut" style="flex:1 1 150px"><b style="color:var(--tx)">${esc(p.name)}</b><br><input inputmode="numeric" value="${a?fmt(a):''}" placeholder="0" data-k="pad" data-id="${p.id}" style="width:100%"><div>${a||r?`DT ${sh(r)} · lãi sau QC <span class="${cls(r-c-a)}">${sh(r-c-a)}</span>${a&&r?` · ROAS ${(r/a).toFixed(1)}`:''}`:'&nbsp;'}</div></label>`}).join('')+'</div>':'<p class="mut">Chưa có sản phẩm.</p>';
-  const rows=st.L.map(s=>s.x?`<tr class="cx"><td>${esc(s.name)} 📨 (đã hủy)<div class="mut">${esc(s.cat)}</div></td><td style="text-align:left">${esc(custOf(s))}</td><td>${s.qty}</td><td>${fmt(s.price)}</td><td></td><td></td><td>${fmt(rev(s))}</td><td>${(()=>{const o=OR.find(x=>x.id===s.oid),r=o?rfOf(o):0;return r?`<b class="ok">+${fmt(r)}</b><div class="mut">khách trả</div>`:'—'})()}</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa hẳn dòng này">✕</button></td></tr>`:`<tr><td>${esc(s.name)}${s.oid?' 📨':''}<div class="mut">${esc(s.cat)}</div></td>
+  const rows=st.L.map(s=>s.x?`<tr class="cx"><td>${esc(s.name)} 📨 (đã hủy)<div class="mut">${esc(s.cat)}</div></td><td style="text-align:left">${esc(custOf(s))}</td><td>${s.qty}</td><td>${fmt(s.price)}</td>${(()=>{const o=OR.find(x=>x.id===s.oid),r=o?rfOf(o):0,b=r?`<span class="ok" style="display:inline-block;font-weight:700">+${fmt(r)}</span>`:'';return `<td></td><td>${b}</td><td>${fmt(rev(s))}</td><td>${b||'—'}</td>`})()}<td><button class="x" data-act="del" data-id="${s.id}" title="Xóa hẳn dòng này">✕</button></td></tr>`:`<tr><td>${esc(s.name)}${s.oid?' 📨':''}<div class="mut">${esc(s.cat)}</div></td>
    <td style="text-align:left">${custOf(s)?'👤 '+esc(custOf(s)):'<span class="mut">—</span>'}</td>
    <td>${s.oid?s.qty:`<input class="s" inputmode="numeric" value="${s.qty}" data-k="qty" data-id="${s.id}">`}</td>
    <td>${fmt(s.price)}</td><td>${s.oid?(s.disc?fmt(s.disc):'<span class="mut">0</span>'):`<input inputmode="numeric" value="${s.disc?fmt(s.disc):''}" placeholder="0" data-k="disc" data-id="${s.id}">`}</td>
-   <td><input inputmode="numeric" value="${s.ship?fmt(s.ship):''}" placeholder="0" data-k="ship" data-id="${s.id}" title="Tiền ship của đơn"></td>
+   <td></td>
    <td><b>${fmt(rev(s))}</b></td><td class="${cls(rev(s)-cst(s))}">${fmt(rev(s)-cst(s))}</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa">✕</button></td></tr>`).join('');
   return `<div class="card row"><button class="btn g" data-act="dp">‹</button><input type="date" id="dt" value="${day}" data-k="dt" style="flex:2 1 150px"><button class="btn g" data-act="dn">›</button><button class="btn g" data-act="dtd">Hôm nay</button></div>
   <div class="kp">${K('Doanh thu',fmt(st.r))}${K('Giá vốn',fmt(st.c))}${K('Quảng cáo + CP khác',fmt(st.ad+st.ot))}${K('Lãi ròng',fmt(st.net),cls(st.net))}</div>
   <div class="card"><h3>Thêm đơn bán</h3>${S.products.length?`<div class="chips">${chips}</div>${vch}
-  <div class="row"><select id="fp" data-k="fp" style="flex:2 1 140px">${opts}</select><select id="fv" style="flex:2 1 140px;${cp&&cp.variants.length>1?'':'display:none'}">${vOpts(cp)}</select><input id="fq" inputmode="numeric" value="1" placeholder="Số lượng" style="flex:1 1 70px"><input id="fd" inputmode="numeric" placeholder="Giảm giá (đ)"><input id="fs" inputmode="numeric" value="${S.ship?fmt(S.ship):''}" placeholder="Tiền ship (đ)" title="Tiền ship của đơn. Đơn bị hủy thì không tính ship"><button class="btn" data-act="add">+ Thêm</button></div>
+  <div class="row"><select id="fp" data-k="fp" style="flex:2 1 140px">${opts}</select><select id="fv" style="flex:2 1 140px;${cp&&cp.variants.length>1?'':'display:none'}">${vOpts(cp)}</select><input id="fq" inputmode="numeric" value="1" placeholder="Số lượng" style="flex:1 1 70px"><input id="fd" inputmode="numeric" placeholder="Giảm giá (đ)"><button class="btn" data-act="add">+ Thêm</button></div>
   <div class="mut" id="fpv" style="margin-top:6px"></div>`:'<p class="mut">Chưa có sản phẩm. Sang tab Sản phẩm để thêm.</p>'}</div>
-  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Ship</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>${st.L.some(s=>s.oid)?'<p class="mut" style="margin:8px 0 0">📨 Dòng từ chat tự theo đơn: muốn sửa số lượng, giá thì sửa ở khung chat. Tiền ship sửa được ngay trong bảng. Đơn hủy không tính ship; tiền khách trả lại (nhập ở ô trong đơn hủy ở khung chat) hiện ngay trên dòng đơn hủy và được cộng vào lãi.</p>':''}${st.rfo?`<div class="row" style="justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)"><span>Tiền khách trả lại (đơn hủy chưa ghi vào dòng bán) <span class="mut">(cộng vào lãi)</span></span><b class="ok">+${fmt(st.rfo)}</b></div>`:''}`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
+  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Khách trả</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>${st.L.some(s=>s.oid)?'<p class="mut" style="margin:8px 0 0">📨 Dòng từ chat tự theo đơn: muốn sửa số lượng, giá thì sửa ở khung chat. Đơn hủy có khách trả lại tiền (nhập ở ô trong đơn hủy ở khung chat) thì số tiền hiện ngay trên dòng đơn hủy và được cộng vào lãi.</p>':''}${st.rfo?`<div class="row" style="justify-content:space-between;margin-top:10px;padding-top:10px;border-top:1px dashed var(--line)"><span>Tiền khách trả lại (đơn hủy chưa ghi vào dòng bán) <span class="mut">(cộng vào lãi)</span></span><b class="ok">+${fmt(st.rfo)}</b></div>`:''}`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
   <div class="card"><h3>Tiền quảng cáo từng sản phẩm (ngày ${day.split('-').reverse().join('/')})</h3>${adRows}</div>
   <div class="card"><h3>Chi phí trong ngày</h3><div class="row"><label class="mut" style="flex:1 1 140px">QC chung (không chia sản phẩm)<br><input inputmode="numeric" value="${st.gen?fmt(st.gen):''}" placeholder="0" data-k="ad" style="width:100%"></label><label class="mut" style="flex:1 1 140px">Chi phí khác<br><input inputmode="numeric" value="${st.ot?fmt(st.ot):''}" placeholder="0" data-k="other" style="width:100%"></label></div>
   <p class="mut" style="margin:8px 0 0">Lãi ròng = Doanh thu − Giá vốn − Quảng cáo − Chi phí khác${st.rf?' + Tiền khách trả lại':''}${st.ad?` · ROAS ngày: ${(st.r/st.ad).toFixed(1)}`:''}</p></div>`;
@@ -347,7 +346,7 @@ function vProd(){
   <div class="sc"><table><tr><th>Biến thể</th><th>Giá bán</th><th>Giá vốn</th><th>Lãi</th><th></th></tr>${p.variants.map(v=>`<tr><td><input class="t" value="${esc(v.name)}" placeholder="(mặc định)" data-k="vname" data-id="${v.id}"></td><td><input inputmode="numeric" value="${fmt(v.price)}" data-k="vprice" data-id="${v.id}"></td><td><input inputmode="numeric" value="${fmt(v.cost)}" data-k="vcost" data-id="${v.id}"></td><td class="${cls(v.price-v.cost)}">${fmt(v.price-v.cost)}<div class="mut">${v.price?Math.round((v.price-v.cost)/v.price*100):0}%</div></td><td><button class="x" data-act="delv" data-id="${v.id}">✕</button></td></tr>`).join('')}</table></div>
   <button class="btn g" data-act="addv" data-id="${p.id}" style="margin-top:8px">+ Thêm biến thể</button></div>`).join('');
   return `<datalist id="cats">${cats.map(c=>`<option value="${esc(c)}">`).join('')}</datalist>
-  <div class="card"><h3>Tiền ship mặc định</h3><div class="row"><input inputmode="numeric" value="${S.ship?fmt(S.ship):''}" placeholder="0" data-k="shipdef" style="max-width:200px"><span class="mut">đ / đơn, dùng chung mọi sản phẩm</span></div><p class="mut" style="margin:8px 0 0">Số này tự điền vào ô Tiền ship khi thêm đơn mới. Mỗi đơn lưu tiền ship riêng lúc tạo, nên đổi số này <b>chỉ áp dụng cho đơn mới</b>, đơn cũ giữ nguyên.</p></div>
+  
   <div class="card"><h3>Thêm sản phẩm</h3><div class="row"><input id="nn" placeholder="Tên sản phẩm (vd: Pin)"><input id="nc" list="cats" placeholder="Loại (vd: Gia dụng)"><input id="nb" placeholder="Biến thể đầu (vd: 2v, có thể trống)"><input id="np" inputmode="numeric" placeholder="Giá bán"><input id="nv" inputmode="numeric" placeholder="Giá vốn"><button class="btn" data-act="addp">+ Thêm</button></div>
   <p class="mut" style="margin:8px 0 0">Mỗi sản phẩm có thể có nhiều biến thể (kích cỡ, màu, đời...), mỗi biến thể có giá bán và giá vốn riêng. Đổi giá chỉ áp dụng cho đơn mới.</p></div>${cards}`;
 }
@@ -397,7 +396,7 @@ function act(a,d,t){
   else if(a==='dp'){day=addD(day,-1);render()}else if(a==='dn'){day=addD(day,1);render()}else if(a==='dtd'){day=TODAY;render()}
   else if(a==='quick'){const p=S.products.find(x=>x.id===d.id);if(p.variants.length>1){fp=p.id;vp=vp===p.id?'':p.id;render()}else addSale(p.variants[0].id,1,0)}
   else if(a==='qv')addSale(d.id,1,0);
-  else if(a==='add')addSale($('#fv').value,num($('#fq').value),num($('#fd').value),num($('#fs').value));
+  else if(a==='add')addSale($('#fv').value,num($('#fq').value),num($('#fd').value));
   else if(a==='del'){S.sales=S.sales.filter(s=>s.id!==d.id);commit()}
   else if(a==='delp'){const p=S.products.find(x=>x.id===d.id);if(p&&confirm('Xóa sản phẩm "'+p.name+'"? Lịch sử bán vẫn được giữ.')){S.products=S.products.filter(x=>x.id!==d.id);commit()}}
   else if(a==='addp'){const n=$('#nn').value.trim();if(!n||S.products.some(p=>p.name===n)){alert(n?'Tên sản phẩm đã tồn tại.':'Nhập tên sản phẩm.');return}S.products.push({id:uid(),name:n,cat:$('#nc').value.trim(),variants:[{id:uid(),name:$('#nb').value.trim(),price:num($('#np').value),cost:num($('#nv').value)}]});commit()}
@@ -419,7 +418,7 @@ function act(a,d,t){
 }
 document.addEventListener('click',e=>{const t=e.target.closest('[data-act]');if(t)act(t.dataset.act,t.dataset,t)});
 document.addEventListener('input',e=>{if(!S)return;if(['fp','fv','fq','fd'].includes(e.target.id))prev();if(e.target.id==='oq'){ordQ=e.target.value;ordFilterDom()}});
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['fq','fd','fs'].includes(e.target.id))act('add',{})});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&['fq','fd'].includes(e.target.id))act('add',{})});
 document.addEventListener('change',e=>{
   const t=e.target,k=t.dataset.k,id=t.dataset.id,v=t.value,ym=ry+'-'+pad(rm);if(!k||!S)return;
   if(k==='dfd'){dfD=v;render();return}
@@ -430,8 +429,6 @@ document.addEventListener('change',e=>{
   if(k==='dt'){if(v)day=v}
   else if(k==='qty'&&s&&!s.oid){const q=num(v);if(q>0)s.qty=q}
   else if(k==='disc'&&s&&!s.oid)s.disc=num(v);
-  else if(k==='ship'&&s)s.ship=num(v);
-  else if(k==='shipdef')S.ship=num(v);
   else if(k==='pad'&&p){const o=D();(o.pa||(o.pa={}))[p.id]=num(v);(o.pn||(o.pn={}))[p.id]=p.name}
   else if(k==='ad')D().ad=num(v);else if(k==='other')D().other=num(v);
   else if(k==='pname'&&p){if(v.trim())p.name=v.trim()}else if(k==='pcat'&&p)p.cat=v.trim();
