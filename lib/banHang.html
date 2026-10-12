@@ -255,7 +255,9 @@ async function boot(){
 }
 
 function byDate(){const m={};S.sales.forEach(s=>(m[s.date]||(m[s.date]=[])).push(s));return m}
-function stat(d,M){const L=(M||byDate())[d]||[],LV=L.filter(s=>!s.x);const x=S.days[d]||{};const r=sum(LV.map(rev)),c=sum(LV.map(cst)),gen=+x.ad||0,ad=gen+sum(Object.values(x.pa||{}).map(n=>+n||0)),ot=+x.other||0;return{L,LV,r,c,ad,gen,ot,net:r-c-ad-ot}}
+function stat(d,M){const L=(M||byDate())[d]||[],LV=L.filter(s=>!s.x);const x=S.days[d]||{};const r=sum(LV.map(rev)),c=sum(LV.map(cst)),gen=+x.ad||0,ad=gen+sum(Object.values(x.pa||{}).map(n=>+n||0)),ot=+x.other||0,rf=cxMoney(d);return{L,LV,r,c,ad,gen,ot,rf,net:r-c-ad-ot+rf}}
+// Tiền khách trả lại khi không nhận hàng (đơn đã tích Hủy đơn), tính theo ngày của đơn, cộng thẳng vào lãi
+function cxMoney(d){const R=(S&&S.rf)||{};return sum((OR||[]).filter(o=>isCx(o)&&odate(o)===d).map(o=>+R[o.id]||0))}
 const K=(l,v,c)=>`<div class="k"><small>${l}</small><b class="${c||''}">${v}</b></div>`;
 
 function renderNav(){
@@ -284,12 +286,12 @@ function oCard(o){
   const tag=cx?'<span class="tag" style="background:#fecaca;color:#7f1d1d">Đã hủy</span>':o.auto?'<span class="tag w">🤖 Tự tạo từ chat, hãy kiểm tra</span>':o.source==='auto'?'<span class="tag">🤖 Tự tạo</span>':'';
   const pg=PG[o.pageId]?` · 📄 ${esc(PG[o.pageId])}`:'';
   const L=S.sales.filter(s=>s.oid===o.id);
-  const body=cx?(rec?`<div class="mut" style="margin-top:8px">Đơn đã hủy nên <b>không tính</b> vào doanh thu ngày ${odate(o).split('-').reverse().join('/')}.</div>`:''):rec?`<div class="ban" style="margin-top:8px"><span>✓ Đã ghi vào doanh thu ngày <b>${odate(o).split('-').reverse().join('/')}</b>: ${L.map(s=>esc(s.name)+' × '+s.qty+' = '+fmt(rev(s))+'đ').join('; ')}</span><button class="btn g" data-act="unrec" data-id="${o.id}">Bỏ ghi</button></div>`:oForm(o);
+  const body=cx?(rec?`<div class="mut" style="margin-top:8px">Đơn đã hủy nên <b>không tính</b> vào doanh thu ngày ${odate(o).split('-').reverse().join('/')}.</div>`:'')+`<div class="mut" style="margin-top:6px">Khách không nhận nhưng có trả lại 1 ít tiền thì nhập vào ô bên dưới, số này được cộng vào <b>lãi</b> của ngày ${odate(o).split('-').reverse().join('/')}.</div>`:rec?`<div class="ban" style="margin-top:8px"><span>✓ Đã ghi vào doanh thu ngày <b>${odate(o).split('-').reverse().join('/')}</b>: ${L.map(s=>esc(s.name)+' × '+s.qty+' = '+fmt(rev(s))+'đ').join('; ')}</span><button class="btn g" data-act="unrec" data-id="${o.id}">Bỏ ghi</button></div>`:oForm(o);
   return `<div class="card oc ${cx?'cxo':rec?'rec':''}" data-s="${esc(nk([o.customerName,o.phone,o.productName,o.address].join(' ')))}">
   <div class="row" style="justify-content:space-between"><div><b>${esc(o.customerName||'(chưa có tên)')}</b>${tag}</div><span class="mut">${otime(o)}${pg}</span></div>
   <div class="ln">📞 ${o.phone?`<a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>`:'<span class="bad">chưa có SĐT</span>'}<br>📍 ${o.address?esc(o.address):'<span class="bad">chưa có địa chỉ</span>'}<br>🛍 ${esc(o.productName||'(chưa rõ sản phẩm)')}${o.variant?' · '+esc(o.variant):''} × ${q}${num(o.unitPrice)?' · '+fmt(o.unitPrice)+'đ':''}${num(o.shipFee)?' · ship '+fmt(o.shipFee)+'đ':''}${o.note?`<br>📝 ${esc(o.note)}`:''}</div>
   ${body}
-  <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label><button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
+  <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label>${cx?`<input inputmode="numeric" data-k="rf" data-id="${o.id}" value="${(S.rf&&S.rf[o.id])?fmt(S.rf[o.id]):''}" placeholder="Tiền khách trả lại (đ)" style="flex:1;min-width:150px;max-width:230px">`:''}<button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
 }
 function vOrd(){
   const BASE=OR.filter(dfInRange);
@@ -323,14 +325,14 @@ function vSale(){
    <td>${fmt(s.price)}</td><td>${s.oid?(s.disc?fmt(s.disc):'<span class="mut">0</span>'):`<input inputmode="numeric" value="${s.disc?fmt(s.disc):''}" placeholder="0" data-k="disc" data-id="${s.id}">`}</td>
    <td><b>${fmt(rev(s))}</b></td><td class="${cls(rev(s)-cst(s))}">${fmt(rev(s)-cst(s))}</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa">✕</button></td></tr>`).join('');
   return `<div class="card row"><button class="btn g" data-act="dp">‹</button><input type="date" id="dt" value="${day}" data-k="dt" style="flex:2 1 150px"><button class="btn g" data-act="dn">›</button><button class="btn g" data-act="dtd">Hôm nay</button></div>
-  <div class="kp">${K('Doanh thu',fmt(st.r))}${K('Giá vốn',fmt(st.c))}${K('Quảng cáo + CP khác',fmt(st.ad+st.ot))}${K('Lãi ròng',fmt(st.net),cls(st.net))}</div>
+  <div class="kp">${K('Doanh thu',fmt(st.r))}${K('Giá vốn',fmt(st.c))}${K('Quảng cáo + CP khác',fmt(st.ad+st.ot))}${st.rf?K('Tiền khách trả lại (hủy đơn)',fmt(st.rf),'ok'):''}${K('Lãi ròng',fmt(st.net),cls(st.net))}</div>
   <div class="card"><h3>Thêm đơn bán</h3>${S.products.length?`<div class="chips">${chips}</div>${vch}
   <div class="row"><select id="fp" data-k="fp" style="flex:2 1 140px">${opts}</select><select id="fv" style="flex:2 1 140px;${cp&&cp.variants.length>1?'':'display:none'}">${vOpts(cp)}</select><input id="fq" inputmode="numeric" value="1" placeholder="Số lượng" style="flex:1 1 70px"><input id="fd" inputmode="numeric" placeholder="Giảm giá (đ)"><button class="btn" data-act="add">+ Thêm</button></div>
   <div class="mut" id="fpv" style="margin-top:6px"></div>`:'<p class="mut">Chưa có sản phẩm. Sang tab Sản phẩm để thêm.</p>'}</div>
   <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>${st.L.some(s=>s.oid)?'<p class="mut" style="margin:8px 0 0">📨 Dòng từ chat tự theo đơn: muốn sửa số lượng, giá thì sửa ở khung chat.</p>':''}`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
   <div class="card"><h3>Tiền quảng cáo từng sản phẩm (ngày ${day.split('-').reverse().join('/')})</h3>${adRows}</div>
   <div class="card"><h3>Chi phí trong ngày</h3><div class="row"><label class="mut" style="flex:1 1 140px">QC chung (không chia sản phẩm)<br><input inputmode="numeric" value="${st.gen?fmt(st.gen):''}" placeholder="0" data-k="ad" style="width:100%"></label><label class="mut" style="flex:1 1 140px">Chi phí khác<br><input inputmode="numeric" value="${st.ot?fmt(st.ot):''}" placeholder="0" data-k="other" style="width:100%"></label></div>
-  <p class="mut" style="margin:8px 0 0">Lãi ròng = Doanh thu − Giá vốn − Quảng cáo − Chi phí khác${st.ad?` · ROAS ngày: ${(st.r/st.ad).toFixed(1)}`:''}</p></div>`;
+  <p class="mut" style="margin:8px 0 0">Lãi ròng = Doanh thu − Giá vốn − Quảng cáo − Chi phí khác${st.rf?' + Tiền khách trả lại':''}${st.ad?` · ROAS ngày: ${(st.r/st.ad).toFixed(1)}`:''}</p></div>`;
 }
 function prev(){const f=findV(($('#fv')||{}).value),v=$('#fpv');if(!f||!v)return;const q=num($('#fq').value),d=num($('#fd').value),r=q*f.v.price-d;v.innerHTML=`Thành tiền: <b>${fmt(r)}đ</b> · Lãi gộp: <b class="${cls(r-q*f.v.cost)}">${fmt(r-q*f.v.cost)}đ</b>`}
 function findV(id){for(const p of S.products){const v=p.variants.find(x=>x.id===id);if(v)return{p,v}}return null}
@@ -347,9 +349,9 @@ function vProd(){
 }
 
 function vRep(){
-  const ym=ry+'-'+pad(rm),n=new Date(ry,rm,0).getDate(),M=byDate(),ds=[];let R=0,C=0,A=0,O=0;
-  for(let i=1;i<=n;i++){const d=ym+'-'+pad(i),x=stat(d,M);ds.push(Object.assign({i,d},x));R+=x.r;C+=x.c;A+=x.ad;O+=x.ot}
-  const fx=+S.fixed[ym]||0,net=R-C-A-O-fx;
+  const ym=ry+'-'+pad(rm),n=new Date(ry,rm,0).getDate(),M=byDate(),ds=[];let R=0,C=0,A=0,O=0,F=0;
+  for(let i=1;i<=n;i++){const d=ym+'-'+pad(i),x=stat(d,M);ds.push(Object.assign({i,d},x));R+=x.r;C+=x.c;A+=x.ad;O+=x.ot;F+=x.rf}
+  const fx=+S.fixed[ym]||0,net=R-C-A-O-fx+F;
   const g={},gk=s=>view==='p'?(s.pn||s.name):view==='v'?s.name:(s.cat||'Khác');
   S.sales.filter(s=>s.date.startsWith(ym)&&!s.x).forEach(s=>{const k=gk(s);const o=g[k]||(g[k]={q:0,r:0,c:0,a:0});o.q+=s.qty;o.r+=rev(s);o.c+=cst(s)});
   const pname=(id,d)=>{const p=S.products.find(x=>x.id===id);return p?p.name:((S.days[d]||{}).pn||{})[id]||'SP đã xóa'};
@@ -418,6 +420,7 @@ document.addEventListener('change',e=>{
   const t=e.target,k=t.dataset.k,id=t.dataset.id,v=t.value,ym=ry+'-'+pad(rm);if(!k||!S)return;
   if(k==='dfd'){dfD=v;render();return}
     if(/^(of|ost)/.test(k)){ordChange(k,id,k==='ost'?(t.checked?'1':'0'):v);return}
+  if(k==='rf'){S.rf=S.rf||{};S.rf[id]=num(v);commit();return}
   const s=S.sales.find(x=>x.id===id),p=S.products.find(x=>x.id===id),f=findV(id),D=()=>S.days[day]||(S.days[day]={});
   if(k==='fp'){fp=v;const c=S.products.find(x=>x.id===v),w=$('#fv');w.innerHTML=vOpts(c);w.style.display=c.variants.length>1?'':'none';prev();return}
   if(k==='dt'){if(v)day=v}
