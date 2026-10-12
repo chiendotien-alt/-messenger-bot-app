@@ -163,7 +163,8 @@ async function loadOrders(manual){
     ordErr='';const sig=JSON.stringify(a.map(o=>[o.id,o.status,o.auto,o.customerName,o.phone,o.address,o.productName,o.variant,o.quantity,o.unitPrice,o.shipFee,o.note]));
     const ch=sig!==ordSig||!ordOk;ordSig=sig;OR=a;ordOk=true;
     OR.forEach(o=>{if(o.auto&&isRec(o))confirmOrd(o)});
-    if(syncCx()){save();if(!editing())render()}
+    const c1=syncCx(),c2=syncSales();
+    if(c1||c2){save();if(!editing())render()}
     if(manual)toast('Đã làm mới: '+OR.length+' đơn');
     if(ch||manual){if((tab==='ord'||tab==='sale')&&!editing())render();else renderNav()}
   }catch(e){ordErr=e.message;if(tab==='ord'&&!editing())render()}
@@ -184,6 +185,24 @@ async function setCancel(o,on){
   try{await api('/api/orders','PATCH',{id:o.id,status:o.status});toast(on?'Đã hủy đơn. Đơn không còn tính vào doanh thu.':'Đã bỏ hủy đơn.')}
   catch(e){o.status=old;o.auto=oa;if(syncCx())save();render();toast('Không đổi được tình trạng đơn: '+e.message)}
 }
+// Giá niêm yết lp, khách chốt up/cái: chốt thấp hơn niêm yết → giữ giá niêm yết, phần chênh vào ô Giảm giá (cả dòng); chốt cao hơn thì lấy đúng giá chốt, giảm giá = 0
+function saleCalc(lp,q,up){q=Math.max(1,num(q)||1);up=num(up);lp=num(lp);if(up>0&&lp>0&&up<lp)return{qty:q,price:lp,disc:(lp-up)*q};return{qty:q,price:up>0?up:lp,disc:0}}
+// Dòng bán đã ghi từ đơn chat luôn theo đơn gốc: sửa đơn ở khung chat thì dòng bán tự cập nhật
+function syncSales(){
+  let ch=false;
+  S.sales.forEach(s=>{
+    if(!s.oid)return;
+    const o=OR.find(x=>x.id===s.oid);if(!o)return;
+    const p=mp(o.productName),v=p?mv(p,o):null;
+    let lp=s.lp||(s.disc>0?s.price:0),pid=s.pid,pn=s.pn,name=s.name,cat=s.cat,cost=s.cost;
+    if(v&&v.id!==s.pid){lp=v.price;cost=v.cost;pid=v.id;pn=p.name;name=p.name+(v.name?' '+v.name:'');cat=p.cat||''}
+    else if(!lp)lp=v?v.price:s.price;
+    const c=saleCalc(lp,o.quantity,o.unitPrice);
+    const nv={qty:c.qty,price:c.price,disc:c.disc,lp,pid,pn,name,cat,cost,cn:o.customerName||''};
+    Object.keys(nv).forEach(k=>{if(s[k]!==nv[k]){s[k]=nv[k];ch=true}});
+  });
+  return ch
+}
 function recOrder(id){
   const o=OR.find(x=>x.id===id);if(!o||isRec(o)||isCx(o))return;
   const f=ofs(o);let p,v;
@@ -195,7 +214,8 @@ function recOrder(id){
   const q=Math.max(1,num(f.qty)||1),pr=num(f.price)||v.price;
   if(f.pid==='new')S.products.push(p);
   if(S.sample){S.sales=[];S.days={};S.sample=false}
-  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:q,price:pr,disc:0,cost:v.cost,oid:o.id,cn:o.customerName||''});
+  const sc=saleCalc(v.price,q,pr);
+  S.sales.push({id:uid(),date:odate(o),pid:v.id,pn:p.name,name:p.name+(v.name?' '+v.name:''),cat:p.cat||'',qty:sc.qty,price:sc.price,disc:sc.disc,lp:num(v.price)||sc.price,cost:v.cost,oid:o.id,cn:o.customerName||''});
   delete OF[o.id];confirmOrd(o);commit();
   toast(f.pid==='new'?'Đã ghi. Sản phẩm mới "'+p.name+'" chưa có giá vốn, vào tab Sản phẩm nhập giá vốn nhé.':'Đã ghi vào doanh thu ngày '+odate(o).split('-').reverse().join('/'))
 }
@@ -299,15 +319,15 @@ function vSale(){
     return `<label class="mut" style="flex:1 1 150px"><b style="color:var(--tx)">${esc(p.name)}</b><br><input inputmode="numeric" value="${a?fmt(a):''}" placeholder="0" data-k="pad" data-id="${p.id}" style="width:100%"><div>${a||r?`DT ${sh(r)} · lãi sau QC <span class="${cls(r-c-a)}">${sh(r-c-a)}</span>${a&&r?` · ROAS ${(r/a).toFixed(1)}`:''}`:'&nbsp;'}</div></label>`}).join('')+'</div>':'<p class="mut">Chưa có sản phẩm.</p>';
   const rows=st.L.map(s=>s.x?`<tr class="cx"><td>${esc(s.name)} 📨 (đã hủy)<div class="mut">${esc(s.cat)}</div></td><td style="text-align:left">${esc(custOf(s))}</td><td>${s.qty}</td><td>${fmt(s.price)}</td><td></td><td>${fmt(rev(s))}</td><td>—</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa hẳn dòng này">✕</button></td></tr>`:`<tr><td>${esc(s.name)}${s.oid?' 📨':''}<div class="mut">${esc(s.cat)}</div></td>
    <td style="text-align:left">${custOf(s)?'👤 '+esc(custOf(s)):'<span class="mut">—</span>'}</td>
-   <td><input class="s" inputmode="numeric" value="${s.qty}" data-k="qty" data-id="${s.id}"></td>
-   <td>${fmt(s.price)}</td><td><input inputmode="numeric" value="${s.disc?fmt(s.disc):''}" placeholder="0" data-k="disc" data-id="${s.id}"></td>
+   <td>${s.oid?s.qty:`<input class="s" inputmode="numeric" value="${s.qty}" data-k="qty" data-id="${s.id}">`}</td>
+   <td>${fmt(s.price)}</td><td>${s.oid?(s.disc?fmt(s.disc):'<span class="mut">0</span>'):`<input inputmode="numeric" value="${s.disc?fmt(s.disc):''}" placeholder="0" data-k="disc" data-id="${s.id}">`}</td>
    <td><b>${fmt(rev(s))}</b></td><td class="${cls(rev(s)-cst(s))}">${fmt(rev(s)-cst(s))}</td><td><button class="x" data-act="del" data-id="${s.id}" title="Xóa">✕</button></td></tr>`).join('');
   return `<div class="card row"><button class="btn g" data-act="dp">‹</button><input type="date" id="dt" value="${day}" data-k="dt" style="flex:2 1 150px"><button class="btn g" data-act="dn">›</button><button class="btn g" data-act="dtd">Hôm nay</button></div>
   <div class="kp">${K('Doanh thu',fmt(st.r))}${K('Giá vốn',fmt(st.c))}${K('Quảng cáo + CP khác',fmt(st.ad+st.ot))}${K('Lãi ròng',fmt(st.net),cls(st.net))}</div>
   <div class="card"><h3>Thêm đơn bán</h3>${S.products.length?`<div class="chips">${chips}</div>${vch}
   <div class="row"><select id="fp" data-k="fp" style="flex:2 1 140px">${opts}</select><select id="fv" style="flex:2 1 140px;${cp&&cp.variants.length>1?'':'display:none'}">${vOpts(cp)}</select><input id="fq" inputmode="numeric" value="1" placeholder="Số lượng" style="flex:1 1 70px"><input id="fd" inputmode="numeric" placeholder="Giảm giá (đ)"><button class="btn" data-act="add">+ Thêm</button></div>
   <div class="mut" id="fpv" style="margin-top:6px"></div>`:'<p class="mut">Chưa có sản phẩm. Sang tab Sản phẩm để thêm.</p>'}</div>
-  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
+  <div class="card"><h3>Các dòng bán ngày ${day.split('-').reverse().join('/')} (${st.LV.length}${st.L.length>st.LV.length?' · '+(st.L.length-st.LV.length)+' đã hủy':''})</h3>${st.L.length?`<div class="sc"><table><tr><th>Sản phẩm</th><th style="text-align:left">Khách</th><th>SL</th><th>Đơn giá</th><th>Giảm giá</th><th>Thành tiền</th><th>Lãi gộp</th><th></th></tr>${rows}</table></div>${st.L.some(s=>s.oid)?'<p class="mut" style="margin:8px 0 0">📨 Dòng từ chat tự theo đơn: muốn sửa số lượng, giá thì sửa ở khung chat.</p>':''}`:'<p class="mut">Chưa có đơn nào trong ngày. Bấm tên sản phẩm ở trên để thêm nhanh.</p>'}</div>
   <div class="card"><h3>Tiền quảng cáo từng sản phẩm (ngày ${day.split('-').reverse().join('/')})</h3>${adRows}</div>
   <div class="card"><h3>Chi phí trong ngày</h3><div class="row"><label class="mut" style="flex:1 1 140px">QC chung (không chia sản phẩm)<br><input inputmode="numeric" value="${st.gen?fmt(st.gen):''}" placeholder="0" data-k="ad" style="width:100%"></label><label class="mut" style="flex:1 1 140px">Chi phí khác<br><input inputmode="numeric" value="${st.ot?fmt(st.ot):''}" placeholder="0" data-k="other" style="width:100%"></label></div>
   <p class="mut" style="margin:8px 0 0">Lãi ròng = Doanh thu − Giá vốn − Quảng cáo − Chi phí khác${st.ad?` · ROAS ngày: ${(st.r/st.ad).toFixed(1)}`:''}</p></div>`;
@@ -367,7 +387,7 @@ function bk(){
 }
 function act(a,d,t){
   if(!S&&a!=='cl')return;
-  if(a==='tab'){tab=d.v;render()}
+  if(a==='tab'){tab=d.v;render();loadOrders()}
   else if(a==='dp'){day=addD(day,-1);render()}else if(a==='dn'){day=addD(day,1);render()}else if(a==='dtd'){day=TODAY;render()}
   else if(a==='quick'){const p=S.products.find(x=>x.id===d.id);if(p.variants.length>1){fp=p.id;vp=vp===p.id?'':p.id;render()}else addSale(p.variants[0].id,1,0)}
   else if(a==='qv')addSale(d.id,1,0);
@@ -401,8 +421,8 @@ document.addEventListener('change',e=>{
   const s=S.sales.find(x=>x.id===id),p=S.products.find(x=>x.id===id),f=findV(id),D=()=>S.days[day]||(S.days[day]={});
   if(k==='fp'){fp=v;const c=S.products.find(x=>x.id===v),w=$('#fv');w.innerHTML=vOpts(c);w.style.display=c.variants.length>1?'':'none';prev();return}
   if(k==='dt'){if(v)day=v}
-  else if(k==='qty'&&s){const q=num(v);if(q>0)s.qty=q}
-  else if(k==='disc'&&s)s.disc=num(v);
+  else if(k==='qty'&&s&&!s.oid){const q=num(v);if(q>0)s.qty=q}
+  else if(k==='disc'&&s&&!s.oid)s.disc=num(v);
   else if(k==='pad'&&p){const o=D();(o.pa||(o.pa={}))[p.id]=num(v);(o.pn||(o.pn={}))[p.id]=p.name}
   else if(k==='ad')D().ad=num(v);else if(k==='other')D().other=num(v);
   else if(k==='pname'&&p){if(v.trim())p.name=v.trim()}else if(k==='pcat'&&p)p.cat=v.trim();
