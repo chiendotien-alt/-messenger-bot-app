@@ -689,6 +689,33 @@ const blankOrder = { customerName: "", phone: "", address: "", productId: "", pr
 
 // Cột đơn hàng bên phải: luôn hiện khi đang mở 1 hội thoại.
 // Trên cùng là nút "Tạo đơn"; bên dưới là các đơn đã lưu, mỗi đơn có nút bút để sửa.
+// Ô nhập tiền khách trả lại khi hủy đơn (khách không nhận hàng nhưng gửi lại 1 ít tiền) → tính vào lãi
+function RefundInput({ order, onSaved }) {
+  const fmt = (n) => (Number(n) ? Number(n).toLocaleString("vi-VN") : "");
+  const [v, setV] = useState(fmt(order.refund));
+  useEffect(() => setV(fmt(order.refund)), [order.refund]);
+  async function commit() {
+    const n = Number(String(v).replace(/[^\d]/g, "")) || 0;
+    setV(fmt(n));
+    if (n === (Number(order.refund) || 0)) return;
+    try {
+      await fetch("/api/orders", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: order.id, refund: n }) });
+    } catch {}
+    onSaved && onSaved();
+  }
+  return (
+    <input
+      inputMode="numeric"
+      value={v}
+      placeholder="Tiền khách trả lại (đ)"
+      onChange={(e) => setV(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }}
+      style={{ flex: 1, minWidth: 140, padding: "4px 8px", border: "1px solid #fca5a5", borderRadius: 6, fontSize: 13, background: "#fff7f7" }}
+    />
+  );
+}
+
 function OrderPanel({ conversationId, pageId, onChanged }) {
   const [order, setOrder] = useState(blankOrder);
   const [products, setProducts] = useState([]);
@@ -1011,7 +1038,8 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
                 <button onClick={() => removeSaved(o.id)} title="Xóa đơn" aria-label="Xóa đơn" style={{ ...iconBtn, color: "#fff" }}>🗑</button>
               </span>
             </div>
-            <div style={{ padding: "8px 10px", lineHeight: 1.65, ...(statusOf(o) === "returned" ? { opacity: 0.6, textDecoration: "line-through" } : {}) }}>
+            <div style={{ padding: "8px 10px", lineHeight: 1.65 }}>
+              <div style={statusOf(o) === "returned" ? { opacity: 0.6, textDecoration: "line-through" } : {}}>
               <div>👤 {o.customerName}{o.phone ? ` — ${o.phone}` : ""}</div>
               <div>📍 {o.address}</div>
               <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
@@ -1019,7 +1047,8 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
               {o.note ? <div>📝 {o.note}</div> : null}
               <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
               <div style={{ color: "#999", fontSize: 12 }}>{fmtDateTime(o.createdAt)}</div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "4px 14px", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e5e7eb" }}>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "4px 14px", marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e5e7eb" }}>
                 {(() => {
                   const checked = statusOf(o) === "returned";
                   return (
@@ -1029,6 +1058,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
                     </label>
                   );
                 })()}
+                {statusOf(o) === "returned" && <RefundInput order={o} onSaved={() => { loadSaved(); onChanged && onChanged(); }} />}
               </div>
             </div>
           </div>

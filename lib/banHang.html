@@ -160,7 +160,7 @@ async function loadOrders(manual){
   try{
     const r=await fetch('/api/orders?all=1',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);
     const a=await r.json();if(!Array.isArray(a))throw new Error('dữ liệu lỗi');
-    ordErr='';const sig=JSON.stringify(a.map(o=>[o.id,o.status,o.auto,o.customerName,o.phone,o.address,o.productName,o.variant,o.quantity,o.unitPrice,o.shipFee,o.note]));
+    ordErr='';const sig=JSON.stringify(a.map(o=>[o.id,o.status,o.auto,o.customerName,o.phone,o.address,o.productName,o.variant,o.quantity,o.unitPrice,o.shipFee,o.note,o.refund]));
     const ch=sig!==ordSig||!ordOk;ordSig=sig;OR=a;ordOk=true;
     OR.forEach(o=>{if(o.auto&&isRec(o))confirmOrd(o)});
     const c1=syncCx(),c2=syncSales();
@@ -257,7 +257,8 @@ async function boot(){
 function byDate(){const m={};S.sales.forEach(s=>(m[s.date]||(m[s.date]=[])).push(s));return m}
 function stat(d,M){const L=(M||byDate())[d]||[],LV=L.filter(s=>!s.x);const x=S.days[d]||{};const r=sum(LV.map(rev)),c=sum(LV.map(cst)),gen=+x.ad||0,ad=gen+sum(Object.values(x.pa||{}).map(n=>+n||0)),ot=+x.other||0,rf=cxMoney(d);return{L,LV,r,c,ad,gen,ot,rf,net:r-c-ad-ot+rf}}
 // Tiền khách trả lại khi không nhận hàng (đơn đã tích Hủy đơn), tính theo ngày của đơn, cộng thẳng vào lãi
-function cxMoney(d){const R=(S&&S.rf)||{};return sum((OR||[]).filter(o=>isCx(o)&&odate(o)===d).map(o=>+R[o.id]||0))}
+function cxMoney(d){return sum((OR||[]).filter(o=>isCx(o)&&odate(o)===d).map(o=>rfOf(o)))}
+const rfOf=o=>{const v=+o.refund;if(v>=0&&o.refund!==undefined&&o.refund!==null)return v;return +((S&&S.rf)||{})[o.id]||0};
 const K=(l,v,c)=>`<div class="k"><small>${l}</small><b class="${c||''}">${v}</b></div>`;
 
 function renderNav(){
@@ -291,7 +292,7 @@ function oCard(o){
   <div class="row" style="justify-content:space-between"><div><b>${esc(o.customerName||'(chưa có tên)')}</b>${tag}</div><span class="mut">${otime(o)}${pg}</span></div>
   <div class="ln">📞 ${o.phone?`<a href="tel:${esc(o.phone)}">${esc(o.phone)}</a>`:'<span class="bad">chưa có SĐT</span>'}<br>📍 ${o.address?esc(o.address):'<span class="bad">chưa có địa chỉ</span>'}<br>🛍 ${esc(o.productName||'(chưa rõ sản phẩm)')}${o.variant?' · '+esc(o.variant):''} × ${q}${num(o.unitPrice)?' · '+fmt(o.unitPrice)+'đ':''}${num(o.shipFee)?' · ship '+fmt(o.shipFee)+'đ':''}${o.note?`<br>📝 ${esc(o.note)}`:''}</div>
   ${body}
-  <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label>${cx?`<input inputmode="numeric" data-k="rf" data-id="${o.id}" value="${(S.rf&&S.rf[o.id])?fmt(S.rf[o.id]):''}" placeholder="Tiền khách trả lại (đ)" style="flex:1;min-width:150px;max-width:230px">`:''}<button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
+  <div class="row" style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-weight:${cx?700:400};color:${cx?'var(--bad)':'inherit'}"><input type="checkbox" data-k="ost" data-id="${o.id}" ${cx?'checked':''} style="width:18px;height:18px;flex:none"> Hủy đơn</label>${cx?`<input inputmode="numeric" data-k="rf" data-id="${o.id}" value="${rfOf(o)?fmt(rfOf(o)):''}" placeholder="Tiền khách trả lại (đ)" style="flex:1;min-width:150px;max-width:230px">`:''}<button class="x" data-act="odel" data-id="${o.id}" title="Xóa đơn" style="margin-left:auto">🗑</button></div></div>`
 }
 function vOrd(){
   const BASE=OR.filter(dfInRange);
@@ -420,7 +421,7 @@ document.addEventListener('change',e=>{
   const t=e.target,k=t.dataset.k,id=t.dataset.id,v=t.value,ym=ry+'-'+pad(rm);if(!k||!S)return;
   if(k==='dfd'){dfD=v;render();return}
     if(/^(of|ost)/.test(k)){ordChange(k,id,k==='ost'?(t.checked?'1':'0'):v);return}
-  if(k==='rf'){S.rf=S.rf||{};S.rf[id]=num(v);commit();return}
+  if(k==='rf'){const o=OR.find(x=>x.id===id);if(o){const n=num(v);o.refund=n;commit();api('/api/orders','PATCH',{id:o.id,refund:n}).then(()=>toast('Đã lưu tiền khách trả lại.')).catch(e=>toast('Không lưu được: '+e.message))}return}
   const s=S.sales.find(x=>x.id===id),p=S.products.find(x=>x.id===id),f=findV(id),D=()=>S.days[day]||(S.days[day]={});
   if(k==='fp'){fp=v;const c=S.products.find(x=>x.id===v),w=$('#fv');w.innerHTML=vOpts(c);w.style.display=c.variants.length>1?'':'none';prev();return}
   if(k==='dt'){if(v)day=v}

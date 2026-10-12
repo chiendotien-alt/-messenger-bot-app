@@ -2,7 +2,7 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { listOrders, listAllOrders, saveOrder, deleteOrder, setOrderStatus, confirmOrder, findUnconfirmedAuto, getOrderPageId } from "@/lib/orders";
+import { listOrders, listAllOrders, saveOrder, deleteOrder, setOrderStatus, setOrderRefund, confirmOrder, findUnconfirmedAuto, getOrderPageId } from "@/lib/orders";
 import { getConversationPageId } from "@/lib/conversations";
 import { getScope, canSeePage } from "@/lib/auth";
 
@@ -49,10 +49,11 @@ export async function POST(req) {
 // Tick tình trạng đơn bằng tay
 export async function PATCH(req) {
   try {
-    const { id, status, confirm } = await req.json();
-    if (!id || (!status && !confirm)) return NextResponse.json({ error: "Thiếu dữ liệu" }, { status: 400 });
+    const { id, status, confirm, refund } = await req.json();
+    if (!id || (!status && !confirm && refund === undefined)) return NextResponse.json({ error: "Thiếu dữ liệu" }, { status: 400 });
     if (!canSeePage(await getScope(req), await getOrderPageId(id))) return DENY();
     if (status) await setOrderStatus(id, status);
+    if (refund !== undefined) await setOrderRefund(id, refund);
     if (confirm) await confirmOrder(id); // xác nhận đơn tự tạo (vd: đã ghi vào doanh thu)
     return NextResponse.json({ ok: true });
   } catch (err) {
