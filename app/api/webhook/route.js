@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct } from "@/lib/products";
 import {
   addMessage,
   ensureProfile,
@@ -698,7 +698,7 @@ function salvageMessages(raw) {
 // HEIGHT_RE / WEIGHT_RE lấy từ lib/replyDedupe.js (hiểu cả 1,47m, 1.47m, 45 ký...)
 const PHONE_TEXT_RE = /(?:\+?84|0)\d{9}/;
 
-function partialPairTopics({ history, currentTexts, mergedInfo, verified }) {
+function partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized = true }) {
   const out = new Set();
   const cur = (currentTexts || []).join(" \n ");
   // SĐT + địa chỉ: tin này khách đưa SĐT mà chưa có địa chỉ, hoặc ngược lại
@@ -711,7 +711,8 @@ function partialPairTopics({ history, currentTexts, mergedInfo, verified }) {
   // Chiều cao + cân nặng: xét các tin khách từ sau lần shop hỏi size ĐẦU TIÊN (gồm cả tin hiện tại)
   const list = history || [];
   const firstAsk = list.findIndex((m) => m.from !== "customer" && askedTopics(m.text || "").has("size"));
-  if (firstAsk >= 0) {
+  // Chỉ quần áo/giày... mới có cặp chiều cao + cân nặng (vòi nước, chậu... khách nói "cao 30cm", "5kg" là thông số khác)
+  if (bodySized && firstAsk >= 0) {
     const before = list.slice(firstAsk + 1).filter((m) => m.from === "customer").map((m) => m.text || "");
     const all = before.concat(currentTexts || []).join(" \n ");
     const curH = HEIGHT_RE.test(cur), curW = WEIGHT_RE.test(cur);
@@ -984,7 +985,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop ĐÃ hỏi khách xin [" + [...topics].join(", ") + "] ở các tin trước. " +
         "Lượt này KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin đó dù khách chưa trả lời (hệ thống sẽ tự nhắn bồi sau một lúc). " +
         "Chỉ trả lời đúng điều khách vừa hỏi. Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi, ví dụ khi đã có đủ màu và size thì xin số điện thoại và địa chỉ. " +
-        "NGOẠI LỆ — cặp hỏi gộp (chiều cao + cân nặng) và (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (vd khách mới nói chiều cao → chỉ xin cân nặng; mới gửi SĐT → chỉ xin địa chỉ), không hỏi lại phần khách đã đưa.";
+        (isBodySizedProduct(currentProduct)
+          ? "NGOẠI LỆ — cặp hỏi gộp (chiều cao + cân nặng) và (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (vd khách mới nói chiều cao → chỉ xin cân nặng; mới gửi SĐT → chỉ xin địa chỉ)"
+          : "NGOẠI LỆ — cặp (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (mới gửi SĐT → chỉ xin địa chỉ). Sản phẩm này KHÔNG tính size theo chiều cao/cân nặng nên TUYỆT ĐỐI không xin chiều cao cân nặng") +
+        " Không hỏi lại phần khách đã đưa.";
     }
   }
   const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote;
@@ -1046,7 +1050,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
   const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
-  const unblockTopics = [...partialPairTopics({ history, currentTexts, mergedInfo, verified })];
+  const unblockTopics = [...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: isBodySizedProduct(currentProduct) })];
   // Khách VỪA đưa số điện thoại sau khi shop hỏi xin SĐT/địa chỉ → luôn phải có câu trả lời (hỏi nốt địa chỉ còn thiếu hoặc báo đã nhận thông tin),
   // không được im lặng dù AI trả rỗng hoặc đánh dấu no_reply (SĐT đã được lưu sẵn nên AI hay tưởng khách chỉ lặp lại thông tin cũ).
   const phoneNow = /(?:\+?84|0)\d{9}/.test(String(customerMessage || "").replace(/[\s.\-]/g, ""));
