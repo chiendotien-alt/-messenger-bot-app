@@ -107,4 +107,4 @@ Lấy key tại https://console.groq.com/keys.
 
 Xem log để biết đang dùng AI nào: dòng `Bot trả lời (groq:...)` nghĩa là Groq đã thay Gemini.
 Ảnh khách gửi chỉ đọc được nếu model vision của Groq còn hoạt động; nếu không bot trả lời bằng chữ và bỏ qua ảnh.
-Mã nguồn: `lib/groq.js`. Nếu model mặc định bị Groq gỡ, đặt `GROQ_MODELS` / `GROQ_VISION_MODELS` trên Vercel (xem `.env.local.example`).
+Mã nguồn: `lib/groq.js`. Model mặc định: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`. Nếu Groq gỡ model, đặt `GROQ_MODELS` trên Vercel theo tên ở https://console.groq.com/docs/models (xem `.env.local.example`).
