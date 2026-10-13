@@ -93,3 +93,18 @@ Trước khi trả lời, bot hiểu tình huống của khách theo 3 lớp t�
 Biến môi trường (không bắt buộc):
 - `SITUATION_LAYER=off` — tắt lớp 3 (lớp 1 và 2 vẫn chạy, không tốn quota).
 - `SITUATION_BUDGET_MS` — thời gian tối đa cho lớp 3 (mặc định 4500).
+
+
+## AI dự phòng bằng Groq
+
+Khi toàn bộ model/key Gemini lỗi hoặc hết hạn mức, bot tự chuyển sang Groq (miễn phí) để vẫn trả lời khách.
+
+Cách thêm key Groq (chọn 1 trong 2):
+- **Trên trang quản trị (khuyên dùng):** bấm nút 🔑 → mục "Groq (dự phòng)" → dán key `gsk_...` → Thêm. Dùng được ngay, không cần deploy lại. Có nút "Kiểm tra" để xem key còn hạn mức không.
+- **Biến môi trường:** thêm `GROQ_API_KEY` trên Vercel (nhiều key ngăn cách bằng dấu phẩy) → Redeploy.
+
+Lấy key tại https://console.groq.com/keys.
+
+Xem log để biết đang dùng AI nào: dòng `Bot trả lời (groq:...)` nghĩa là Groq đã thay Gemini.
+Ảnh khách gửi chỉ đọc được nếu model vision của Groq còn hoạt động; nếu không bot trả lời bằng chữ và bỏ qua ảnh.
+Mã nguồn: `lib/groq.js`. Nếu model mặc định bị Groq gỡ, đặt `GROQ_MODELS` / `GROQ_VISION_MODELS` trên Vercel (xem `.env.local.example`).

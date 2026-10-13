@@ -4,9 +4,13 @@ export const revalidate = 0;
 import { NextResponse } from "next/server";
 import { listKeys, addKey, deleteKey } from "@/lib/apiKeys";
 
-export async function GET() {
+const prov = (v) => (v === "groq" ? "groq" : "gemini");
+
+// provider: "gemini" (mặc định) | "groq" (AI dự phòng)
+export async function GET(req) {
   try {
-    return NextResponse.json({ keys: await listKeys() });
+    const provider = prov(new URL(req.url).searchParams.get("provider"));
+    return NextResponse.json({ keys: await listKeys(provider) });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 500 });
   }
@@ -14,9 +18,9 @@ export async function GET() {
 
 export async function POST(req) {
   try {
-    const { key, label } = await req.json();
-    await addKey(key, label);
-    return NextResponse.json({ keys: await listKeys() });
+    const { key, label, provider } = await req.json();
+    await addKey(key, label, prov(provider));
+    return NextResponse.json({ keys: await listKeys(prov(provider)) });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });
   }
@@ -24,9 +28,9 @@ export async function POST(req) {
 
 export async function DELETE(req) {
   try {
-    const { id } = await req.json();
+    const { id, provider } = await req.json();
     await deleteKey(id);
-    return NextResponse.json({ keys: await listKeys() });
+    return NextResponse.json({ keys: await listKeys(prov(provider)) });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });
   }

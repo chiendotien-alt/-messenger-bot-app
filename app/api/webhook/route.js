@@ -40,6 +40,7 @@ import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
+import { callGroq, hasGroq } from "@/lib/groq";
 import { buildSystemPrompt } from "@/lib/botPrompt";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
@@ -1207,6 +1208,25 @@ async function generateReply(senderId, customerMessage, customerImages, settings
  * Trả về { text, model }; text rỗng nếu tất cả model + key đều lỗi.
  */
 async function callGemini(systemPrompt, contents, generationConfig, deadline, apiKeys) {
+  const groqOn = (await hasGroq());
+  // Chừa ~4s cuối để Groq còn kịp trả lời nếu Gemini hỏng hết
+  const r = await callGeminiOnly(systemPrompt, contents, generationConfig, groqOn ? deadline - 4000 : deadline, apiKeys);
+  if ((r.text || "").trim() || !groqOn) return r;
+
+  console.warn("Gemini không trả lời được → thử Groq dự phòng.");
+  const g = await callGroq({
+    system: systemPrompt,
+    contents,
+    json: generationConfig?.responseMimeType === "application/json",
+    maxTokens: generationConfig?.maxOutputTokens || 2048,
+    temperature: generationConfig?.temperature ?? 0.8,
+    deadline: Math.max(deadline, Date.now() + 3500),
+    timeoutMs: 9000,
+  });
+  return g.text ? { text: g.text, model: g.model } : { text: "", model: null };
+}
+
+async function callGeminiOnly(systemPrompt, contents, generationConfig, deadline, apiKeys) {
   const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
 
   for (const model of MODEL_CHAIN) {

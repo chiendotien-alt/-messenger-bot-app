@@ -471,8 +471,8 @@ function SettingsModal({ pages, onClose, onChanged }) {
   );
 }
 
-// Hộp thoại API key AI (Gemini): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
-function ApiKeysModal({ onClose }) {
+// Một nhóm key của 1 nhà cung cấp AI (provider = "gemini" | "groq"): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
+function KeySection({ provider, title, subtitle, placeholder, help }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [keyValue, setKeyValue] = useState("");
@@ -489,7 +489,7 @@ function ApiKeysModal({ onClose }) {
       const res = await fetch("/api/keys/check", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(id ? { id } : {}),
+        body: JSON.stringify(id ? { id, provider } : { provider }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Không kiểm tra được");
@@ -515,7 +515,7 @@ function ApiKeysModal({ onClose }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/keys", { cache: "no-store" });
+      const res = await fetch(`/api/keys?provider=${provider}`, { cache: "no-store" });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setError(data.error || "Không tải được danh sách key");
       else setKeys(data.keys || []);
@@ -523,7 +523,7 @@ function ApiKeysModal({ onClose }) {
       setError("Lỗi mạng, thử lại nhé.");
     }
     setLoading(false);
-  }, []);
+  }, [provider]);
 
   useEffect(() => {
     load();
@@ -538,7 +538,7 @@ function ApiKeysModal({ onClose }) {
       const res = await fetch("/api/keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: keyValue, label }),
+        body: JSON.stringify({ key: keyValue, label, provider }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) setError(data.error || "Không thêm được key");
@@ -559,7 +559,7 @@ function ApiKeysModal({ onClose }) {
     const res = await fetch("/api/keys", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: k.id }),
+      body: JSON.stringify({ id: k.id, provider }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) setError(data.error || "Không xóa được key");
@@ -567,42 +567,11 @@ function ApiKeysModal({ onClose }) {
   }
 
   return (
-    <div
-      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.4)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 50,
-        padding: 16,
-      }}
-    >
-      <div
-        style={{
-          background: "#fff",
-          borderRadius: 14,
-          width: "100%",
-          maxWidth: 520,
-          maxHeight: "90vh",
-          overflowY: "auto",
-          padding: 22,
-          boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <strong style={{ fontSize: 18 }}>API key AI (Gemini)</strong>
-          <button
-            onClick={onClose}
-            aria-label="Đóng"
-            style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: "#666" }}
-          >
-            ×
-          </button>
-        </div>
-
+    <div style={{ marginBottom: 26 }}>
+      <div style={{ marginBottom: 10 }}>
+        <strong style={{ fontSize: 16 }}>{title}</strong>
+        {subtitle && <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{subtitle}</div>}
+      </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
           <div style={{ fontSize: 13, color: "#666" }}>Các key đang dùng ({keys.length})</div>
           {keys.length > 0 && (
@@ -690,7 +659,7 @@ function ApiKeysModal({ onClose }) {
             autoComplete="off"
             value={keyValue}
             onChange={(e) => setKeyValue(e.target.value)}
-            placeholder="AIza..."
+            placeholder={placeholder}
             style={{ width: "100%", boxSizing: "border-box", padding: "10px 12px", borderRadius: 8, border: "1px solid #ddd", marginBottom: 8 }}
           />
           <div style={{ display: "flex", gap: 8 }}>
@@ -716,11 +685,69 @@ function ApiKeysModal({ onClose }) {
               {busy ? "Đang lưu..." : "Thêm"}
             </button>
           </div>
-          <p style={{ fontSize: 12, color: "#888", margin: "8px 0 0" }}>
-            Lấy key miễn phí tại Google AI Studio. Có nhiều key thì bot tự chuyển sang key khác khi 1 key hết hạn mức.
-          </p>
+          <p style={{ fontSize: 12, color: "#888", margin: "8px 0 0" }}>{help}</p>
           {error && <p style={{ fontSize: 13, color: "#c0392b", margin: "10px 0 0" }}>{error}</p>}
         </form>
+    </div>
+  );
+}
+
+// Hộp thoại API key AI: Gemini (chính) + Groq (dự phòng khi Gemini lỗi/hết hạn mức)
+function ApiKeysModal({ onClose }) {
+  return (
+    <div
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.4)",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 50,
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          background: "#fff",
+          borderRadius: 14,
+          width: "100%",
+          maxWidth: 520,
+          maxHeight: "90vh",
+          overflowY: "auto",
+          padding: 22,
+          boxShadow: "0 12px 40px rgba(0,0,0,0.25)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <strong style={{ fontSize: 18 }}>API key AI</strong>
+          <button
+            onClick={onClose}
+            aria-label="Đóng"
+            style={{ border: "none", background: "transparent", fontSize: 22, cursor: "pointer", color: "#666" }}
+          >
+            ×
+          </button>
+        </div>
+
+        <KeySection
+          provider="gemini"
+          title="Gemini (chính)"
+          subtitle="Bot luôn thử Gemini trước."
+          placeholder="AIza..."
+          help="Lấy key miễn phí tại Google AI Studio. Có nhiều key thì bot tự chuyển sang key khác khi 1 key hết hạn mức."
+        />
+
+        <div style={{ borderTop: "1px solid #eee", margin: "0 0 20px" }} />
+
+        <KeySection
+          provider="groq"
+          title="Groq (dự phòng)"
+          subtitle="Chỉ dùng khi tất cả key Gemini lỗi hoặc hết hạn mức."
+          placeholder="gsk_..."
+          help="Lấy key miễn phí tại console.groq.com/keys (bắt đầu bằng gsk_). Thêm xong là bot dùng được ngay, không cần deploy lại."
+        />
       </div>
     </div>
   );
