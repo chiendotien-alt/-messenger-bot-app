@@ -73,7 +73,8 @@ const MODEL_CHAIN = [
   ),
 ];
 // Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
-const TRY_ALL_KEYS_ON_429 = process.env.GEMINI_429_TRY_ALL_KEYS === "1";
+// Mặc định: gặp 429 thì thử tiếp key khác (key thuộc project khác nhau có quota riêng). Đặt GEMINI_429_TRY_ALL_KEYS=0 nếu muốn dừng ngay khi 429.
+const TRY_ALL_KEYS_ON_429 = process.env.GEMINI_429_TRY_ALL_KEYS !== "0";
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 10000; // mỗi lần gọi chờ tối đa 10s rồi chuyển model/key khác (trước là 18s → khách phải chờ lâu khi model đầu chậm)
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
@@ -1268,8 +1269,8 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
           break;
         }
         if (res.status === 429) {
-          // Hạn mức Gemini tính theo PROJECT, không theo key → các key cùng project cũng sẽ 429, thử tiếp chỉ tốn thêm request.
-          // Nghỉ cả model này (mọi key) rồi sang model kế tiếp. Nếu key của bạn thuộc các project KHÁC NHAU, đặt GEMINI_429_TRY_ALL_KEYS=1 để thử hết key như cũ.
+          // Hạn mức Gemini tính theo PROJECT: key cùng project dùng chung quota, key khác project có quota riêng.
+          // Mặc định thử tiếp key khác; GEMINI_429_TRY_ALL_KEYS=0 → nghỉ cả model này rồi sang model kế tiếp.
           modelCooldown.set(cooldownKey, Date.now() + 60 * 1000);
           if (TRY_ALL_KEYS_ON_429) continue;
           for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 60 * 1000);
