@@ -479,6 +479,39 @@ function ApiKeysModal({ onClose }) {
   const [label, setLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [status, setStatus] = useState({}); // { [keyId]: kết quả kiểm tra | { checking: true } }
+
+  async function handleCheck(id) {
+    const ids = id ? [id] : keys.map((k) => k.id);
+    if (!ids.length) return;
+    setStatus((st) => ({ ...st, ...Object.fromEntries(ids.map((i) => [i, { checking: true }])) }));
+    try {
+      const res = await fetch("/api/keys/check", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(id ? { id } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Không kiểm tra được");
+      setStatus((st) => {
+        const next = { ...st };
+        for (const r of data.results || []) next[r.id] = r;
+        return next;
+      });
+    } catch (e) {
+      setStatus((st) => ({
+        ...st,
+        ...Object.fromEntries(ids.map((i) => [i, { status: "error", message: e.message }])),
+      }));
+    }
+  }
+
+  const STATUS_UI = {
+    ok: { color: "#15803d", bg: "#f0fdf4", text: "✅ Còn hạn mức" },
+    quota: { color: "#b45309", bg: "#fffbeb", text: "⚠️ Hết hạn mức" },
+    invalid: { color: "#c0392b", bg: "#fff5f5", text: "❌ Key sai/bị khóa" },
+    error: { color: "#6b7280", bg: "#f3f4f6", text: "❔ Không xác định" },
+  };
 
   const load = useCallback(async () => {
     try {
@@ -570,7 +603,18 @@ function ApiKeysModal({ onClose }) {
           </button>
         </div>
 
-        <div style={{ fontSize: 13, color: "#666", marginBottom: 8 }}>Các key đang dùng ({keys.length})</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 13, color: "#666" }}>Các key đang dùng ({keys.length})</div>
+          {keys.length > 0 && (
+            <button
+              onClick={() => handleCheck()}
+              disabled={Object.values(status).some((v) => v.checking)}
+              style={{ padding: "5px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 13 }}
+            >
+              Kiểm tra tất cả
+            </button>
+          )}
+        </div>
         <div style={{ border: "1px solid #eee", borderRadius: 10, marginBottom: 20 }}>
           {loading && <div style={{ padding: 14, color: "#888", fontSize: 14 }}>Đang tải...</div>}
           {!loading && keys.length === 0 && (
@@ -584,7 +628,41 @@ function ApiKeysModal({ onClose }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, fontFamily: "monospace" }}>{k.masked}</div>
                 {k.label && <div style={{ fontSize: 11, color: "#999" }}>{k.label}</div>}
+                {status[k.id] && (
+                  <div style={{ marginTop: 4 }}>
+                    {status[k.id].checking ? (
+                      <span style={{ fontSize: 12, color: "#888" }}>Đang kiểm tra...</span>
+                    ) : (
+                      <>
+                        <span
+                          style={{
+                            fontSize: 12,
+                            padding: "2px 8px",
+                            borderRadius: 999,
+                            fontWeight: 600,
+                            color: (STATUS_UI[status[k.id].status] || STATUS_UI.error).color,
+                            background: (STATUS_UI[status[k.id].status] || STATUS_UI.error).bg,
+                          }}
+                        >
+                          {(STATUS_UI[status[k.id].status] || STATUS_UI.error).text}
+                        </span>
+                        <div style={{ fontSize: 11, color: "#999", marginTop: 3 }}>
+                          {status[k.id].message}
+                          {status[k.id].retryAfterSec ? ` · thử lại sau ~${status[k.id].retryAfterSec}s` : ""}
+                          {status[k.id].ms ? ` · ${status[k.id].ms}ms` : ""}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
+              <button
+                onClick={() => handleCheck(k.id)}
+                disabled={!!status[k.id]?.checking}
+                style={{ padding: "6px 12px", borderRadius: 8, border: "1px solid #ddd", background: "#fff", cursor: "pointer", fontSize: 13 }}
+              >
+                Kiểm tra
+              </button>
               {k.removable && (
                 <button
                   onClick={() => handleRemove(k)}

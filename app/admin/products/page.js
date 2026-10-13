@@ -270,9 +270,7 @@ export default function AdminPage() {
   const [askGap, setAskGap] = useState("180"); // giây
   const [nudgeOn, setNudgeOn] = useState(false);
   const [nudgeText, setNudgeText] = useState("");
-  const [nudge2On, setNudge2On] = useState(true); // bồi lần 2
-  const [nudge2Gap, setNudge2Gap] = useState("1800"); // giây, cách lần bồi 1
-  const [askSaved, setAskSaved] = useState({ gap: "180", on: false, text: "", n2on: true, n2gap: "1800" });
+  const [askSaved, setAskSaved] = useState({ gap: "180", on: false, text: "" });
   const [askStatus, setAskStatus] = useState("");
   const [openId, setOpenId] = useState(null); // sản phẩm đang mở rộng trong danh sách
   const [copyFromId, setCopyFromId] = useState("");
@@ -324,15 +322,10 @@ export default function AdminPage() {
               : "180";
         const on = s.nudgeEnabled === true;
         const tx = typeof s.nudgeText === "string" ? s.nudgeText : "";
-        const n2on = s.nudge2Enabled !== false;
-        const n2gap =
-          s.nudge2GapSec !== undefined && s.nudge2GapSec !== null && s.nudge2GapSec !== "" ? String(s.nudge2GapSec) : "1800";
         setAskGap(g);
         setNudgeOn(on);
         setNudgeText(tx);
-        setNudge2On(n2on);
-        setNudge2Gap(n2gap);
-        setAskSaved({ gap: g, on, text: tx, n2on, n2gap });
+        setAskSaved({ gap: g, on, text: tx });
       })
       .catch(() => {});
   }, []);
@@ -365,11 +358,6 @@ export default function AdminPage() {
       setAskStatus("Nhập số giây từ 0 đến 14400");
       return;
     }
-    const n2 = Number(nudge2Gap);
-    if (nudge2Gap === "" || !Number.isFinite(n2) || n2 < 30 || n2 > 64800) {
-      setAskStatus("Bồi lần 2: nhập số giây từ 30 đến 64800");
-      return;
-    }
     setAskStatus("Đang lưu...");
     const res = await fetch("/api/settings", {
       method: "POST",
@@ -379,14 +367,11 @@ export default function AdminPage() {
         askGapMin: null,
         nudgeEnabled: nudgeOn,
         nudgeText,
-        nudge2Enabled: nudge2On,
-        nudge2GapSec: Math.round(n2),
       }),
     });
     if (res.ok) {
       setAskGap(String(Math.round(n)));
-      setNudge2Gap(String(Math.round(n2)));
-      setAskSaved({ gap: String(Math.round(n)), on: nudgeOn, text: nudgeText, n2on: nudge2On, n2gap: String(Math.round(n2)) });
+      setAskSaved({ gap: String(Math.round(n)), on: nudgeOn, text: nudgeText });
       setAskStatus("Đã lưu ✓");
     } else {
       setAskStatus("Lưu thất bại, thử lại nhé");
@@ -630,7 +615,7 @@ export default function AdminPage() {
             Khách im quá số giây trên → bot nhắn thêm 1 câu ngắn: nếu bot đang hỏi xin thông tin (size, màu...) mà khách chưa trả lời thì hỏi lại gọn hơn, đổi cách nói (vd “Chị cho em xin chiều cao cân nặng nha?”); không còn gì thiếu thì nhắn câu chốt đơn, vd “Em lên đơn váy vàng nhé chị?” (sớm nhất sau khoảng 30–60 giây; lỡ quá giờ thì bỏ, không nhắn trễ)
           </label>
           <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-            Chỉ nhắn khách chưa có đơn thật (đơn nháp tự tạo khi khách để lại SĐT thì vẫn nhắn nếu còn thiếu thông tin như địa chỉ), chủ shop chưa nhắn tay. Mỗi lần khách nhắn bot bồi tối đa 2 lần (lần 2 cài ở ô bên dưới). Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
+            Chỉ nhắn khách chưa có đơn thật (đơn nháp tự tạo khi khách để lại SĐT thì vẫn nhắn nếu còn thiếu thông tin như địa chỉ), chủ shop chưa nhắn tay. Nếu tin cuối của bot là câu hỏi (kết thúc bằng dấu ?) thì bot không bồi. Mỗi lần khách nhắn bot chỉ bồi 1 lần, khách vẫn im thì bot dừng hẳn. Câu chốt (chỉ dùng khi không còn thông tin nào cần hỏi lại; mỗi dòng 1 câu, bot chọn ngẫu nhiên; dùng {"{sp}"} = tên sản phẩm, {"{mau}"} = màu/size khách đã chọn; để trống = AI tự soạn theo cuộc chat):
           </div>
           <textarea
             style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical" }}
@@ -639,37 +624,17 @@ export default function AdminPage() {
             onChange={(e) => setNudgeText(e.target.value)}
             placeholder={"Ví dụ:\nEm lên đơn {sp} {mau} nhé chị?\nMình chốt {sp} để em lên đơn luôn nha?"}
           />
-          <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #ddd" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer", flexWrap: "wrap" }}>
-              <input type="checkbox" checked={nudge2On} onChange={(e) => setNudge2On(e.target.checked)} />
-              <strong>Bồi lần 2</strong> — nếu khách vẫn im, bồi thêm 1 lần sau
-              <input
-                type="number"
-                min="30"
-                max="64800"
-                step="1"
-                value={nudge2Gap}
-                onChange={(e) => setNudge2Gap(e.target.value)}
-                onClick={(e) => e.stopPropagation()}
-                style={{ ...inputStyle, width: 80 }}
-              />
-              giây kể từ tin bồi lần 1
-            </label>
-            <div style={{ color: "#666", fontSize: 12, margin: "6px 0" }}>
-              1800 giây = 30 phút, 3600 = 1 giờ. Tin bồi lần 2 nhẹ nhàng hơn: nối theo điều khách vừa quan tâm và mời khách nhắn khi cần, không hỏi lại thông tin, không giục chốt. Sau lần 2 khách vẫn im thì bot dừng hẳn. Khách nhắn lại thì tính lại từ đầu. Facebook chỉ cho bot nhắn trong 24 giờ sau tin cuối của khách nên bot chỉ bồi trong 22 giờ đầu.
-            </div>
-          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 8 }}>
             <button
               type="button"
               onClick={saveAskSettings}
-              disabled={askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text && nudge2On === askSaved.n2on && nudge2Gap === askSaved.n2gap}
+              disabled={askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text}
               style={{
                 ...btn,
                 background: "#111",
                 color: "#fff",
                 border: "none",
-                opacity: askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text && nudge2On === askSaved.n2on && nudge2Gap === askSaved.n2gap ? 0.5 : 1,
+                opacity: askGap === askSaved.gap && nudgeOn === askSaved.on && nudgeText === askSaved.text ? 0.5 : 1,
               }}
             >
               Lưu
