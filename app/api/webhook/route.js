@@ -34,7 +34,7 @@ import {
   extractPhone,
   isConversationBotOff,
 } from "@/lib/conversations";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns } from "@/lib/replyDedupe";
+import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -365,7 +365,10 @@ export async function POST(req) {
                 const unblock = reply.unblockTopics || [];
                 const { topics } = recentAskedTopics(rows, Infinity);
                 // Khách mới đưa MỘT nửa của cặp (chiều cao/cân nặng, SĐT/địa chỉ) → cho hỏi nốt nửa còn lại, không chặn
-                const blocked = new Set([...topics].filter((t) => !unblock.includes(t)));
+                let blocked = new Set([...topics].filter((t) => !unblock.includes(t)));
+                // Khách đang lo lắng / nghi ngờ (đổi trả, mất ship, xem hàng...) → chỉ trấn an, KHÔNG hỏi thêm màu/size/SĐT/địa chỉ.
+                // Việc hỏi lại để tin nhắn bồi lo sau khi khách im.
+                if (!unblock.length && isWorryText(text)) blocked = new Set(["mau", "size", "so luong", "so dien thoai", "dia chi", "ten nguoi nhan"]);
                 const beforeClean = cleaned;
                 cleaned = removeInfoAsks(cleaned, blocked);
                 // Khách vừa nhắn mà câu duy nhất của bot bị cắt sạch (vd khách nói "tư vấn size giúp mình" khi bot đã hỏi cân nặng)
@@ -684,8 +687,7 @@ function salvageMessages(raw) {
  * SĐT phải có đúng dãy số trong tin khách; tên/địa chỉ/màu-size phải có phần lớn từ xuất hiện trong tin khách.
  */
 // ---- Cặp thông tin hỏi gộp: (chiều cao + cân nặng), (SĐT + địa chỉ). Khách mới đưa MỘT nửa → được hỏi nốt nửa còn lại dù shop đã hỏi cặp này trước đó ----
-const HEIGHT_RE = /(?:\b[12]\s?m\s?\d{0,2}\b|\b1[3-9]\d\s?cm\b|\bcao\s+\d)/i;
-const WEIGHT_RE = /\b\d{2,3}(?:[.,]\d)?\s?(?:kg|ky|kí|ký|cân|can)\b/i;
+// HEIGHT_RE / WEIGHT_RE lấy từ lib/replyDedupe.js (hiểu cả 1,47m, 1.47m, 45 ký...)
 const PHONE_TEXT_RE = /(?:\+?84|0)\d{9}/;
 
 function partialPairTopics({ history, currentTexts, mergedInfo, verified }) {
