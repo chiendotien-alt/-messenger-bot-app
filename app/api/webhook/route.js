@@ -99,10 +99,13 @@ const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(proce
 const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
 // Mỗi khách chỉ 1 lượt trả lời chạy cùng lúc; tin đến sau xếp hàng chờ tối đa ngần này ms (25s). Đặt 0 để tắt.
 const REPLY_LOCK_WAIT_MS = process.env.REPLY_LOCK_WAIT_MS !== undefined ? Number(process.env.REPLY_LOCK_WAIT_MS) : 25000;
-const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : 600;
-// Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau 1s (câu ngắn) đến 1,5s (câu dài). AI soạn lâu hơn thì gửi ngay khi soạn xong.
-const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 600;
-const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 900;
+// Tin thứ 2 (khi bot tách 2 tin): mặc định giả gõ ~1-4,5s tùy độ dài. Đặt SECOND_MSG_HOLD_MS (ms) để cố định.
+const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : null;
+// Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau ~1,5s (câu ngắn) đến 6s (câu dài) — người thật không trả lời 3 dòng trong 1 giây. AI soạn lâu hơn thì gửi ngay khi soạn xong.
+const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1500;
+const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 6000;
+const TYPING_PER_CHAR_MS = process.env.TYPING_PER_CHAR_MS !== undefined ? Number(process.env.TYPING_PER_CHAR_MS) : 40;
+const humanJitter = () => 0.85 + Math.random() * 0.3; // lệch ±15% cho khỏi đều đều như máy
 // Khách nhắn thêm trong ngần này ms sau tin bot vừa gửi → dặn AI: câu trước trả lời hơi sớm, chỉ trả lời phần mới, không hỏi lại/lặp lại.
 const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? Number(process.env.FOLLOWUP_AFTER_BOT_MS) : 10000;
 // AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
@@ -147,12 +150,14 @@ export async function POST(req) {
 
       const senderId = event.sender?.id;
       // Khách gõ chữ, hoặc bấm câu hỏi có sẵn/nút (Facebook gửi dạng postback, "title" chính là câu hỏi)
-      const text = event.message?.text || event.postback?.title || "";
+      let text = event.message?.text || event.postback?.title || "";
       const mid = event.message?.mid || event.postback?.mid || "";
       // Ảnh khách gửi (bỏ qua sticker/like)
       const fbImages = (event.message?.attachments || [])
         .filter((a) => a.type === "image" && a.payload?.url && !a.payload?.sticker_id)
         .map((a) => a.payload.url);
+      // Khách gửi tin thoại / video / file / vị trí (không chữ, không ảnh): lưu thành 1 dòng ghi chú để bot trả lời (nhờ khách nhắn chữ) thay vì im lặng
+      if (!text && !fbImages.length) text = nonTextAttachmentNote(event.message?.attachments);
 
       // Bỏ qua echo, tin nhắn không có chữ lẫn ảnh, v.v.
       if (!senderId || event.message?.is_echo || (!text && !fbImages.length)) continue;
@@ -343,8 +348,10 @@ export async function POST(req) {
             }
             // Tin đầu: giả gõ 1-1,5s tính từ lúc bắt đầu "đang gõ" (AI soạn lâu rồi thì gửi ngay).
             // Tin thứ 2: giả soạn ~1s; trong lúc đó khách nhắn thêm → hủy tin này, trả lời tin mới.
-            const typingMs = Math.min(TYPING_MAX_MS, TYPING_MIN_MS + messages[i].length * 5);
-            const waitMs = i > 0 ? SECOND_MSG_HOLD_MS : Math.max(0, typingMs - (Date.now() - typingStartedAt));
+            const typingMs = Math.min(TYPING_MAX_MS, TYPING_MIN_MS + messages[i].length * TYPING_PER_CHAR_MS) * humanJitter();
+            const holdMs = SECOND_MSG_HOLD_MS !== null ? SECOND_MSG_HOLD_MS : Math.min(4500, 900 + messages[i].length * 30) * humanJitter();
+            const waitRaw = i > 0 ? holdMs : Math.max(0, typingMs - (Date.now() - typingStartedAt));
+            const waitMs = Math.min(waitRaw, Math.max(0, startedAt + 52000 - Date.now())); // không để hàm Vercel (60s) bị cắt giữa chừng
             await sleep(waitMs);
             // Kiểm tra lần cuối ngay trước khi gửi từng tin
             if (await superseded()) {
@@ -436,7 +443,7 @@ export async function POST(req) {
         if (!SILENT_ON_ERROR) {
           await sendMessage(
             senderId,
-            "Dạ shop xin lỗi, hệ thống đang bận xíu, anh/chị nhắn lại giúp shop sau ít phút nha!",
+            "Dạ shop xin lỗi, hệ thống đang bận xíu, mình nhắn lại giúp shop sau ít phút nha!",
             pageToken
           ).catch(() => {});
         }
@@ -571,7 +578,8 @@ function openingReply(p) {
 // ---- Gọi Google Gemini API: soạn câu trả lời + quyết định có gửi ảnh không ----
 const MAX_IMAGES = 10;
 // Câu dùng khi AI lỗi — không được đưa vào lịch sử để model không bắt chước
-const FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
+const FALLBACK_TEXT = "Dạ mình chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ.";
+const LEGACY_FALLBACK_TEXT = "Dạ anh/chị chờ shop một chút, shop kiểm tra rồi phản hồi mình ngay ạ."; // bản cũ còn nằm trong lịch sử chat
 const OLD_FALLBACK = "Dạ shop chưa rõ ý anh/chị lắm";
 
 /** Tải ảnh (link Blob/Facebook) về dạng base64 để đưa cho Gemini xem. Lỗi thì bỏ qua. */
@@ -622,7 +630,7 @@ async function buildContents(history, latestText, latestImages) {
   const items = [];
   for (const m of history) {
     const isCustomer = m.from === "customer";
-    if (!isCustomer && (m.text.startsWith(OLD_FALLBACK) || m.text === FALLBACK_TEXT || isErrorText(m.text))) continue;
+    if (!isCustomer && (m.text.startsWith(OLD_FALLBACK) || m.text === FALLBACK_TEXT || m.text === LEGACY_FALLBACK_TEXT || isErrorText(m.text))) continue;
     const imgs = isCustomer ? m.images || [] : [];
     const text = m.text || (imgs.length ? `[Khách gửi ${imgs.length} ảnh]` : "");
     if (text) items.push({ role: isCustomer ? "user" : "model", text, images: imgs });
@@ -1161,7 +1169,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
     if (images.length) {
       // Sản phẩm có "Lưu ý của chủ shop" → câu dẫn không xưng hô anh/chị để không lệch với lưu ý
-      messages = [String(currentProduct?.notes || "").trim() ? "Shop gửi ảnh để xem thử nhé ạ." : "Dạ shop gửi anh/chị xem ảnh nhé ạ."];
+      messages = [String(currentProduct?.notes || "").trim() ? "Shop gửi ảnh để xem thử nhé ạ." : "Dạ shop gửi mình xem ảnh nhé ạ."];
     }
     else {
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
@@ -1334,6 +1342,18 @@ async function persistCustomerImages(senderId, urls) {
 
 // ---- Gửi qua Facebook Send API ----
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Tin khách chỉ có tin thoại/video/file/vị trí → dòng ghi chú để AI biết (sticker/like thì bỏ qua như cũ). */
+function nonTextAttachmentNote(atts) {
+  for (const a of atts || []) {
+    if (a?.payload?.sticker_id) continue;
+    if (a?.type === "audio") return "[Khách gửi tin nhắn thoại]";
+    if (a?.type === "video") return "[Khách gửi video]";
+    if (a?.type === "file") return "[Khách gửi một tệp]";
+    if (a?.type === "location") return "[Khách gửi vị trí]";
+  }
+  return "";
+}
 const FB_URL = (token) => `https://graph.facebook.com/v21.0/me/messages?access_token=${token}`;
 
 async function fbPost(payload, token) {
