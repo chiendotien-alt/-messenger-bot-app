@@ -56,9 +56,10 @@ export const maxDuration = 60;
 // Thứ tự thử: model chính (đặt qua biến môi trường GEMINI_MODEL nếu muốn đổi mà không sửa code)
 // → các model dự phòng. Model nào lỗi (hết quota, quá tải, không tồn tại) sẽ tự chuyển sang model kế tiếp.
 // Thêm/bớt model dự phòng bằng GEMINI_FALLBACK_MODELS="model-a,model-b" (không bắt buộc).
+// Free tier: 3.6-flash chỉ 20 request/ngày → hết thì tự rơi xuống 3.5-flash, rồi 3.5-flash-lite (500 RPD).
 const DEFAULT_MODEL_CHAIN = [
-  "gemini-3.6-flash", // bản stable — thử đầu tiên (bỏ gemini-3.8-flash vì hạn mức thấp)
-  "gemini-3.5-flash", // bản stable
+  "gemini-3.6-flash", // chất lượng tốt nhất — thử đầu tiên
+  "gemini-3.5-flash", // dự phòng
   "gemini-3.5-flash-lite", // nhẹ, quota rộng — chốt chặn cuối
 ];
 const MODEL_CHAIN = [
@@ -72,6 +73,7 @@ const MODEL_CHAIN = [
   ),
 ];
 // Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
+const TRY_ALL_KEYS_ON_429 = process.env.GEMINI_429_TRY_ALL_KEYS === "1";
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 10000; // mỗi lần gọi chờ tối đa 10s rồi chuyển model/key khác (trước là 18s → khách phải chờ lâu khi model đầu chậm)
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
@@ -912,7 +914,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const ruleLabel = detectSituation(trainQueries);
   // Lớp 3: AI phân loại riêng (model nhẹ, tối đa ~4,5s) — CHỈ khi tin dễ hiểu sai: phàn nàn, mặc cả, đổi trả, phân vân, tin quá ngắn, khách đã có đơn.
   // Lỗi / timeout / không chắc → bỏ qua, bot chạy như cũ.
+  // Mặc định TẮT để tiết kiệm quota (mỗi tin tốn thêm 1-2 request). Bật lại bằng biến môi trường SITUATION_AI=1.
   const classifyNow =
+    process.env.SITUATION_AI === "1" &&
     !firstContact &&
     shouldClassify({
       customerMessage,
@@ -1264,8 +1268,12 @@ async function callGemini(systemPrompt, contents, generationConfig, deadline, ap
           break;
         }
         if (res.status === 429) {
-          modelCooldown.set(cooldownKey, Date.now() + 60 * 1000); // key này hết hạn mức/phút → nghỉ 1 phút, thử key khác
-          continue;
+          // Hạn mức Gemini tính theo PROJECT, không theo key → các key cùng project cũng sẽ 429, thử tiếp chỉ tốn thêm request.
+          // Nghỉ cả model này (mọi key) rồi sang model kế tiếp. Nếu key của bạn thuộc các project KHÁC NHAU, đặt GEMINI_429_TRY_ALL_KEYS=1 để thử hết key như cũ.
+          modelCooldown.set(cooldownKey, Date.now() + 60 * 1000);
+          if (TRY_ALL_KEYS_ON_429) continue;
+          for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 60 * 1000);
+          break;
         }
         if (res.status === 503) {
           // "Model đang quá tải" là lỗi của CẢ model (đổi key không giúp) → nghỉ model này 45s, sang model kế tiếp ngay
