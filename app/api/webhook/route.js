@@ -40,7 +40,7 @@ import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
-import { callGroq, hasGroq } from "@/lib/groq";
+import { callGemini } from "@/lib/gemini";
 import { buildSystemPrompt } from "@/lib/botPrompt";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
@@ -53,30 +53,7 @@ const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 // Vercel cho hàm chạy tối đa 60s (mặc định có thể chỉ 10-15s → dễ bị cắt giữa chừng khi AI chậm)
 export const maxDuration = 60;
 
-// ---- Chọn model Gemini ổn định ----
-// Thứ tự thử: model chính (đặt qua biến môi trường GEMINI_MODEL nếu muốn đổi mà không sửa code)
-// → các model dự phòng. Model nào lỗi (hết quota, quá tải, không tồn tại) sẽ tự chuyển sang model kế tiếp.
-// Thêm/bớt model dự phòng bằng GEMINI_FALLBACK_MODELS="model-a,model-b" (không bắt buộc).
-// Free tier: 3.6-flash chỉ 20 request/ngày → hết thì tự rơi xuống 3.5-flash, rồi 3.5-flash-lite (500 RPD).
-const DEFAULT_MODEL_CHAIN = [
-  "gemini-3.6-flash", // chất lượng tốt nhất — thử đầu tiên
-  "gemini-3.5-flash", // dự phòng
-  "gemini-3.5-flash-lite", // nhẹ, quota rộng — chốt chặn cuối
-];
-const MODEL_CHAIN = [
-  ...new Set(
-    [
-      process.env.GEMINI_MODEL,
-      ...(process.env.GEMINI_FALLBACK_MODELS ? process.env.GEMINI_FALLBACK_MODELS.split(",") : DEFAULT_MODEL_CHAIN),
-    ]
-      .map((m) => (m || "").trim().replace(/^models\//, ""))
-      .filter(Boolean)
-  ),
-];
-// Có thể đổi bằng biến môi trường trên Vercel (GEMINI_TIMEOUT_MS, REPLY_BUDGET_MS) mà không cần sửa code.
-// Mặc định: gặp 429 thì thử tiếp key khác (key thuộc project khác nhau có quota riêng). Đặt GEMINI_429_TRY_ALL_KEYS=0 nếu muốn dừng ngay khi 429.
-const TRY_ALL_KEYS_ON_429 = process.env.GEMINI_429_TRY_ALL_KEYS !== "0";
-const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 10000; // mỗi lần gọi chờ tối đa 10s rồi chuyển model/key khác (trước là 18s → khách phải chờ lâu khi model đầu chậm)
+// Model, key, cách nghỉ khi lỗi... nằm chung ở lib/gemini.js (đổi GEMINI_MODEL, GEMINI_FALLBACK_MODELS, GEMINI_TIMEOUT_MS ở Vercel nếu cần).
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
 // ---- Khách MỚI nhắn liền mấy tin: chỉ gửi ảnh mẫu + câu mở đầu, các tin còn lại chờ khách nhắn tiếp ----
 // Khách mới (chưa ai trả lời) → chờ ngần này ms KỂ TỪ TIN ĐẦU TIÊN (12s), hết giờ mới gửi ảnh mẫu + câu mở đầu.
@@ -115,8 +92,6 @@ const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? 
 // AI lỗi (hết quota, quá tải...) → KHÔNG gửi câu xin lỗi/chờ cho khách, để chủ shop tự nhắn tay hoặc đợi khách nhắn tiếp.
 // Muốn bot vẫn gửi câu "chờ shop một chút" khi lỗi thì đặt biến môi trường SILENT_ON_ERROR=0 trên Vercel.
 const SILENT_ON_ERROR = process.env.SILENT_ON_ERROR !== "0";
-const modelDown = new Map(); // model → thời điểm được thử lại (model đang quá tải 503 với MỌI key → bỏ qua ngay, khỏi tốn thời gian)
-const modelCooldown = new Map(); // `${model}::${keyId}` → thời điểm được thử lại (bỏ qua cặp model+key vừa lỗi)
 
 // ---- 1. Facebook gọi GET để xác minh webhook khi bạn cấu hình trên Meta ----
 export async function GET(req) {
@@ -1196,129 +1171,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
-}
-
-/**
- * Gọi Gemini, thử lần lượt: mỗi model × mỗi API key (nhiều key = nhiều hạn mức/phút cộng lại).
- *  - 429 (hết quota key này) → thử NGAY key khác với cùng model đó (không đổi model vội, giữ chất lượng)
- *  - 404 (model không tồn tại) → bỏ hẳn model đó, sang model kế tiếp
- *  - 401/403 (key này sai/bị khoá) → bỏ hẳn key đó, thử key khác
- *  - 500/503/timeout (quá tải) → nghỉ ngắn rồi thử key khác của model đó
- *  - 400 do thinkingConfig (model không hỗ trợ) → gọi lại không kèm thinkingConfig
- * Trả về { text, model }; text rỗng nếu tất cả model + key đều lỗi.
- */
-async function callGemini(systemPrompt, contents, generationConfig, deadline, apiKeys) {
-  const groqOn = (await hasGroq());
-  // Chừa ~4s cuối để Groq còn kịp trả lời nếu Gemini hỏng hết
-  const r = await callGeminiOnly(systemPrompt, contents, generationConfig, groqOn ? deadline - 4000 : deadline, apiKeys);
-  if ((r.text || "").trim() || !groqOn) return r;
-
-  console.warn("Gemini không trả lời được → thử Groq dự phòng.");
-  const g = await callGroq({
-    system: systemPrompt,
-    contents,
-    json: generationConfig?.responseMimeType === "application/json",
-    maxTokens: generationConfig?.maxOutputTokens || 2048,
-    temperature: generationConfig?.temperature ?? 0.8,
-    deadline: Math.max(deadline, Date.now() + 3500),
-    timeoutMs: 9000,
-  });
-  return g.text ? { text: g.text, model: g.model } : { text: "", model: null };
-}
-
-async function callGeminiOnly(systemPrompt, contents, generationConfig, deadline, apiKeys) {
-  const keys = apiKeys && apiKeys.length ? apiKeys : [{ id: "__none__", key: "" }];
-
-  for (const model of MODEL_CHAIN) {
-    // Model vừa báo quá tải (503) → nhảy thẳng sang model kế tiếp; riêng model cuối luôn được thử
-    if ((modelDown.get(model) || 0) > Date.now() && model !== MODEL_CHAIN[MODEL_CHAIN.length - 1]) continue;
-
-    let config = generationConfig;
-    let stripped = false;
-
-    const now = Date.now();
-    let keyChain = keys.filter((k) => (modelCooldown.get(`${model}::${k.id}`) || 0) <= now);
-    if (!keyChain.length) keyChain = keys; // toàn bộ key đang "nghỉ" với model này thì thử lại hết
-
-    for (const keyObj of keyChain) {
-      const cooldownKey = `${model}::${keyObj.id}`;
-      const remaining = deadline - Date.now();
-      if (remaining < 3000) {
-        console.warn("Hết thời gian dành cho AI, dừng thử.");
-        return { text: "", model: null };
-      }
-
-      let res;
-      try {
-        res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "x-goog-api-key": keyObj.key || "" },
-          body: JSON.stringify({
-            systemInstruction: { parts: [{ text: systemPrompt }] },
-            contents,
-            generationConfig: config,
-          }),
-          signal: AbortSignal.timeout(Math.min(GEMINI_TIMEOUT_MS, remaining)),
-        });
-      } catch (e) {
-        console.error(`Gemini ${model} (key ${keyObj.id}) timeout/lỗi mạng:`, e.message);
-        modelCooldown.set(cooldownKey, Date.now() + 20 * 1000);
-        continue; // thử key khác cùng model
-      }
-
-      const data = await res.json().catch(() => ({}));
-
-      if (!res.ok) {
-        const err = data.error || {};
-        console.error(`Lỗi Gemini API [${model}] (key ${keyObj.id}) HTTP ${res.status}:`, JSON.stringify(err));
-
-        if (res.status === 401 || res.status === 403) {
-          // Key này sai/bị khoá — nghỉ lâu, thử key khác
-          modelCooldown.set(cooldownKey, Date.now() + 30 * 60 * 1000);
-          continue;
-        }
-        if (res.status === 400 && config.thinkingConfig && !stripped && /think/i.test(err.message || "")) {
-          const { thinkingConfig, ...rest } = config; // model này không nhận thinkingConfig
-          config = rest;
-          stripped = true;
-          continue; // thử lại đúng key này với cấu hình mới, không tính là lỗi
-        }
-        if (res.status === 404) {
-          // Tên model sai/đã tắt — không liên quan tới key, nghỉ hẳn model này rồi sang model kế tiếp
-          for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 30 * 60 * 1000);
-          break;
-        }
-        if (res.status === 429) {
-          // Hạn mức Gemini tính theo PROJECT: key cùng project dùng chung quota, key khác project có quota riêng.
-          // Mặc định thử tiếp key khác; GEMINI_429_TRY_ALL_KEYS=0 → nghỉ cả model này rồi sang model kế tiếp.
-          modelCooldown.set(cooldownKey, Date.now() + 60 * 1000);
-          if (TRY_ALL_KEYS_ON_429) continue;
-          for (const k of keys) modelCooldown.set(`${model}::${k.id}`, Date.now() + 60 * 1000);
-          break;
-        }
-        if (res.status === 503) {
-          // "Model đang quá tải" là lỗi của CẢ model (đổi key không giúp) → nghỉ model này 45s, sang model kế tiếp ngay
-          modelDown.set(model, Date.now() + 45 * 1000);
-          break;
-        }
-        if (res.status >= 500) {
-          modelCooldown.set(cooldownKey, Date.now() + 15 * 1000);
-          continue; // lỗi máy chủ khác → thử key khác
-        }
-        continue; // 400 khác → thử key khác của model này
-      }
-
-      const cand = data.candidates?.[0];
-      const text = cand?.content?.parts?.map((p) => p.text || "").join("") || "";
-      if (text.trim()) return { text, model };
-
-      console.warn(
-        `Gemini ${model} (key ${keyObj.id}) không trả nội dung. finishReason=${cand?.finishReason} promptFeedback=${JSON.stringify(data.promptFeedback || null)}`
-      );
-      break; // rỗng → thử model kế tiếp (không phải lỗi key, đổi key không ích gì)
-    }
-  }
-  return { text: "", model: null };
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
