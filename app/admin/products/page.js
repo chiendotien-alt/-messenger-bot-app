@@ -244,6 +244,18 @@ function Thumbs({ label, urls, labels }) {
   );
 }
 
+// Ô nhập nhiều dòng tự giãn chiều cao theo chữ đang gõ (không phải kéo, không bị nhỏ)
+function AutoTextarea({ value, minRows = 3, style, ...rest }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = el.scrollHeight + 2 + "px";
+  }, [value]);
+  return <textarea ref={ref} rows={minRows} value={value} style={{ ...style, overflow: "hidden", resize: "vertical" }} {...rest} />;
+}
+
 // Bảng thuộc tính của sản phẩm: mỗi dòng gồm Thuộc tính / Giá trị / Cách chọn. Bot đọc bảng này để biết cần hỏi khách những mục nào.
 function AttributeTable({ rows, groups, onChange }) {
   const list = Array.isArray(rows) ? rows : [];
@@ -269,47 +281,51 @@ function AttributeTable({ rows, groups, onChange }) {
       <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bảng thuộc tính (không bắt buộc)</label>
       <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
         Liệt kê những gì khách phải chọn (Màu, Chiều dài, Size...). Bot hỏi lần lượt từng dòng, chọn đủ rồi mới xin số điện thoại và địa chỉ.
-        Cột “Cách chọn” viết chữ bình thường: ghi “theo chiều cao và cân nặng” thì bot xin cả hai; chỉ ghi “theo chiều cao” thì bot chỉ xin chiều cao; ghi “khách tự chọn” thì bot hỏi khách lấy loại nào.
+        Phần “Cách chọn” viết chữ bình thường: ghi “theo chiều cao và cân nặng” thì bot xin cả hai; chỉ ghi “theo chiều cao” thì bot chỉ xin chiều cao; ghi “khách tự chọn” thì bot hỏi khách lấy loại nào.
         Khách đã tự nói giá trị (vd “size L”) thì bot không hỏi lại dòng đó.
-        Cột “Câu hỏi bồi”: câu bạn muốn bot dùng khi hỏi / nhắn lại khi khách im lặng về dòng đó; để trống thì bot tự soạn. Viết nhiều câu (mỗi câu 1 dòng) thì bot đổi câu mỗi lần để không bị lặp.
+        Phần “Câu hỏi bồi”: câu bạn muốn bot dùng khi hỏi / nhắn lại khi khách im lặng về mục đó; để trống thì bot tự soạn. Viết nhiều câu (mỗi câu 1 dòng) thì bot hỏi lần lượt theo thứ tự câu 1, 2, 3… hết thì quay lại câu 1, nên không bị lặp.
       </div>
-      {list.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1.8fr 1.8fr 36px", gap: 6, alignItems: "start" }}>
-          <div style={{ fontSize: 12, color: "#666" }}>Thuộc tính</div>
-          <div style={{ fontSize: 12, color: "#666" }}>Giá trị (cách nhau dấu phẩy)</div>
-          <div style={{ fontSize: 12, color: "#666" }}>Cách chọn</div>
-          <div style={{ fontSize: 12, color: "#666" }}>Câu hỏi bồi (bot hỏi đúng câu này)</div>
-          <div />
-          {list.map((r, i) => (
-            <div key={i} style={{ display: "contents" }}>
+      {list.map((r, i) => (
+        <div key={i} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 10, marginBottom: 10, background: "#fafafa" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#555" }}>Thuộc tính {i + 1}</span>
+            <button
+              type="button"
+              title="Xóa thuộc tính này"
+              onClick={() => onChange(list.filter((_, idx) => idx !== i), glist.map((g) => ({ ...g, members: (g.members || []).filter((m) => m !== String(list[i]?.name || "").trim()) })))}
+              style={{ padding: "4px 10px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#c00" }}
+            >
+              ✕ Xóa
+            </button>
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 8 }}>
+            <div style={{ flex: "1 1 140px" }}>
+              <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Tên thuộc tính</div>
               <input style={cell} placeholder="vd: Chiều dài" value={r.name || ""} onChange={(e) => setRow(i, "name", e.target.value)} />
-              <input style={cell} placeholder="vd: 60cm, 70cm, 80cm" value={r.values || ""} onChange={(e) => setRow(i, "values", e.target.value)} />
-              <textarea
-                style={{ ...cell, resize: "vertical", minHeight: 38 }}
-                rows={2}
-                placeholder="vd: theo chiều cao: dưới 1m55 lấy 60cm, 1m55-1m62 lấy 70cm, trên 1m62 lấy 80cm"
-                value={r.how || ""}
-                onChange={(e) => setRow(i, "how", e.target.value)}
-              />
-              <textarea
-                style={{ ...cell, resize: "vertical", minHeight: 38 }}
-                rows={2}
-                placeholder="vd: Chị gửi em cân nặng để em chọn size cho vừa nha? (để trống = bot tự hỏi; nhiều câu thì mỗi câu 1 dòng)"
-                value={r.ask || ""}
-                onChange={(e) => setRow(i, "ask", e.target.value)}
-              />
-              <button
-                type="button"
-                title="Xóa dòng này"
-                onClick={() => onChange(list.filter((_, idx) => idx !== i), glist.map((g) => ({ ...g, members: (g.members || []).filter((m) => m !== String(list[i]?.name || "").trim()) })))}
-                style={{ padding: "6px 0", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#c00" }}
-              >
-                ✕
-              </button>
             </div>
-          ))}
+            <div style={{ flex: "2 1 200px" }}>
+              <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Giá trị (cách nhau dấu phẩy)</div>
+              <input style={cell} placeholder="vd: 60cm, 70cm, 80cm" value={r.values || ""} onChange={(e) => setRow(i, "values", e.target.value)} />
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Cách chọn</div>
+          <AutoTextarea
+            minRows={2}
+            style={{ ...cell, marginBottom: 8 }}
+            placeholder="vd: theo chiều cao: dưới 1m55 lấy 60cm, 1m55-1m62 lấy 70cm, trên 1m62 lấy 80cm"
+            value={r.how || ""}
+            onChange={(e) => setRow(i, "how", e.target.value)}
+          />
+          <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Câu hỏi bồi — mỗi câu 1 dòng, bot hỏi lần lượt theo thứ tự câu 1, 2, 3… (để trống = bot tự hỏi)</div>
+          <AutoTextarea
+            minRows={3}
+            style={cell}
+            placeholder={"Câu 1: Chị gửi em cân nặng để em chọn size cho vừa nha?\nCâu 2: Chị nặng bao nhiêu ký để em tư vấn size ạ?\nCâu 3: Cho em xin cân nặng của chị nhé"}
+            value={r.ask || ""}
+            onChange={(e) => setRow(i, "ask", e.target.value)}
+          />
         </div>
-      )}
+      ))}
       <button
         type="button"
         onClick={() => onChange([...list, { name: "", values: "", how: "", ask: "" }], glist)}
@@ -321,7 +337,7 @@ function AttributeTable({ rows, groups, onChange }) {
       <div style={{ marginTop: 18, paddingTop: 12, borderTop: "1px dashed #ccc" }}>
         <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bộ thuộc tính (không bắt buộc)</label>
         <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
-          Gom nhiều dòng ở trên thành 1 bộ rồi viết 1 câu hỏi bồi chung. Khách chưa nói gì về CẢ bộ thì bot hỏi đúng câu của bộ.
+          Gom nhiều thuộc tính ở trên thành 1 bộ rồi viết 1 câu hỏi bồi chung. Khách chưa nói gì về CẢ bộ thì bot hỏi đúng câu của bộ.
           Nếu bộ đã có 1 dòng (vd khách đã nói chiều cao) thì bot chạy như bình thường: hỏi nốt dòng còn thiếu. Mỗi bộ cần chọn ít nhất 2 thuộc tính.
         </div>
         {glist.map((g, gi) => (
@@ -357,10 +373,11 @@ function AttributeTable({ rows, groups, onChange }) {
                   );
                 })}
             </div>
-            <textarea
-              style={{ ...cell, resize: "vertical", minHeight: 38 }}
-              rows={2}
-              placeholder="Câu hỏi bồi của cả bộ, vd: Chị cho em xin chiều cao cân nặng để em chọn size và chiều dài vừa nha? (nhiều câu thì mỗi câu 1 dòng)"
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 2 }}>Câu hỏi bồi của cả bộ — mỗi câu 1 dòng, bot hỏi lần lượt theo thứ tự</div>
+            <AutoTextarea
+              minRows={3}
+              style={cell}
+              placeholder={"Câu 1: Chị cho em xin chiều cao cân nặng để em chọn size và chiều dài vừa nha?\nCâu 2: Chị cao bao nhiêu, nặng bao nhiêu để em chọn đồ vừa ạ?"}
               value={g.ask || ""}
               onChange={(e) => setGroup(gi, { ask: e.target.value })}
             />
