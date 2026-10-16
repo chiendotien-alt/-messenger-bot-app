@@ -8,6 +8,7 @@ const EMPTY_FORM = {
   stock: "Còn hàng",
   description: "",
   notes: "",
+  attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
   openingScript: "",
   openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
   triggerQuestions: "",
@@ -242,6 +243,61 @@ function Thumbs({ label, urls, labels }) {
   );
 }
 
+// Bảng thuộc tính của sản phẩm: mỗi dòng gồm Thuộc tính / Giá trị / Cách chọn. Bot đọc bảng này để biết cần hỏi khách những mục nào.
+function AttributeTable({ rows, onChange }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const cell = { padding: "8px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 14, width: "100%", boxSizing: "border-box" };
+  function setRow(i, key, value) {
+    onChange(list.map((r, idx) => (idx === i ? { ...r, [key]: value } : r)));
+  }
+  return (
+    <div>
+      <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bảng thuộc tính (không bắt buộc)</label>
+      <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+        Liệt kê những gì khách phải chọn (Màu, Chiều dài, Size...). Bot hỏi lần lượt từng dòng, chọn đủ rồi mới xin số điện thoại và địa chỉ.
+        Cột “Cách chọn” viết chữ bình thường: ghi “theo chiều cao và cân nặng” thì bot xin cả hai; chỉ ghi “theo chiều cao” thì bot chỉ xin chiều cao; ghi “khách tự chọn” thì bot hỏi khách lấy loại nào.
+        Khách đã tự nói giá trị (vd “size L”) thì bot không hỏi lại dòng đó.
+      </div>
+      {list.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr 2fr 36px", gap: 6, alignItems: "start" }}>
+          <div style={{ fontSize: 12, color: "#666" }}>Thuộc tính</div>
+          <div style={{ fontSize: 12, color: "#666" }}>Giá trị (cách nhau dấu phẩy)</div>
+          <div style={{ fontSize: 12, color: "#666" }}>Cách chọn</div>
+          <div />
+          {list.map((r, i) => (
+            <div key={i} style={{ display: "contents" }}>
+              <input style={cell} placeholder="vd: Chiều dài" value={r.name || ""} onChange={(e) => setRow(i, "name", e.target.value)} />
+              <input style={cell} placeholder="vd: 60cm, 70cm, 80cm" value={r.values || ""} onChange={(e) => setRow(i, "values", e.target.value)} />
+              <textarea
+                style={{ ...cell, resize: "vertical", minHeight: 38 }}
+                rows={2}
+                placeholder="vd: theo chiều cao: dưới 1m55 lấy 60cm, 1m55-1m62 lấy 70cm, trên 1m62 lấy 80cm"
+                value={r.how || ""}
+                onChange={(e) => setRow(i, "how", e.target.value)}
+              />
+              <button
+                type="button"
+                title="Xóa dòng này"
+                onClick={() => onChange(list.filter((_, idx) => idx !== i))}
+                style={{ padding: "6px 0", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#c00" }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={() => onChange([...list, { name: "", values: "", how: "" }])}
+        style={{ marginTop: 8, padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" }}
+      >
+        + Thêm dòng
+      </button>
+    </div>
+  );
+}
+
 // Chỉ giữ tên ảnh của những ảnh còn tồn tại
 function cleanForm(form) {
   const keep = new Set([...form.sampleImages, ...form.realImages]);
@@ -251,7 +307,10 @@ function cleanForm(form) {
   }
   const openingExtras = (form.openingExtras || []).map((t) => String(t || "").trim()).filter(Boolean);
   const openingImages = (form.openingImages || []).filter((u) => keep.has(u));
-  return { ...form, imageLabels, openingExtras, openingImages };
+  const attributes = (form.attributes || [])
+    .map((r) => ({ name: String(r?.name || "").trim(), values: String(r?.values || "").trim(), how: String(r?.how || "").trim() }))
+    .filter((r) => r.name);
+  return { ...form, imageLabels, openingExtras, openingImages, attributes };
 }
 
 export default function AdminPage() {
@@ -277,6 +336,7 @@ export default function AdminPage() {
   const [copyParts, setCopyParts] = useState({
     description: true,
     notes: true,
+    attributes: true,
     openingScript: true,
     triggerQuestions: false,
     sampleImages: true,
@@ -438,6 +498,7 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
+      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "" })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
@@ -459,6 +520,7 @@ export default function AdminPage() {
       for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
         if (parts[key]) next[key] = src[key] || "";
       }
+      if (parts.attributes) next.attributes = Array.isArray(src.attributes) ? src.attributes.map((r) => ({ ...r })) : [];
       if (parts.openingScript) next.openingExtras = Array.isArray(src.openingExtras) ? [...src.openingExtras] : [];
       for (const key of ["sampleImages", "realImages", "catalogImages"]) {
         if (parts[key]) {
@@ -492,6 +554,7 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
+      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "" })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
@@ -728,6 +791,7 @@ export default function AdminPage() {
               {[
                 ["description", "Nội dung"],
                 ["notes", "Lưu ý cho bot"],
+                ["attributes", "Bảng thuộc tính"],
                 ["openingScript", "Câu mở đầu"],
                 ["triggerQuestions", "Câu hỏi có sẵn"],
                 ["sampleImages", "Ảnh mẫu"],
@@ -791,6 +855,7 @@ export default function AdminPage() {
             Dọn ký tự "|" thừa ở cuối dòng
           </button>
         )}
+        <AttributeTable rows={form.attributes} onChange={(rows) => setForm({ ...form, attributes: rows })} />
         <div>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
             Lưu ý cho bot (không bắt buộc)
@@ -994,6 +1059,18 @@ export default function AdminPage() {
                     >
                       {p.description || "(chưa có nội dung)"}
                     </p>
+                    {Array.isArray(p.attributes) && p.attributes.length > 0 && (
+                      <div style={{ margin: "10px 0", padding: "8px 10px", background: "#eef4ff", borderRadius: 6, fontSize: 13 }}>
+                        <div style={{ color: "#456", fontSize: 12, marginBottom: 2 }}>Bảng thuộc tính</div>
+                        {p.attributes.map((r, i) => (
+                          <div key={i}>
+                            <b>{r.name}</b>
+                            {r.values ? `: ${r.values}` : ""}
+                            {r.how ? ` — ${r.how}` : ""}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {p.notes && (
                       <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f1faf1", borderRadius: 6, fontSize: 13, whiteSpace: "pre-wrap" }}>
                         <div style={{ color: "#575", fontSize: 12, marginBottom: 2 }}>Lưu ý cho bot</div>

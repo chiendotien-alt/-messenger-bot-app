@@ -34,6 +34,7 @@ import {
   extractPhone,
   isConversationBotOff,
 } from "@/lib/conversations";
+import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock } from "@/lib/attributes";
 import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
@@ -701,10 +702,14 @@ function partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySi
   return out;
 }
 
+const ADDRESS_UNIT_WORDS = new Set("phuong xa quan huyen tinh tp tx tt thon".split(" "));
+
 function verifyCustomerInfo(info, history, latestText) {
   const customerTexts = (history || []).filter((m) => m.from === "customer").map((m) => m.text || "");
   customerTexts.push(latestText || "");
   const blob = norm(customerTexts.join(" \n "));
+  const blobClean = blob.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
+  const blobWords = new Set(blobClean.split(" ").filter(Boolean));
   const digits = customerTexts.join(" ").replace(/\D/g, "");
   const out = {};
   for (const k of ["name", "phone", "address", "variant"]) {
@@ -715,9 +720,11 @@ function verifyCustomerInfo(info, history, latestText) {
       if (d.length >= 9 && digits.includes(d.replace(/^84/, "0").replace(/^0/, ""))) out.phone = v;
       continue;
     }
-    const tokens = norm(v).split(/\s+/).filter(Boolean);
+    // Bỏ dấu câu ("4,", "TP.") và bỏ chữ đơn vị hành chính (phường, xã, tp, tỉnh...) vì AI hay viết đầy đủ còn khách viết tắt ("p", "tp")
+    let tokens = norm(v).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+    if (k === "address") tokens = tokens.filter((tk) => !ADDRESS_UNIT_WORDS.has(tk));
     if (!tokens.length) continue;
-    const hit = tokens.filter((tk) => blob.includes(tk)).length;
+    const hit = tokens.filter((tk) => blobWords.has(tk) || (tk.length >= 3 && blobClean.includes(tk))).length;
     if (hit / tokens.length >= 0.6) out[k] = v;
   }
   return out;
@@ -956,6 +963,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Không lặp lại ý đã nói ở tin shop vừa gửi, không hỏi lại điều khách vừa trả lời (vd khách đã nói màu thì đừng hỏi màu nữa), không chào lại.";
     }
   }
+  // ---- BẢNG THUỘC TÍNH của sản phẩm (Màu / Chiều dài / Size...): hệ thống TỰ đối chiếu cuộc chat xem khách đã chọn mục nào, còn thiếu mục nào ----
+  const attrs = productAttributes(currentProduct);
+  const attrMode = attrs.length > 0;
+  const attrCurrent = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter((t) => t.trim());
+  const attrHistory = history.filter((m) => !(m.from === "customer" && attrCurrent.includes(String(m.text || ""))));
+  const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant) : null;
+  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
+  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow) : "";
+  if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
+
   // Shop ĐÃ hỏi khách xin thông tin (màu, size, SĐT, địa chỉ...) rồi → dặn AI không hỏi lại; hỏi lại là việc của tin nhắn bồi
   let askNote = "";
   const reaskNote = "";
@@ -966,13 +983,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "\n\nLƯU Ý VỀ VIỆC HỎI LẠI: shop ĐÃ hỏi khách xin [" + [...topics].join(", ") + "] ở các tin trước. " +
         "Lượt này KHÔNG hỏi lại và KHÔNG nhắc lại các thông tin đó dù khách chưa trả lời (hệ thống sẽ tự nhắn bồi sau một lúc). " +
         "Chỉ trả lời đúng điều khách vừa hỏi. Vẫn được hỏi thông tin KHÁC mà shop chưa hỏi, ví dụ khi đã có đủ màu và size thì xin số điện thoại và địa chỉ. " +
-        (isBodySizedProduct(currentProduct)
+        (attrMode
+          ? "NGOẠI LỆ — nếu khách vừa trả lời/đưa thông tin cho một mục trong TRẠNG THÁI THUỘC TÍNH thì lượt này ĐƯỢC hỏi mục kế tiếp còn thiếu (đúng theo cách chọn của mục đó) bằng 1 câu ngắn; cặp (số điện thoại + địa chỉ): khách vừa đưa MỘT trong hai thì PHẢI hỏi nốt phần còn lại (mới gửi SĐT → chỉ xin địa chỉ)"
+          : isBodySizedProduct(currentProduct)
           ? "NGOẠI LỆ — cặp hỏi gộp (chiều cao + cân nặng) và (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (vd khách mới nói chiều cao → chỉ xin cân nặng; mới gửi SĐT → chỉ xin địa chỉ)"
           : "NGOẠI LỆ — cặp (số điện thoại + địa chỉ): nếu khách vừa đưa MỘT trong hai thì lượt này PHẢI hỏi nốt phần còn lại bằng 1 câu ngắn (mới gửi SĐT → chỉ xin địa chỉ). Sản phẩm này KHÔNG tính size theo chiều cao/cân nặng nên TUYỆT ĐỐI không xin chiều cao cân nặng") +
         " Không hỏi lại phần khách đã đưa.";
     }
   }
-  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote;
+  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
@@ -1029,9 +1048,25 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     );
   }
 
+  // Sản phẩm có bảng thuộc tính: màu/size/chiều dài khách đã chọn do HỆ THỐNG ghép (đúng hơn chữ AI tự ghi) → lưu cho đơn hàng
+  if (attrMode) {
+    const composed = composeVariant(attrNow);
+    if (composed && composed !== String(customerInfo?.variant || "").trim()) {
+      verified = { ...(verified || {}), variant: composed };
+      await mergeCustomerInfo(senderId, { variant: composed }).catch((e) => console.error("Không lưu được lựa chọn của khách:", e.message));
+    }
+  }
   const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
   const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
-  const unblockTopics = [...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: isBodySizedProduct(currentProduct) })];
+  // Có bảng thuộc tính: cặp chiều cao + cân nặng chỉ áp dụng khi mục "cặp" CHƯA chọn (khách đã nói "sz L" thì không hỏi nữa)
+  const bodySizedNow = attrMode ? attrNow.list.some((x) => x.attr.kind === "pair" && x.state === "missing") : isBodySizedProduct(currentProduct);
+  const unblockTopics = [
+    ...new Set([
+      ...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: bodySizedNow }),
+      // Khách vừa trả lời một mục → được hỏi mục kế tiếp (vd vừa chốt size L thì được hỏi chiều cao để chọn chiều dài)
+      ...(attrMode ? topicsToUnblock(attrNow, progressedBy(attrBefore, attrNow)) : []),
+    ]),
+  ];
   // Khách VỪA đưa số điện thoại sau khi shop hỏi xin SĐT/địa chỉ → luôn phải có câu trả lời (hỏi nốt địa chỉ còn thiếu hoặc báo đã nhận thông tin),
   // không được im lặng dù AI trả rỗng hoặc đánh dấu no_reply (SĐT đã được lưu sẵn nên AI hay tưởng khách chỉ lặp lại thông tin cũ).
   const phoneNow = /(?:\+?84|0)\d{9}/.test(String(customerMessage || "").replace(/[\s.\-]/g, ""));
