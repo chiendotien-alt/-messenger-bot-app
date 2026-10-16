@@ -8,6 +8,7 @@ const EMPTY_FORM = {
   stock: "Còn hàng",
   description: "",
   notes: "",
+  attributeGroups: [], // BỘ THUỘC TÍNH: [{ name, members: [tên thuộc tính], ask }]
   attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
   openingScript: "",
   openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
@@ -244,11 +245,24 @@ function Thumbs({ label, urls, labels }) {
 }
 
 // Bảng thuộc tính của sản phẩm: mỗi dòng gồm Thuộc tính / Giá trị / Cách chọn. Bot đọc bảng này để biết cần hỏi khách những mục nào.
-function AttributeTable({ rows, onChange }) {
+function AttributeTable({ rows, groups, onChange }) {
   const list = Array.isArray(rows) ? rows : [];
+  const glist = Array.isArray(groups) ? groups : [];
   const cell = { padding: "8px 10px", border: "1px solid #ddd", borderRadius: 6, fontSize: 14, width: "100%", boxSizing: "border-box" };
   function setRow(i, key, value) {
-    onChange(list.map((r, idx) => (idx === i ? { ...r, [key]: value } : r)));
+    const old = String(list[i]?.name || "").trim();
+    const nextRows = list.map((r, idx) => (idx === i ? { ...r, [key]: value } : r));
+    // đổi tên thuộc tính thì cập nhật luôn tên trong các bộ
+    const nextGroups = key === "name" && old ? glist.map((g) => ({ ...g, members: (g.members || []).map((m) => (m === old ? String(value).trim() : m)) })) : glist;
+    onChange(nextRows, nextGroups);
+  }
+  function setGroup(gi, patch) {
+    onChange(list, glist.map((g, idx) => (idx === gi ? { ...g, ...patch } : g)));
+  }
+  function toggleMember(gi, name) {
+    const g = glist[gi];
+    const has = (g.members || []).includes(name);
+    setGroup(gi, { members: has ? g.members.filter((m) => m !== name) : [...(g.members || []), name] });
   }
   return (
     <div>
@@ -257,12 +271,14 @@ function AttributeTable({ rows, onChange }) {
         Liệt kê những gì khách phải chọn (Màu, Chiều dài, Size...). Bot hỏi lần lượt từng dòng, chọn đủ rồi mới xin số điện thoại và địa chỉ.
         Cột “Cách chọn” viết chữ bình thường: ghi “theo chiều cao và cân nặng” thì bot xin cả hai; chỉ ghi “theo chiều cao” thì bot chỉ xin chiều cao; ghi “khách tự chọn” thì bot hỏi khách lấy loại nào.
         Khách đã tự nói giá trị (vd “size L”) thì bot không hỏi lại dòng đó.
+        Cột “Câu hỏi bồi”: câu bạn muốn bot dùng khi hỏi / nhắn lại khi khách im lặng về dòng đó; để trống thì bot tự soạn. Viết nhiều câu (mỗi câu 1 dòng) thì bot đổi câu mỗi lần để không bị lặp.
       </div>
       {list.length > 0 && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.4fr 2fr 36px", gap: 6, alignItems: "start" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1.2fr 1.8fr 1.8fr 36px", gap: 6, alignItems: "start" }}>
           <div style={{ fontSize: 12, color: "#666" }}>Thuộc tính</div>
           <div style={{ fontSize: 12, color: "#666" }}>Giá trị (cách nhau dấu phẩy)</div>
           <div style={{ fontSize: 12, color: "#666" }}>Cách chọn</div>
+          <div style={{ fontSize: 12, color: "#666" }}>Câu hỏi bồi (bot hỏi đúng câu này)</div>
           <div />
           {list.map((r, i) => (
             <div key={i} style={{ display: "contents" }}>
@@ -275,10 +291,17 @@ function AttributeTable({ rows, onChange }) {
                 value={r.how || ""}
                 onChange={(e) => setRow(i, "how", e.target.value)}
               />
+              <textarea
+                style={{ ...cell, resize: "vertical", minHeight: 38 }}
+                rows={2}
+                placeholder="vd: Chị gửi em cân nặng để em chọn size cho vừa nha? (để trống = bot tự hỏi; nhiều câu thì mỗi câu 1 dòng)"
+                value={r.ask || ""}
+                onChange={(e) => setRow(i, "ask", e.target.value)}
+              />
               <button
                 type="button"
                 title="Xóa dòng này"
-                onClick={() => onChange(list.filter((_, idx) => idx !== i))}
+                onClick={() => onChange(list.filter((_, idx) => idx !== i), glist.map((g) => ({ ...g, members: (g.members || []).filter((m) => m !== String(list[i]?.name || "").trim()) })))}
                 style={{ padding: "6px 0", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#c00" }}
               >
                 ✕
@@ -289,11 +312,68 @@ function AttributeTable({ rows, onChange }) {
       )}
       <button
         type="button"
-        onClick={() => onChange([...list, { name: "", values: "", how: "" }])}
+        onClick={() => onChange([...list, { name: "", values: "", how: "", ask: "" }], glist)}
         style={{ marginTop: 8, padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" }}
       >
         + Thêm dòng
       </button>
+
+      <div style={{ marginTop: 18, paddingTop: 12, borderTop: "1px dashed #ccc" }}>
+        <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bộ thuộc tính (không bắt buộc)</label>
+        <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+          Gom nhiều dòng ở trên thành 1 bộ rồi viết 1 câu hỏi bồi chung. Khách chưa nói gì về CẢ bộ thì bot hỏi đúng câu của bộ.
+          Nếu bộ đã có 1 dòng (vd khách đã nói chiều cao) thì bot chạy như bình thường: hỏi nốt dòng còn thiếu. Mỗi bộ cần chọn ít nhất 2 thuộc tính.
+        </div>
+        {glist.map((g, gi) => (
+          <div key={gi} style={{ border: "1px solid #ddd", borderRadius: 8, padding: 10, marginBottom: 8, background: "#fafafa" }}>
+            <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
+              <input
+                style={cell}
+                placeholder="Tên bộ (để bạn dễ nhớ), vd: Số đo người"
+                value={g.name || ""}
+                onChange={(e) => setGroup(gi, { name: e.target.value })}
+              />
+              <button
+                type="button"
+                title="Xóa bộ này"
+                onClick={() => onChange(list, glist.filter((_, idx) => idx !== gi))}
+                style={{ padding: "6px 10px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer", color: "#c00" }}
+              >
+                ✕
+              </button>
+            </div>
+            <div style={{ fontSize: 12, color: "#666", marginBottom: 4 }}>Chọn các thuộc tính thuộc bộ:</div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
+              {list.filter((r) => String(r.name || "").trim()).length === 0 && <span style={{ fontSize: 12, color: "#999" }}>(Hãy nhập tên thuộc tính ở bảng trên trước)</span>}
+              {list
+                .filter((r) => String(r.name || "").trim())
+                .map((r) => {
+                  const nm = String(r.name).trim();
+                  return (
+                    <label key={nm} style={{ fontSize: 14, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                      <input type="checkbox" checked={(g.members || []).includes(nm)} onChange={() => toggleMember(gi, nm)} />
+                      {nm}
+                    </label>
+                  );
+                })}
+            </div>
+            <textarea
+              style={{ ...cell, resize: "vertical", minHeight: 38 }}
+              rows={2}
+              placeholder="Câu hỏi bồi của cả bộ, vd: Chị cho em xin chiều cao cân nặng để em chọn size và chiều dài vừa nha? (nhiều câu thì mỗi câu 1 dòng)"
+              value={g.ask || ""}
+              onChange={(e) => setGroup(gi, { ask: e.target.value })}
+            />
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={() => onChange(list, [...glist, { name: "", members: [], ask: "" }])}
+          style={{ padding: "6px 12px", border: "1px solid #ccc", borderRadius: 6, background: "#fff", cursor: "pointer" }}
+        >
+          + Thêm bộ thuộc tính
+        </button>
+      </div>
     </div>
   );
 }
@@ -308,9 +388,13 @@ function cleanForm(form) {
   const openingExtras = (form.openingExtras || []).map((t) => String(t || "").trim()).filter(Boolean);
   const openingImages = (form.openingImages || []).filter((u) => keep.has(u));
   const attributes = (form.attributes || [])
-    .map((r) => ({ name: String(r?.name || "").trim(), values: String(r?.values || "").trim(), how: String(r?.how || "").trim() }))
+    .map((r) => ({ name: String(r?.name || "").trim(), values: String(r?.values || "").trim(), how: String(r?.how || "").trim(), ask: String(r?.ask || "").trim() }))
     .filter((r) => r.name);
-  return { ...form, imageLabels, openingExtras, openingImages, attributes };
+  const names = new Set(attributes.map((r) => r.name));
+  const attributeGroups = (form.attributeGroups || [])
+    .map((g) => ({ name: String(g?.name || "").trim(), members: (g?.members || []).filter((m) => names.has(m)), ask: String(g?.ask || "").trim() }))
+    .filter((g) => g.members.length >= 2);
+  return { ...form, imageLabels, openingExtras, openingImages, attributes, attributeGroups };
 }
 
 export default function AdminPage() {
@@ -498,7 +582,8 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
-      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "" })) : [],
+      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
+      attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
@@ -520,7 +605,10 @@ export default function AdminPage() {
       for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
         if (parts[key]) next[key] = src[key] || "";
       }
-      if (parts.attributes) next.attributes = Array.isArray(src.attributes) ? src.attributes.map((r) => ({ ...r })) : [];
+      if (parts.attributes) {
+        next.attributes = Array.isArray(src.attributes) ? src.attributes.map((r) => ({ ...r })) : [];
+        next.attributeGroups = Array.isArray(src.attributeGroups) ? src.attributeGroups.map((g) => ({ ...g, members: [...(g.members || [])] })) : [];
+      }
       if (parts.openingScript) next.openingExtras = Array.isArray(src.openingExtras) ? [...src.openingExtras] : [];
       for (const key of ["sampleImages", "realImages", "catalogImages"]) {
         if (parts[key]) {
@@ -554,7 +642,8 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
-      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "" })) : [],
+      attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
+      attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
@@ -855,7 +944,7 @@ export default function AdminPage() {
             Dọn ký tự "|" thừa ở cuối dòng
           </button>
         )}
-        <AttributeTable rows={form.attributes} onChange={(rows) => setForm({ ...form, attributes: rows })} />
+        <AttributeTable rows={form.attributes} groups={form.attributeGroups} onChange={(rows, groups) => setForm({ ...form, attributes: rows, attributeGroups: groups })} />
         <div>
           <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
             Lưu ý cho bot (không bắt buộc)
@@ -1067,6 +1156,13 @@ export default function AdminPage() {
                             <b>{r.name}</b>
                             {r.values ? `: ${r.values}` : ""}
                             {r.how ? ` — ${r.how}` : ""}
+                            {r.ask ? ` — hỏi: “${String(r.ask).split("\n")[0]}”` : ""}
+                          </div>
+                        ))}
+                        {Array.isArray(p.attributeGroups) && p.attributeGroups.map((g, i) => (
+                          <div key={"g" + i} style={{ marginTop: 4, color: "#345" }}>
+                            <b>Bộ{g.name ? ` “${g.name}”` : ""}</b>: {(g.members || []).join(" + ")}
+                            {g.ask ? ` — hỏi: “${String(g.ask).split("\n")[0]}”` : ""}
                           </div>
                         ))}
                       </div>
