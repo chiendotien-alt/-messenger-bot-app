@@ -35,7 +35,7 @@ import {
   isConversationBotOff,
 } from "@/lib/conversations";
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock } from "@/lib/attributes";
-import { removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { fixGluedSize, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -1297,7 +1297,7 @@ async function fbAction(recipientId, action, token) {
 async function sendMessage(recipientId, text, token) {
   return await fbPost({
     recipient: { id: recipientId },
-    message: { text },
+    message: { text: fixGluedSize(text) },
     messaging_type: "RESPONSE",
   }, token);
 }
