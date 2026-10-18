@@ -5,7 +5,7 @@
 
 import { put } from "@vercel/blob";
 import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct } from "@/lib/products";
-import {
+import { getSentImageUrls,
   addMessage,
   ensureProfile,
   getRecentMessages,
@@ -34,8 +34,8 @@ import {
   extractPhone,
   isConversationBotOff,
 } from "@/lib/conversations";
-import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock } from "@/lib/attributes";
-import { fixGluedSize, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues } from "@/lib/attributes";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -593,7 +593,7 @@ function isErrorText(t) {
 
 /** Xoá mọi ghi chú nội bộ kiểu "📷 [Bot đã gửi ...]" mà AI lỡ bắt chước viết vào tin gửi khách. */
 function stripBotNotes(t) {
-  return String(t || "")
+  return fixUnitWords(String(t || ""))
     .replace(/📷?\s*\[\s*(Bot|Shop|Hệ thống|Khách)\s+đã\s+gửi[^\]]*\]?/gi, "")
     .replace(/\[\s*(Bot|Shop)\s+đã\s+gửi[^\]]*\]/gi, "")
     .replace(/📷/g, "")
@@ -1096,6 +1096,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let imageItems = [];
   let imageNote = "";
   let req = parsed?.send_images;
+  let repeatInfo = null; // ảnh khách xin đã gửi rồi → không gửi lại, chỉ nói thông tin người mẫu
   // CHỐT CHẶN: khách đang đưa SĐT/địa chỉ (chốt đơn) mà KHÔNG xin xem ảnh/hỏi màu mẫu → không gửi ảnh dù AI có yêu cầu
   const msgText = String(customerMessage || "");
   const askedForPhotos = /ảnh|hình|hinh|cho xem|xem (hàng|hang|mẫu|mau|màu|thử|thu)|feedback|video/i.test(msgText);
@@ -1153,6 +1154,17 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       }
 
       picked = picked.slice(0, MAX_IMAGES);
+      // ẢNH ĐÃ GỬI RỒI (trong cuộc chat này) thì KHÔNG gửi lại, trừ khi khách xin xem lại. Thay vào đó nói thông tin bạn mẫu.
+      const wantsResend = /\b(gui lai|xem lai|lan nua|them lan nua)\b/.test(normKey(allCurrent));
+      if (!wantsResend && picked.length) {
+        const sentSet = await getSentImageUrls(senderId).catch(() => new Set());
+        const dropped = picked.filter((x) => sentSet.has(x.url));
+        if (dropped.length) {
+          picked = picked.filter((x) => !sentSet.has(x.url));
+          repeatInfo = { product: p, droppedReal: dropped.some((x) => x.code.startsWith("R")), allDropped: !picked.length };
+          console.log(`Không gửi lại ${dropped.length} ảnh đã gửi cho khách:`, dropped.map((x) => x.code).join(", "));
+        }
+      }
       images = picked.map((x) => x.url);
       imageItems = picked.map((x) => ({ url: x.url, title: x.label || p.name }));
       if (images.length) {
@@ -1182,6 +1194,50 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  // Ảnh khách xin đã gửi rồi: bỏ câu hứa "gửi ảnh", nói thông tin bạn mẫu (ghi trong cài đặt sản phẩm) thay cho việc gửi lại ảnh
+  if (repeatInfo && repeatInfo.allDropped && !images.length) {
+    const neutralNow = notesForbidPronouns(currentProduct?.notes);
+    // Chỉ cắt đúng vế "em gửi chị xem ảnh...", giữ phần còn lại của câu (vd "chiều dài 75cm là ngắn nhất rồi")
+    const photoPromise = /(gửi|gui)[^,.!?\n]{0,40}(ảnh|hình|anh|hinh)|xem (ảnh|hình|anh|hinh)/i;
+    messages = messages
+      .map((m) => {
+        let out = String(m).split(/(?<=[,;.!?])\s*/).filter((c) => !photoPromise.test(c)).join(" ").trim().replace(/[,;]\s*$/, "");
+        if (out && !/[.!?]$/.test(out)) out += /ạ$/i.test(out) ? "." : " ạ.";
+        return out;
+      })
+      .filter(Boolean);
+    const info = String(repeatInfo.product?.modelInfo || "").trim();
+    const recentBot = history.filter((m) => m.from !== "customer").slice(-6).map((m) => norm(m.text || "")).join(" | ");
+    const aiMentionsModel = messages.some((m) => /(bạn mẫu|người mẫu|mẫu trong ảnh|mẫu mặc)/i.test(String(m)));
+    if (info && repeatInfo.droppedReal && !aiMentionsModel && !recentBot.includes(norm(info))) {
+      const line = /(bạn mẫu|người mẫu|mẫu )/i.test(info)
+        ? info
+        : neutralNow
+          ? `Bạn mẫu trong ảnh bên shop ${info} ạ.`
+          : `Dạ bạn mẫu trong ảnh bên em ${info} ạ.`;
+      messages.push(line.slice(0, 1900));
+    }
+    if (!messages.length) {
+      messages = [neutralNow ? "Ảnh thực tế shop đã gửi phía trên rồi ạ." : "Dạ ảnh thực tế bên em đã gửi phía trên rồi ạ, mình xem lại giúp em nhé."];
+    }
+    messages = messages.slice(0, 2);
+  }
+
+  // KIỂM TRA CUỐI: khách đã đưa số đo mà tin trả lời chưa nói giá trị (vd có chiều cao rồi nhưng chưa báo chiều dài váy)
+  // → nhờ AI viết lại 1 lần, bắt buộc nói giá trị đó (AI hay quên vì chỉ bị nhắc bằng lời).
+  if (attrMode && !images.length && hardDeadline - Date.now() > 14000) {
+    const due = measuredItems(attrNow).filter((x) => x.attr.values.length);
+    const said = messages.join(" ");
+    const lacking = due.filter((x) => !matchValues(x.attr, said).length);
+    if (lacking.length) {
+      console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
+      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages);
+      const redoText = redo.join(" ");
+      if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = redo;
+      else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
+    }
+  }
+
   if (!messages.length && !images.length && mustReplyOrderInfo) {
     return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
@@ -1206,6 +1262,34 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
+}
+
+/** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
+async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages) {
+  try {
+    const need = items
+      .map((x) => `- ${x.attr.name}: chọn đúng 1 giá trị trong [${x.attr.values.join(" / ")}]; cách chọn của chủ shop: ${x.attr.how || "theo số đo khách đã nói"}`)
+      .join("\n");
+    const extra =
+      "\n\nLƯU Ý BẮT BUỘC: khách đã đưa số đo nhưng tin trả lời nháp CHƯA nói giá trị của các mục sau:\n" + need +
+      "\nTin nháp: " + JSON.stringify(draftMessages) +
+      "\nHãy viết lại 1-2 tin: vẫn trả lời câu vừa rồi của khách, NHƯNG phải nói rõ MỘT giá trị cụ thể cho mỗi mục trên, dựa đúng số đo khách đã nói " +
+      '(vd "chị cao 1m48 thì chân váy dài 75cm là vừa đẹp ạ"). Chưa xin số điện thoại/địa chỉ. Không hỏi lại số đo đã có. Giữ nguyên xưng hô và các luật khác.';
+    const { text: raw, model } = await callGemini(
+      systemPrompt + extra,
+      contents,
+      { maxOutputTokens: 2048, temperature: 0.6, responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "low" } },
+      Math.min(Math.max(deadline, Date.now() + 12000), hardDeadline),
+      apiKeys
+    );
+    console.log(`---- Bot trả lời (viết lại để tư vấn, ${model || "lỗi"}):`, raw || "(không có nội dung)");
+    const parsed = parseModelJson(raw);
+    const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
+    return list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m) && !isInternalToken(m)).slice(0, 2);
+  } catch (e) {
+    console.error("Lỗi viết lại để tư vấn:", e.message);
+    return [];
+  }
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */

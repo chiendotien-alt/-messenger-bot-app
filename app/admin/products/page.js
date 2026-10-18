@@ -8,6 +8,7 @@ const EMPTY_FORM = {
   stock: "Còn hàng",
   description: "",
   notes: "",
+  modelInfo: "", // thông tin bạn mẫu trong ảnh thực tế (cao, nặng, size...) — bot nói khi ảnh đã gửi rồi
   attributeGroups: [], // BỘ THUỘC TÍNH: [{ name, members: [tên thuộc tính], ask }]
   attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
   openingScript: "",
@@ -599,6 +600,7 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
+      modelInfo: p.modelInfo || "",
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       openingScript: p.openingScript || "",
@@ -622,6 +624,7 @@ export default function AdminPage() {
       for (const key of ["description", "notes", "openingScript", "triggerQuestions"]) {
         if (parts[key]) next[key] = src[key] || "";
       }
+      if (parts.notes) next.modelInfo = src.modelInfo || "";
       if (parts.attributes) {
         next.attributes = Array.isArray(src.attributes) ? src.attributes.map((r) => ({ ...r })) : [];
         next.attributeGroups = Array.isArray(src.attributeGroups) ? src.attributeGroups.map((g) => ({ ...g, members: [...(g.members || [])] })) : [];
@@ -659,6 +662,7 @@ export default function AdminPage() {
       stock: p.stock || "Còn hàng",
       description: p.description || "",
       notes: p.notes || "",
+      modelInfo: p.modelInfo || "",
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       openingScript: p.openingScript || "",
@@ -976,6 +980,21 @@ export default function AdminPage() {
             value={form.notes}
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
             placeholder={"Ví dụ:\nKhách của sản phẩm này toàn là nữ, gọi khách là chị.\nKhông tự giảm giá, chỉ báo giá theo bảng."}
+          />
+        </div>
+        <div>
+          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
+            Thông tin bạn mẫu trong ảnh thực tế (không bắt buộc)
+          </label>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Mỗi ảnh chỉ gửi cho khách 1 lần. Khách xin xem lại ảnh đã gửi thì bot không gửi lại mà nói câu này:
+            "Dạ bạn mẫu trong ảnh bên em ... ạ". Bạn chỉ cần ghi phần thông tin.
+          </div>
+          <input
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+            value={form.modelInfo || ""}
+            onChange={(e) => setForm({ ...form, modelInfo: e.target.value })}
+            placeholder="Ví dụ: cao 1m45, nặng 40kg, mặc size S, váy dài 75cm"
           />
         </div>
         <div>
