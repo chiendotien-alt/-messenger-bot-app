@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor } from "@/lib/products";
 import { getSentImageUrls,
   addMessage,
   ensureProfile,
@@ -33,7 +33,9 @@ import { getSentImageUrls,
   mergeCustomerInfo,
   extractPhone,
   isConversationBotOff,
+  getOwnerPriceTexts,
 } from "@/lib/conversations";
+import { ownerPriceNote } from "@/lib/dealPrice";
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues } from "@/lib/attributes";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -926,10 +928,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const situationLabel = aiLabelOk ? situation.nhom : ruleLabel;
 
   // Tìm câu đã dạy (ưu tiên đúng nhóm tình huống) + lịch sử đã dựng
-  const [trainingText, contents] = await Promise.all([
+  const [trainingText, contents, ownerPrices] = await Promise.all([
     getTrainingForPrompt(currentProduct?.id, trainQueries, { label: situationLabel, strong: aiLabelOk }).catch(() => ""),
     contentsPromise,
+    getOwnerPriceTexts(senderId).catch(() => []),
   ]);
+  if (ownerPrices.length) console.log("Chủ shop đã tự nhắn giá với khách:", ownerPrices.join(" | "));
   const systemPrompt = buildSystemPrompt(
     formatProductsForPrompt(products),
     settings.botPrompt,
@@ -991,7 +995,39 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         " Không hỏi lại phần khách đã đưa.";
     }
   }
-  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote;
+  // ---- Khách xin "ảnh mẫu" của váy/áo/quần = xin ảnh NGƯỜI MẪU MẶC (không phải ảnh màu sản phẩm) ----
+  const modelProduct = currentProduct || (products.length === 1 ? products[0] : null);
+  const modelAskText = attrCurrent.join(" ");
+  // Khách nhắc màu cụ thể ("ảnh mẫu màu đen") hoặc hỏi chung các màu → KHÔNG phải xin ảnh người mẫu, giữ cách gửi ảnh cũ
+  const modelKind =
+    !adminHandled && !customerImages.length && isApparelProduct(modelProduct) && !isCatalogQuestion(modelAskText) && !mentionsSpecificColor(modelAskText, modelProduct)
+      ? isModelPhotoQuestion(modelAskText)
+      : false;
+  let modelPhotoAsk = modelKind === "explicit";
+  if (modelKind === "bare") {
+    // "ảnh mẫu" trơn: chỉ hiểu là xin ảnh người mẫu mặc khi khách vừa nói chiều cao, hoặc ảnh sản phẩm đã gửi cho khách rồi.
+    // Khách mới hỏi "cho xem ảnh mẫu" từ đầu → vẫn gửi ảnh sản phẩm như cũ.
+    const talkedHeight = history.slice(-8).some((m) => m.from === "customer" && HEIGHT_RE.test(String(m.text || "")));
+    let sentBefore = false;
+    if (!talkedHeight) {
+      const sentSet = await getSentImageUrls(senderId).catch(() => new Set());
+      const pool = [...(modelProduct?.sampleImages || []), ...(modelProduct?.realImages || []), ...(modelProduct?.catalogImages || [])];
+      sentBefore = pool.some((u) => sentSet.has(u));
+    }
+    modelPhotoAsk = talkedHeight || sentBefore;
+  }
+  const hasRealPhotos = (modelProduct?.realImages || []).filter(Boolean).length > 0;
+  let modelPhotoNote = "";
+  if (modelPhotoAsk) {
+    console.log("Khách xin ảnh NGƯỜI MẪU MẶC:", modelAskText.slice(0, 80), hasRealPhotos ? "(shop có ảnh thực tế)" : "(shop CHƯA có ảnh thực tế)");
+    modelPhotoNote = hasRealPhotos
+      ? "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC (cách khách gọi là \"ảnh mẫu\"), KHÔNG phải ảnh các màu. Đặt send_images với type \"real\" cho sản phẩm này. KHÔNG gửi ảnh màu, KHÔNG đặt send_catalog."
+      : "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC (cách khách gọi là \"ảnh mẫu\") nhưng shop CHƯA có ảnh này. " +
+        "KHÔNG đặt send_images, KHÔNG đặt send_catalog, KHÔNG hứa gửi ảnh (ảnh các màu không phải thứ khách cần). " +
+        "Nói thật, ngắn gọn là bên shop chưa có ảnh bạn mẫu mặc, rồi trả lời NGAY điều khách đang cần biết (độ dài/size theo chiều cao khách đã nói, theo dữ liệu sản phẩm). " +
+        "Không hỏi lại thông tin shop đã hỏi ở tin trước.";
+  }
+  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + modelPhotoNote + ownerPriceNote(ownerPrices);
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
@@ -1114,7 +1150,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const allCurrent = currentTexts.join(" ");
   const photoWord = /\b(anh|hinh|video|clip|xem|feedback|review)\b/.test(normKey(allCurrent));
   const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !customerImages.length && !adminHandled;
-  const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText)) || unaskedImages;
+  const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText)) || unaskedImages || (modelPhotoAsk && !hasRealPhotos);
   if (blockImages) {
     if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách không xin xem ảnh:", msgText.slice(0, 80));
     req = null;
@@ -1124,6 +1160,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const pid = currentProduct?.id || (products.length === 1 ? products[0].id : null);
     req = pid ? { product_id: pid } : null;
   }
+  // Khách xin ảnh người mẫu mặc mà shop có ảnh thực tế → chỉ gửi ảnh thực tế (không gửi ảnh màu)
+  if (modelPhotoAsk && hasRealPhotos && modelProduct) req = { product_id: modelProduct.id, type: "real" };
   if (req?.product_id) {
     const p = products.find((x) => String(x.id) === String(req.product_id));
     if (p) {
@@ -1182,7 +1220,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       currentProduct ||
       (products.length === 1 ? products[0] : null);
     const cat = catalogImageList(cp);
-    const wantCatalog = !blockImages && (parsed?.send_catalog === true || isCatalogQuestion(customerMessage));
+    const wantCatalog = !blockImages && !modelPhotoAsk && (parsed?.send_catalog === true || isCatalogQuestion(customerMessage));
     const sentRecently = history
       .slice(-8)
       .some((m) => m.from !== "customer" && String(m.text || "").includes("ảnh tổng hợp mẫu mã"));
@@ -1192,6 +1230,22 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       imageNote = `📷 [Bot đã gửi ảnh tổng hợp mẫu mã của "${cp.name}"]`;
       console.log("Gửi ảnh tổng hợp mẫu mã cho khách:", customerMessage);
     }
+  }
+
+  // Khách xin ảnh người mẫu mặc mà shop CHƯA có → không gửi ảnh màu, bỏ câu hứa "gửi ảnh", nói thật là chưa có ảnh bạn mẫu
+  if (modelPhotoAsk && !hasRealPhotos && !images.length) {
+    const neutralNow = notesForbidPronouns(currentProduct?.notes);
+    const photoPromise = /(gửi|gui)[^,.!?\n]{0,40}(ảnh|hình|anh|hinh)|xem (ảnh|hình|anh|hinh)/i;
+    messages = messages
+      .map((m) => {
+        let out = String(m).split(/(?<=[,;.!?])\s*/).filter((c) => !photoPromise.test(c)).join(" ").trim().replace(/[,;]\s*$/, "");
+        if (out && !/[.!?]$/.test(out)) out += /ạ$/i.test(out) ? "." : " ạ.";
+        return out;
+      })
+      .filter(Boolean);
+    const saysNoPhoto = messages.some((m) => /(chưa|không|hiện chưa)[^.!?\n]{0,20}(ảnh|hình)/i.test(String(m)));
+    if (!saysNoPhoto) messages.unshift(neutralNow ? "Shop chưa có ảnh bạn mẫu mặc ạ." : "Dạ bên em chưa có ảnh bạn mẫu mặc ạ.");
+    messages = messages.slice(0, 2);
   }
 
   // Ảnh khách xin đã gửi rồi: bỏ câu hứa "gửi ảnh", nói thông tin bạn mẫu (ghi trong cài đặt sản phẩm) thay cho việc gửi lại ảnh

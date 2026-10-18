@@ -1060,8 +1060,8 @@ export default function AdminPage() {
           />
         </div>
         <ImagePicker
-          title="Ảnh sản phẩm mẫu"
-          hint="Ảnh giới thiệu, ảnh đẹp. Đặt tên từng ảnh (vd: Váy trắng) để bot gửi đúng mẫu khi khách hỏi"
+          title="Ảnh giới thiệu / ảnh các màu"
+          hint="Ảnh giới thiệu, ảnh đẹp, ảnh từng màu (KHÔNG phải ảnh người mẫu mặc). Đặt tên từng ảnh (vd: Váy trắng) để bot gửi đúng mẫu khi khách hỏi"
           urls={form.sampleImages}
           labels={form.imageLabels}
           onLabel={setLabel}
@@ -1071,7 +1071,7 @@ export default function AdminPage() {
         />
         <ImagePicker
           title="Ảnh sản phẩm thực tế"
-          hint="Ảnh chụp hàng thật, khách hàng thật, feedback"
+          hint="Ảnh chụp hàng thật, người mẫu mặc, khách hàng thật, feedback. Khách xin \"ảnh mẫu\" (người mẫu mặc) thì bot chỉ gửi mục này"
           urls={form.realImages}
           labels={form.imageLabels}
           onLabel={setLabel}
