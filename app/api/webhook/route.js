@@ -4,7 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { put } from "@vercel/blob";
-import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor } from "@/lib/products";
+import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor, lengthPhotoAsk } from "@/lib/products";
 import { getSentImageUrls,
   addMessage,
   ensureProfile,
@@ -1003,7 +1003,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     !adminHandled && !customerImages.length && isApparelProduct(modelProduct) && !isCatalogQuestion(modelAskText) && !mentionsSpecificColor(modelAskText, modelProduct)
       ? isModelPhotoQuestion(modelAskText)
       : false;
-  let modelPhotoAsk = modelKind === "explicit";
+  // Khách nói "Ảnh 75cm" (xin xem ảnh váy dài 75cm) → hiểu là xin ảnh NGƯỜI MẪU MẶC đúng độ dài đó, KHÔNG phải hỏi về độ dài
+  const lengthAsk =
+    !adminHandled && !customerImages.length && isApparelProduct(modelProduct) && !isCatalogQuestion(modelAskText) ? lengthPhotoAsk(modelAskText) : "";
+  let modelPhotoAsk = modelKind === "explicit" || !!lengthAsk;
   if (modelKind === "bare") {
     // "ảnh mẫu" trơn: chỉ hiểu là xin ảnh người mẫu mặc khi khách vừa nói chiều cao, hoặc ảnh sản phẩm đã gửi cho khách rồi.
     // Khách mới hỏi "cho xem ảnh mẫu" từ đầu → vẫn gửi ảnh sản phẩm như cũ.
@@ -1161,7 +1164,20 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     req = pid ? { product_id: pid } : null;
   }
   // Khách xin ảnh người mẫu mặc mà shop có ảnh thực tế → chỉ gửi ảnh thực tế (không gửi ảnh màu)
-  if (modelPhotoAsk && hasRealPhotos && modelProduct) req = { product_id: modelProduct.id, type: "real" };
+  if (modelPhotoAsk && hasRealPhotos && modelProduct) {
+    req = { product_id: modelProduct.id, type: "real" };
+    // Khách xin ảnh đúng 1 độ dài (vd 75cm): ảnh nào chủ shop đặt tên có chữ độ dài đó thì gửi đúng ảnh đó
+    if (lengthAsk) {
+      const labs = modelProduct.imageLabels || {};
+      const codes = [
+        ...(modelProduct.sampleImages || []).map((url, i) => ({ code: `S${i + 1}`, url })),
+        ...(modelProduct.realImages || []).map((url, i) => ({ code: `R${i + 1}`, url })),
+      ];
+      const want = " " + normKey(lengthAsk).replace(/cm$/, "") + " ";
+      const hit = codes.filter((x) => ` ${normKey(labs[x.url] || "").replace(/cm\b/g, "")} `.includes(want)).map((x) => x.code);
+      if (hit.length) req.image_ids = hit.slice(0, MAX_IMAGES);
+    }
+  }
   if (req?.product_id) {
     const p = products.find((x) => String(x.id) === String(req.product_id));
     if (p) {
