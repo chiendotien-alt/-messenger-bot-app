@@ -1071,7 +1071,7 @@ export default function AdminPage() {
         />
         <ImagePicker
           title="Ảnh sản phẩm thực tế"
-          hint="Ảnh chụp hàng thật, người mẫu mặc, khách hàng thật, feedback. Khách xin \"ảnh mẫu\" (người mẫu mặc) thì bot chỉ gửi mục này"
+          hint="Ảnh chụp hàng thật, người mẫu mặc, khách hàng thật, feedback. Khách xin “ảnh mẫu” (người mẫu mặc) thì bot chỉ gửi mục này"
           urls={form.realImages}
           labels={form.imageLabels}
           onLabel={setLabel}
