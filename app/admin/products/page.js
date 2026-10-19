@@ -89,7 +89,25 @@ async function uploadImage(file) {
   return data.url;
 }
 
-function ImagePicker({ title, hint, urls, labels, onLabel, onChange, ticked, onToggle }) {
+// Khung bấm để sổ ra / thu lại cho từng đầu mục
+function has(v) {
+  return String(v || "").trim().length > 0;
+}
+function Fold({ title, note, filled, children }) {
+  return (
+    <details data-fold="1" style={{ border: "1px solid #e2e2e2", borderRadius: 8, background: "#fff" }}>
+      <summary style={{ cursor: "pointer", padding: "10px 12px", fontWeight: 600, fontSize: 14 }}>
+        {title}
+        {note ? (
+          <span style={{ marginLeft: 8, fontWeight: 400, fontSize: 12, color: filled ? "#16a34a" : "#999" }}>{note}</span>
+        ) : null}
+      </summary>
+      <div style={{ padding: "0 12px 12px" }}>{children}</div>
+    </details>
+  );
+}
+
+function ImagePicker({ title, hint, urls, labels, onLabel, onChange, ticked, onToggle, bare = false }) {
   const inputRef = useRef(null);
   const [busy, setBusy] = useState(0);
   const [error, setError] = useState("");
@@ -113,10 +131,10 @@ function ImagePicker({ title, hint, urls, labels, onLabel, onChange, ticked, onT
   }
 
   return (
-    <div style={{ border: "1px dashed #cfcfcf", borderRadius: 8, padding: 12, background: "#fff" }}>
+    <div style={bare ? { background: "#fff" } : { border: "1px dashed #cfcfcf", borderRadius: 8, padding: 12, background: "#fff" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
         <div>
-          <strong style={{ fontSize: 14 }}>{title}</strong>
+          {!bare && <strong style={{ fontSize: 14 }}>{title}</strong>}
           <div style={{ color: "#888", fontSize: 12 }}>{hint}</div>
           {onToggle && (
             <div style={{ color: "#16a34a", fontSize: 12, marginTop: 2 }}>
@@ -277,9 +295,10 @@ function AttributeTable({ rows, groups, onChange }) {
     const has = (g.members || []).includes(name);
     setGroup(gi, { members: has ? g.members.filter((m) => m !== name) : [...(g.members || []), name] });
   }
+  const filledRows = list.filter((r) => has(r.name)).length;
   return (
-    <div>
-      <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bảng thuộc tính (không bắt buộc)</label>
+    <>
+      <Fold title="Bảng thuộc tính (không bắt buộc)" note={filledRows ? `${filledRows} dòng` : "chưa có"} filled={filledRows > 0}>
       <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
         Liệt kê những gì khách phải chọn (Màu, Chiều dài, Size...). Bot hỏi lần lượt từng dòng, chọn đủ rồi mới xin số điện thoại và địa chỉ.
         Phần “Cách chọn” viết chữ bình thường: ghi “theo chiều cao và cân nặng” thì bot xin cả hai; chỉ ghi “theo chiều cao” thì bot chỉ xin chiều cao; ghi “khách tự chọn” thì bot hỏi khách lấy loại nào.
@@ -335,8 +354,9 @@ function AttributeTable({ rows, groups, onChange }) {
         + Thêm dòng
       </button>
 
-      <div style={{ marginTop: 18, paddingTop: 12, borderTop: "1px dashed #ccc" }}>
-        <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>Bộ thuộc tính (không bắt buộc)</label>
+      </Fold>
+      <Fold title="Bộ thuộc tính (không bắt buộc)" note={glist.length ? `${glist.length} bộ` : "chưa có"} filled={glist.length > 0}>
+      <div>
         <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
           Gom nhiều thuộc tính ở trên thành 1 bộ rồi viết 1 câu hỏi bồi chung. Khách chưa nói gì về CẢ bộ thì bot hỏi đúng câu của bộ.
           Nếu bộ đã có 1 dòng (vd khách đã nói chiều cao) thì bot chạy như bình thường: hỏi nốt dòng còn thiếu. Mỗi bộ cần chọn ít nhất 2 thuộc tính.
@@ -392,7 +412,8 @@ function AttributeTable({ rows, groups, onChange }) {
           + Thêm bộ thuộc tính
         </button>
       </div>
-    </div>
+      </Fold>
+    </>
   );
 }
 
@@ -925,15 +946,32 @@ export default function AdminPage() {
             )}
           </div>
         )}
-        <div>
-          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
-            Áp dụng cho Page
-          </label>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            type="button"
+            onClick={(e) => e.currentTarget.closest("form").querySelectorAll("details[data-fold]").forEach((d) => (d.open = true))}
+            style={{ ...btn, fontSize: 13 }}
+          >
+            Mở hết
+          </button>
+          <button
+            type="button"
+            onClick={(e) => e.currentTarget.closest("form").querySelectorAll("details[data-fold]").forEach((d) => (d.open = false))}
+            style={{ ...btn, fontSize: 13 }}
+          >
+            Thu gọn hết
+          </button>
+        </div>
+        <Fold
+          title="Áp dụng cho Page"
+          note={form.pageIds.length ? `${form.pageIds.length} Page` : "Tất cả Page"}
+          filled={form.pageIds.length > 0}
+        >
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Tick các Page muốn bán và tư vấn sản phẩm này (chọn được nhiều Page). Không tick Page nào (hoặc tick “Tất cả Page”) nếu sản phẩm dùng chung.
           </div>
           <PageChecklist pages={pages} value={form.pageIds} onChange={(ids) => setForm({ ...form, pageIds: ids })} />
-        </div>
+        </Fold>
         <input
           style={inputStyle}
           placeholder="Tên sản phẩm (vd: Chân váy 3 tầng)"
@@ -947,29 +985,32 @@ export default function AdminPage() {
           value={form.stock}
           onChange={(e) => setForm({ ...form, stock: e.target.value })}
         />
-        <textarea
-          style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical", flexShrink: 0, minHeight: 220 }}
-          placeholder="Nội dung sản phẩm: giá bán (theo số lượng nếu có), chất liệu, màu sắc, size, ưu đãi, giao hàng, câu hỏi khách hay hỏi..."
-          value={form.description}
-          onChange={(e) => setForm({ ...form, description: e.target.value })}
-          rows={10}
-        />
-        {/\|/.test(form.description) && (
-          <button
-            type="button"
-            onClick={() =>
-              setForm((f) => ({ ...f, description: f.description.replace(/[ \t]*(\|[ \t]*)+$/gm, "") }))
-            }
-            style={{ ...btn, alignSelf: "flex-start", fontSize: 13 }}
-          >
-            Dọn ký tự "|" thừa ở cuối dòng
-          </button>
-        )}
+        <Fold
+          title="Nội dung sản phẩm"
+          note={has(form.description) ? `${String(form.description).length} ký tự` : "chưa có"}
+          filled={has(form.description)}
+        >
+          <textarea
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box", resize: "vertical", flexShrink: 0, minHeight: 220 }}
+            placeholder="Nội dung sản phẩm: giá bán (theo số lượng nếu có), chất liệu, màu sắc, size, ưu đãi, giao hàng, câu hỏi khách hay hỏi..."
+            value={form.description}
+            onChange={(e) => setForm({ ...form, description: e.target.value })}
+            rows={10}
+          />
+          {/\|/.test(form.description) && (
+            <button
+              type="button"
+              onClick={() =>
+                setForm((f) => ({ ...f, description: f.description.replace(/[ \t]*(\|[ \t]*)+$/gm, "") }))
+              }
+              style={{ ...btn, marginTop: 8, fontSize: 13 }}
+            >
+              Dọn ký tự "|" thừa ở cuối dòng
+            </button>
+          )}
+        </Fold>
         <AttributeTable rows={form.attributes} groups={form.attributeGroups} onChange={(rows, groups) => setForm({ ...form, attributes: rows, attributeGroups: groups })} />
-        <div>
-          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
-            Lưu ý cho bot (không bắt buộc)
-          </label>
+        <Fold title="Lưu ý cho bot (không bắt buộc)" note={has(form.notes) ? "đã nhập" : "chưa có"} filled={has(form.notes)}>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Dặn riêng bot về sản phẩm này: đối tượng khách, cách xưng hô, điều nên/không nên nói... Bot sẽ tuân theo khi
             tư vấn sản phẩm này.
@@ -981,11 +1022,12 @@ export default function AdminPage() {
             onChange={(e) => setForm({ ...form, notes: e.target.value })}
             placeholder={"Ví dụ:\nKhách của sản phẩm này toàn là nữ, gọi khách là chị.\nKhông tự giảm giá, chỉ báo giá theo bảng."}
           />
-        </div>
-        <div>
-          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
-            Thông tin bạn mẫu trong ảnh thực tế (không bắt buộc)
-          </label>
+        </Fold>
+        <Fold
+          title="Thông tin bạn mẫu trong ảnh thực tế (không bắt buộc)"
+          note={has(form.modelInfo) ? "đã nhập" : "chưa có"}
+          filled={has(form.modelInfo)}
+        >
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Mỗi ảnh chỉ gửi cho khách 1 lần. Khách xin xem lại ảnh đã gửi thì bot không gửi lại mà nói câu này:
             "Dạ bạn mẫu trong ảnh bên em ... ạ". Bạn chỉ cần ghi phần thông tin.
@@ -996,11 +1038,12 @@ export default function AdminPage() {
             onChange={(e) => setForm({ ...form, modelInfo: e.target.value })}
             placeholder="Ví dụ: cao 1m45, nặng 40kg, mặc size S, váy dài 75cm"
           />
-        </div>
-        <div>
-          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
-            Câu thoại mở đầu (chạy quảng cáo)
-          </label>
+        </Fold>
+        <Fold
+          title="Câu thoại mở đầu (chạy quảng cáo)"
+          note={has(form.openingScript) ? "đã nhập" : "chưa có"}
+          filled={has(form.openingScript)}
+        >
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Khi khách nhắn lần đầu kiểu "Giá sản phẩm bao nhiêu?", bot gửi đúng câu này kèm ảnh mẫu của sản phẩm
             (ảnh thực tế chỉ gửi khi khách hỏi). Để trống nếu không dùng.
@@ -1042,11 +1085,12 @@ export default function AdminPage() {
           >
             + Thêm tin nhắn
           </button>
-        </div>
-        <div>
-          <label style={{ display: "block", fontWeight: 600, fontSize: 14, marginBottom: 2 }}>
-            Câu hỏi có sẵn của quảng cáo (không bắt buộc)
-          </label>
+        </Fold>
+        <Fold
+          title="Câu hỏi có sẵn của quảng cáo (không bắt buộc)"
+          note={has(form.triggerQuestions) ? "đã nhập" : "chưa có"}
+          filled={has(form.triggerQuestions)}
+        >
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Mỗi dòng 1 câu, gõ giống hệt câu hỏi sẵn bạn cài ở quảng cáo. Khách bấm câu nào, bot biết ngay khách đang
             hỏi sản phẩm này và gửi câu mở đầu. Nếu câu hỏi đã có sẵn tên sản phẩm ở trên thì có thể bỏ trống.
@@ -1058,33 +1102,54 @@ export default function AdminPage() {
             onChange={(e) => setForm({ ...form, triggerQuestions: e.target.value })}
             placeholder={"Ví dụ:\nGiá chân váy 3 tầng bao nhiêu?\nTư vấn giúp mình chân váy 3 tầng"}
           />
-        </div>
-        <ImagePicker
+        </Fold>
+        <Fold
           title="Ảnh giới thiệu / ảnh các màu"
-          hint="Ảnh giới thiệu, ảnh đẹp, ảnh từng màu (KHÔNG phải ảnh người mẫu mặc). Đặt tên từng ảnh (vd: Váy trắng) để bot gửi đúng mẫu khi khách hỏi"
-          urls={form.sampleImages}
-          labels={form.imageLabels}
-          onLabel={setLabel}
-          onChange={(urls) => setForm((f) => ({ ...f, sampleImages: urls }))}
-          ticked={form.openingImages}
-          onToggle={toggleOpening}
-        />
-        <ImagePicker
+          note={(form.sampleImages || []).length ? `${form.sampleImages.length} ảnh` : "chưa có"}
+          filled={(form.sampleImages || []).length > 0}
+        >
+          <ImagePicker
+            bare
+            title="Ảnh giới thiệu / ảnh các màu"
+            hint="Ảnh giới thiệu, ảnh đẹp, ảnh từng màu (KHÔNG phải ảnh người mẫu mặc). Đặt tên từng ảnh (vd: Váy trắng) để bot gửi đúng mẫu khi khách hỏi"
+            urls={form.sampleImages}
+            labels={form.imageLabels}
+            onLabel={setLabel}
+            onChange={(urls) => setForm((f) => ({ ...f, sampleImages: urls }))}
+            ticked={form.openingImages}
+            onToggle={toggleOpening}
+          />
+        </Fold>
+        <Fold
           title="Ảnh sản phẩm thực tế"
-          hint="Ảnh chụp hàng thật, người mẫu mặc, khách hàng thật, feedback. Khách xin “ảnh mẫu” (người mẫu mặc) thì bot chỉ gửi mục này"
-          urls={form.realImages}
-          labels={form.imageLabels}
-          onLabel={setLabel}
-          onChange={(urls) => setForm((f) => ({ ...f, realImages: urls }))}
-          ticked={form.openingImages}
-          onToggle={toggleOpening}
-        />
-        <ImagePicker
+          note={(form.realImages || []).length ? `${form.realImages.length} ảnh` : "chưa có"}
+          filled={(form.realImages || []).length > 0}
+        >
+          <ImagePicker
+            bare
+            title="Ảnh sản phẩm thực tế"
+            hint="Ảnh chụp hàng thật, người mẫu mặc, khách hàng thật, feedback. Khách xin “ảnh mẫu” (người mẫu mặc) thì bot chỉ gửi mục này"
+            urls={form.realImages}
+            labels={form.imageLabels}
+            onLabel={setLabel}
+            onChange={(urls) => setForm((f) => ({ ...f, realImages: urls }))}
+            ticked={form.openingImages}
+            onToggle={toggleOpening}
+          />
+        </Fold>
+        <Fold
           title="Ảnh TỔNG HỢP tất cả mẫu mã / màu"
-          hint="Khách hỏi chung kiểu “có mấy màu”, “có mẫu nào”, “xin màu” thì bot tự gửi ảnh này (nên làm 1 ảnh gom tất cả màu/mẫu). Không cần đặt tên ảnh."
-          urls={form.catalogImages || []}
-          onChange={(urls) => setForm((f) => ({ ...f, catalogImages: urls }))}
-        />
+          note={(form.catalogImages || []).length ? `${form.catalogImages.length} ảnh` : "chưa có"}
+          filled={(form.catalogImages || []).length > 0}
+        >
+          <ImagePicker
+            bare
+            title="Ảnh TỔNG HỢP tất cả mẫu mã / màu"
+            hint="Khách hỏi chung kiểu “có mấy màu”, “có mẫu nào”, “xin màu” thì bot tự gửi ảnh này (nên làm 1 ảnh gom tất cả màu/mẫu). Không cần đặt tên ảnh."
+            urls={form.catalogImages || []}
+            onChange={(urls) => setForm((f) => ({ ...f, catalogImages: urls }))}
+          />
+        </Fold>
         <div style={{ display: "flex", gap: 8 }}>
           <button
             type="submit"
