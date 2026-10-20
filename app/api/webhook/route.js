@@ -38,7 +38,7 @@ import { getSentImageUrls,
 } from "@/lib/conversations";
 import { ownerPriceNote } from "@/lib/dealPrice";
 import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
-import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues } from "@/lib/attributes";
+import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, nextAttrToAsk } from "@/lib/attributes";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
@@ -1336,12 +1336,28 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const due = measuredItems(attrNow).filter((x) => x.attr.values.length);
     const said = messages.join(" ");
     const lacking = due.filter((x) => !matchValues(x.attr, said).length);
+    // Các mục khác đã đủ + chưa có SĐT → sau khi tư vấn xong phải xin SĐT + địa chỉ NGAY trong lượt này (không chờ khách nhắn tiếp)
+    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim();
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
-      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages);
+      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact);
       const redoText = redo.join(" ");
       if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = redo;
       else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
+    }
+    // CHỐT CHẶN: đã tư vấn xong giá trị cuối mà tin trả lời chưa xin SĐT/địa chỉ → tự thêm câu xin
+    if (askContact && due.length && messages.length) {
+      const asked = askedTopics(messages.join(" "));
+      if (!asked.has("so dien thoai") && !asked.has("dia chi")) {
+        const pr = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"));
+        const neutralNow = notesForbidPronouns(currentProduct?.notes);
+        const ask = neutralNow
+          ? "Shop xin số điện thoại và địa chỉ nhận hàng để lên đơn nha ạ."
+          : `${pr.kh.charAt(0).toUpperCase() + pr.kh.slice(1)} cho ${pr.tu} xin số điện thoại và địa chỉ nhận hàng để ${pr.tu} lên đơn nha?`;
+        console.log("Đã tư vấn xong nhưng chưa xin SĐT/địa chỉ → thêm câu xin:", ask);
+        if (messages.length >= 2) messages = [...messages.slice(0, -1), `${String(messages[messages.length - 1]).replace(/\s+$/, "")} ${ask}`];
+        else messages = [...messages, ask];
+      }
     }
   }
 
@@ -1385,7 +1401,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
-async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages) {
+async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages, askContact = false) {
   try {
     const need = items
       .map((x) => `- ${x.attr.name}: chọn đúng 1 giá trị trong [${x.attr.values.join(" / ")}]; cách chọn của chủ shop: ${x.attr.how || "theo số đo khách đã nói"}`)
@@ -1394,7 +1410,11 @@ async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDea
       "\n\nLƯU Ý BẮT BUỘC: khách đã đưa số đo nhưng tin trả lời nháp CHƯA nói giá trị của các mục sau:\n" + need +
       "\nTin nháp: " + JSON.stringify(draftMessages) +
       "\nHãy viết lại 1-2 tin: vẫn trả lời câu vừa rồi của khách, NHƯNG phải nói rõ MỘT giá trị cụ thể cho mỗi mục trên, dựa đúng số đo khách đã nói " +
-      '(vd "chị cao 1m48 thì chân váy dài 75cm là vừa đẹp ạ"). Chưa xin số điện thoại/địa chỉ. Không hỏi lại số đo đã có. Giữ nguyên xưng hô và các luật khác.';
+      '(vd "chị cao 1m48 thì chân váy dài 75cm là vừa đẹp ạ"). ' +
+      (askContact
+        ? 'Các mục khác khách đã chọn đủ → sau khi nói giá trị, tin CUỐI phải xin luôn số điện thoại và địa chỉ nhận hàng (1 câu ngắn, vd "chị cho em xin số điện thoại và địa chỉ nhận hàng để em lên đơn nha"), KHÔNG hỏi "chọn được mẫu ưng ý chưa". '
+        : 'Chưa xin số điện thoại/địa chỉ. ') +
+      'Không hỏi lại số đo đã có. Giữ nguyên xưng hô và các luật khác.';
     const { text: raw, model } = await callGemini(
       systemPrompt + extra,
       contents,
