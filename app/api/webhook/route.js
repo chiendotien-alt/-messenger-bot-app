@@ -37,7 +37,7 @@ import { getSentImageUrls,
   getOutgoingTexts,
 } from "@/lib/conversations";
 import { ownerPriceNote } from "@/lib/dealPrice";
-import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
+import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, buildOrderMessages, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, nextAttrToAsk, colorCount, summaryDetail } from "@/lib/attributes";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -49,7 +49,7 @@ import { callGemini } from "@/lib/gemini";
 import { buildSystemPrompt } from "@/lib/botPrompt";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
-import { buildOrderContext } from "@/lib/orderContext";
+import { buildOrderContext, parseDeliveryDays } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
 import { detectSituation, shouldClassify, classifySituation, situationNote } from "@/lib/situation";
 
@@ -999,6 +999,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (ladderCtx) console.log("---- Bảng giá mặc cả:", JSON.stringify({ soLuong: ladderCtx.qty, thapNhatDaBao: ladderCtx.lowest, khachDeNghi: ladderCtx.offer, quyetDinh: ladderCtx.decision }));
   }
   const priceNote = ladderCtx ? priceTurnNote(ladderCtx) : "";
+  const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   const sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   const ladderTone = (msgs) =>
     pronounsFrom([...(msgs || [])].reverse().concat(ladderOutgoing.slice(-8).map((m) => m.text).reverse()).join("\n"));
@@ -1122,6 +1123,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
+  // Khách VỪA gửi SĐT/địa chỉ ở lượt này → chuỗi chốt đơn thay hẳn câu nháp của AI
+  const replaceDraft = !!(verified && (String(verified.phone || "").trim() || String(verified.address || "").trim()));
   const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
   // Có bảng thuộc tính: cặp chiều cao + cân nặng chỉ áp dụng khi mục "cặp" CHƯA chọn (khách đã nói "sz L" thì không hỏi nữa)
   const bodySizedNow = attrMode ? attrNow.list.some((x) => x.attr.kind === "pair" && x.state === "missing") : isBodySizedProduct(currentProduct);
@@ -1365,7 +1368,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   if (ladderCtx && ladderSummary && !messages.length && !images.length) {
     const tone = ladderTone([]);
-    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages: [], info: mergedInfo, ready: true, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu });
+    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages: [], info: mergedInfo, ready: true, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu , detail: sumDetail, deliveryDays: dDays, replaceDraft })
     return { messages: fin.messages, images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
   if (!messages.length && !images.length && mustReplyOrderInfo) {
@@ -1399,11 +1402,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
     if (readyBasic) {
       const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"));
-      const tB = buildSummaryText({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true, detail: sumDetail });
       const botTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
-      if (tB && !summarySentBefore(tB, botTexts)) {
-        console.log("Đủ thông tin đơn → hệ thống gửi tóm tắt đơn (không có bảng giá).");
-        messages = [tB];
+      const orderB = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true, detail: sumDetail, sentBefore: botTexts, deliveryDays: dDays });
+      if (orderB && !summarySentBefore(orderB.block, botTexts)) {
+        console.log("Đủ thông tin đơn → hệ thống gửi chuỗi chốt đơn (không có bảng giá).");
+        messages = orderB.messages;
         basicSent = true;
       }
     }
@@ -1411,7 +1414,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let ladderSent = false;
   if (ladderCtx) {
     const tone = ladderTone(messages);
-    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages, info: mergedInfo, ready: ladderReady, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu, detail: sumDetail });
+    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages, info: mergedInfo, ready: ladderReady, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu, detail: sumDetail, deliveryDays: dDays, replaceDraft });
     if (fin.scrubbed) console.warn("Bot lỡ nói giá thấp hơn mức shop chấp nhận → đã cắt câu đó. Tin gốc:", messages.join(" | "));
     messages = fin.messages;
     ladderSent = !!fin.summary;
