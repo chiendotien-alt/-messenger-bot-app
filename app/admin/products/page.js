@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { ChatIcon, navButtonStyle } from "../icons";
+import { ladderRows, ladderPreview, parseMoney } from "@/lib/priceLadder";
 
 const EMPTY_FORM = {
   pageIds: [], // [] = dùng chung cho mọi Page; nhiều ID = chỉ các Page đó
@@ -11,6 +12,7 @@ const EMPTY_FORM = {
   modelInfo: "", // thông tin bạn mẫu trong ảnh thực tế (cao, nặng, size...) — bot nói khi ảnh đã gửi rồi
   attributeGroups: [], // BỘ THUỘC TÍNH: [{ name, members: [tên thuộc tính], ask }]
   attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
+  priceLadder: [], // BẢNG GIÁ MẶC CẢ: [{ qty, list, steps, floor }] — hệ thống tự mặc cả đúng mức, bot không thấy giá sàn
   openingScript: "",
   openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
   triggerQuestions: "",
@@ -263,6 +265,91 @@ function Thumbs({ label, urls, labels }) {
   );
 }
 
+// BẢNG GIÁ MẶC CẢ: chủ shop điền 1 lần → hệ thống tự mặc cả đúng mức, bot KHÔNG nhìn thấy giá sàn
+function PriceLadderTable({ rows, onChange }) {
+  const list = rows || [];
+  const inp = { padding: "8px 10px", border: "1px solid #ccc", borderRadius: 6, fontSize: 14, boxSizing: "border-box" };
+  const small = { display: "block", fontSize: 12, color: "#666", marginBottom: 2 };
+  const setRow = (i, patch) => onChange(list.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  const parsed = ladderRows({ priceLadder: list });
+  const warnings = [];
+  list.forEach((r, i) => {
+    const any = ["qty", "list", "steps", "floor"].some((k) => String(r[k] || "").trim());
+    if (!any) return;
+    const q = parseInt(String(r.qty || "").replace(/\D/g, ""), 10);
+    const pr = parsed.find((x) => x.qty === q);
+    if (!pr || String(r.list || "").trim() === "") {
+      warnings.push(`Dòng ${i + 1}: chưa hiểu. Kiểm tra Số lượng và Giá niêm yết (mỗi số lượng chỉ ghi 1 dòng).`);
+      return;
+    }
+    const tokens = String(r.steps || "").split(/[;,\n|→>]+/).map((x) => x.trim()).filter(Boolean);
+    if (tokens.length > pr.steps.length) warnings.push(`Dòng ${i + 1}: có mức giảm bị bỏ qua (mỗi mức phải thấp hơn giá niêm yết và không thấp hơn giá sàn).`);
+    if (String(r.floor || "").trim() && parseMoney(r.floor) == null) warnings.push(`Dòng ${i + 1}: giá sàn chưa hiểu.`);
+  });
+  const nextQty = Math.max(0, ...parsed.map((x) => x.qty)) + 1;
+  return (
+    <Fold title="Bảng giá mặc cả (không bắt buộc)" note={parsed.length ? `${parsed.length} dòng` : "chưa có"} filled={parsed.length > 0}>
+      <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+        Điền để bot tự mặc cả đúng mức và không lộ giá sàn. Mọi số tiền là TỔNG TIỀN cho số lượng đó (vd mua 2 cái giá 350k thì ghi 350k). Khách đưa giá không thấp hơn giá sàn thì bot đồng ý luôn.
+        Khách đưa giá thấp hơn, hoặc chỉ nói “bớt đi”, thì bot hạ dần theo các mức giảm; hết mức thì giữ nguyên. Không điền thì bot vẫn mặc cả theo ô “Lưu ý cho bot” như cũ.
+      </div>
+      <div style={{ color: "#b45309", fontSize: 12, marginBottom: 8 }}>
+        Điền xong, nhớ XÓA các dòng nói về mặc cả / giá sàn trong ô “Lưu ý cho bot”, nếu không bot vẫn nhìn thấy giá sàn.
+      </div>
+      {list.map((r, i) => (
+        <div key={i} style={{ border: "1px solid #e5e5e5", borderRadius: 8, padding: 10, marginBottom: 8, background: "#fafafa" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <label style={{ width: 80 }}>
+              <span style={small}>Số lượng</span>
+              <input style={{ ...inp, width: "100%" }} inputMode="numeric" value={r.qty} placeholder="1" onChange={(e) => setRow(i, { qty: e.target.value })} />
+            </label>
+            <label style={{ flex: 1 }}>
+              <span style={small}>Giá niêm yết</span>
+              <input style={{ ...inp, width: "100%" }} value={r.list} placeholder="vd: 185k" onChange={(e) => setRow(i, { list: e.target.value })} />
+            </label>
+            <button
+              type="button"
+              title="Xóa dòng này"
+              onClick={() => onChange(list.filter((_, j) => j !== i))}
+              style={{ padding: "8px 12px", border: "1px solid #e0b4b4", background: "#fff", color: "#c00", borderRadius: 6, cursor: "pointer" }}
+            >
+              ✕
+            </button>
+          </div>
+          <label style={{ display: "block", marginTop: 8 }}>
+            <span style={small}>Các mức giảm, từ cao xuống thấp (cách nhau dấu phẩy)</span>
+            <input style={{ ...inp, width: "100%" }} value={r.steps} placeholder="vd: 175k, 165k" onChange={(e) => setRow(i, { steps: e.target.value })} />
+          </label>
+          <label style={{ display: "block", marginTop: 8 }}>
+            <span style={small}>Giá sàn: thấp nhất bạn chấp nhận (để trống = mức giảm cuối cùng)</span>
+            <input style={{ ...inp, width: "100%" }} value={r.floor} placeholder="vd: 160k" onChange={(e) => setRow(i, { floor: e.target.value })} />
+          </label>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...list, { qty: String(nextQty), list: "", steps: "", floor: "" }])}
+        style={{ padding: "8px 14px", border: "1px solid #ccc", background: "#fff", borderRadius: 6, cursor: "pointer", fontSize: 14 }}
+      >
+        + Thêm số lượng
+      </button>
+      {parsed.length > 0 && (
+        <div style={{ marginTop: 10, padding: "8px 10px", background: "#f1faf1", borderRadius: 6, fontSize: 13, color: "#256029" }}>
+          <div style={{ fontSize: 12, marginBottom: 2 }}>Hệ thống hiểu như sau:</div>
+          {ladderPreview(parsed).map((t, i) => (
+            <div key={i}>{t}</div>
+          ))}
+        </div>
+      )}
+      {warnings.map((w, i) => (
+        <div key={i} style={{ marginTop: 6, color: "#b45309", fontSize: 12 }}>
+          ⚠ {w}
+        </div>
+      ))}
+    </Fold>
+  );
+}
+
 // Ô nhập nhiều dòng tự giãn chiều cao theo chữ đang gõ (không phải kéo, không bị nhỏ)
 function AutoTextarea({ value, minRows = 3, style, ...rest }) {
   const ref = useRef(null);
@@ -433,7 +520,10 @@ function cleanForm(form) {
   const attributeGroups = (form.attributeGroups || [])
     .map((g) => ({ name: String(g?.name || "").trim(), members: (g?.members || []).filter((m) => names.has(m)), ask: String(g?.ask || "").trim() }))
     .filter((g) => g.members.length >= 2);
-  return { ...form, imageLabels, openingExtras, openingImages, attributes, attributeGroups };
+  const priceLadder = (form.priceLadder || [])
+    .map((r) => ({ qty: String(r?.qty || "").trim(), list: String(r?.list || "").trim(), steps: String(r?.steps || "").trim(), floor: String(r?.floor || "").trim() }))
+    .filter((r) => r.qty && r.list);
+  return { ...form, imageLabels, openingExtras, openingImages, attributes, attributeGroups, priceLadder };
 }
 
 export default function AdminPage() {
@@ -460,6 +550,7 @@ export default function AdminPage() {
     description: true,
     notes: true,
     attributes: true,
+    priceLadder: true,
     openingScript: true,
     triggerQuestions: false,
     sampleImages: true,
@@ -624,6 +715,7 @@ export default function AdminPage() {
       modelInfo: p.modelInfo || "",
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
+      priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
@@ -650,6 +742,7 @@ export default function AdminPage() {
         next.attributes = Array.isArray(src.attributes) ? src.attributes.map((r) => ({ ...r })) : [];
         next.attributeGroups = Array.isArray(src.attributeGroups) ? src.attributeGroups.map((g) => ({ ...g, members: [...(g.members || [])] })) : [];
       }
+      if (parts.priceLadder) next.priceLadder = Array.isArray(src.priceLadder) ? src.priceLadder.map((r) => ({ ...r })) : [];
       if (parts.openingScript) next.openingExtras = Array.isArray(src.openingExtras) ? [...src.openingExtras] : [];
       for (const key of ["sampleImages", "realImages", "catalogImages"]) {
         if (parts[key]) {
@@ -686,6 +779,7 @@ export default function AdminPage() {
       modelInfo: p.modelInfo || "",
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
+      priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
@@ -923,6 +1017,7 @@ export default function AdminPage() {
                 ["description", "Nội dung"],
                 ["notes", "Lưu ý cho bot"],
                 ["attributes", "Bảng thuộc tính"],
+                ["priceLadder", "Bảng giá mặc cả"],
                 ["openingScript", "Câu mở đầu"],
                 ["triggerQuestions", "Câu hỏi có sẵn"],
                 ["sampleImages", "Ảnh mẫu"],
@@ -1010,6 +1105,7 @@ export default function AdminPage() {
           )}
         </Fold>
         <AttributeTable rows={form.attributes} groups={form.attributeGroups} onChange={(rows, groups) => setForm({ ...form, attributes: rows, attributeGroups: groups })} />
+        <PriceLadderTable rows={form.priceLadder} onChange={(rows) => setForm({ ...form, priceLadder: rows })} />
         <Fold title="Lưu ý cho bot (không bắt buộc)" note={has(form.notes) ? "đã nhập" : "chưa có"} filled={has(form.notes)}>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Dặn riêng bot về sản phẩm này: đối tượng khách, cách xưng hô, điều nên/không nên nói... Bot sẽ tuân theo khi
@@ -1265,6 +1361,14 @@ export default function AdminPage() {
                             <b>Bộ{g.name ? ` “${g.name}”` : ""}</b>: {(g.members || []).join(" + ")}
                             {g.ask ? ` — hỏi: “${String(g.ask).split("\n")[0]}”` : ""}
                           </div>
+                        ))}
+                      </div>
+                    )}
+                    {Array.isArray(p.priceLadder) && ladderRows(p).length > 0 && (
+                      <div style={{ margin: "10px 0", padding: "8px 10px", background: "#f1faf1", borderRadius: 6, fontSize: 13 }}>
+                        <div style={{ color: "#575", fontSize: 12, marginBottom: 2 }}>Bảng giá mặc cả</div>
+                        {ladderPreview(ladderRows(p)).map((t, i) => (
+                          <div key={i}>{t}</div>
                         ))}
                       </div>
                     )}

@@ -34,10 +34,12 @@ import { getSentImageUrls,
   extractPhone,
   isConversationBotOff,
   getOwnerPriceTexts,
+  getOutgoingTexts,
 } from "@/lib/conversations";
 import { ownerPriceNote } from "@/lib/dealPrice";
+import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues } from "@/lib/attributes";
-import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -928,10 +930,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const situationLabel = aiLabelOk ? situation.nhom : ruleLabel;
 
   // Tìm câu đã dạy (ưu tiên đúng nhóm tình huống) + lịch sử đã dựng
-  const [trainingText, contents, ownerPrices] = await Promise.all([
+  const ladderOn = hasLadder(currentProduct);
+  const [trainingText, contents, ownerPrices, ladderOutgoing] = await Promise.all([
     getTrainingForPrompt(currentProduct?.id, trainQueries, { label: situationLabel, strong: aiLabelOk }).catch(() => ""),
     contentsPromise,
     getOwnerPriceTexts(senderId).catch(() => []),
+    ladderOn ? getOutgoingTexts(senderId, 80).catch(() => []) : Promise.resolve([]),
   ]);
   if (ownerPrices.length) console.log("Chủ shop đã tự nhắn giá với khách:", ownerPrices.join(" | "));
   const systemPrompt = buildSystemPrompt(
@@ -976,6 +980,26 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
   const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow) : "";
   if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
+
+  // BẢNG GIÁ MẶC CẢ: sản phẩm có bảng → HỆ THỐNG tính giá của lượt này (đồng ý / hạ nấc / giữ), bot chỉ nói đúng con số hệ thống đưa
+  let ladderCtx = null;
+  if (ladderOn) {
+    try {
+      ladderCtx = computePriceContext({
+        product: currentProduct,
+        outgoing: ladderOutgoing,
+        customerNow: attrCurrent,
+        customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
+        lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
+      });
+    } catch (e) {
+      console.error("Lỗi tính bảng giá mặc cả:", e.message);
+    }
+    if (ladderCtx) console.log("---- Bảng giá mặc cả:", JSON.stringify({ soLuong: ladderCtx.qty, thapNhatDaBao: ladderCtx.lowest, khachDeNghi: ladderCtx.offer, quyetDinh: ladderCtx.decision }));
+  }
+  const priceNote = ladderCtx ? priceTurnNote(ladderCtx) : "";
+  const ladderTone = (msgs) =>
+    pronounsFrom([...(msgs || [])].reverse().concat(ladderOutgoing.slice(-8).map((m) => m.text).reverse()).join("\n"));
 
   // Shop ĐÃ hỏi khách xin thông tin (màu, size, SĐT, địa chỉ...) rồi → dặn AI không hỏi lại; hỏi lại là việc của tin nhắn bồi
   let askNote = "";
@@ -1030,7 +1054,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Nói thật, ngắn gọn là bên shop chưa có ảnh bạn mẫu mặc, rồi trả lời NGAY điều khách đang cần biết (độ dài/size theo chiều cao khách đã nói, theo dữ liệu sản phẩm). " +
         "Không hỏi lại thông tin shop đã hỏi ở tin trước.";
   }
-  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + modelPhotoNote + ownerPriceNote(ownerPrices);
+  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
@@ -1112,6 +1136,19 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const lastBotText = ([...history].reverse().find((m) => m.from !== "customer") || {}).text || "";
   const botAskedInfo = /địa chỉ|số điện thoại|sđt|so dien thoai|dia chi/i.test(String(lastBotText));
   const mustReplyOrderInfo = phoneNow && botAskedInfo;
+  // Bảng giá: đã đủ SĐT + địa chỉ (và chọn đủ phân loại) → HỆ THỐNG ghép tin tóm tắt đơn đúng giá, bot không tự viết lại
+  let ladderReady = false;
+  let ladderSummary = "";
+  if (ladderCtx) {
+    ladderReady =
+      !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()) &&
+      (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
+    if (ladderReady) {
+      const tone = ladderTone(messages);
+      const t = buildSummaryText({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: tone.kh, tu: tone.tu });
+      if (t && !summarySentBefore(t, ladderOutgoing.map((m) => m.text))) ladderSummary = t;
+    }
+  }
   const orderInfoReply = () => {
     const hasAddr = !!(customerInfo?.address || parsed?.customer_info?.address);
     const neutral = notesForbidPronouns(currentProduct?.notes);
@@ -1119,7 +1156,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     return neutral ? "Shop đã nhận được thông tin, sẽ lên đơn và báo lại ạ." : "Dạ shop đã nhận được thông tin, sẽ lên đơn và báo lại mình nhé ạ.";
   };
   // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
-  if (!mustReplyOrderInfo && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
+  if (!mustReplyOrderInfo && !ladderSummary && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
     console.log("AI quyết định không trả lời (tin khách chỉ lặp lại thông tin đã chốt):", customerMessage);
     return { skip: true };
   }
@@ -1308,6 +1345,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  if (ladderCtx && ladderSummary && !messages.length && !images.length) {
+    const tone = ladderTone([]);
+    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages: [], info: mergedInfo, ready: true, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu });
+    return { messages: fin.messages, images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
+  }
   if (!messages.length && !images.length && mustReplyOrderInfo) {
     return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
@@ -1331,7 +1373,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return fallback;
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
+  let ladderSent = false;
+  if (ladderCtx) {
+    const tone = ladderTone(messages);
+    const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages, info: mergedInfo, ready: ladderReady, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu });
+    if (fin.scrubbed) console.warn("Bot lỡ nói giá thấp hơn mức shop chấp nhận → đã cắt câu đó. Tin gốc:", messages.join(" | "));
+    messages = fin.messages;
+    ladderSent = !!fin.summary;
+  }
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
