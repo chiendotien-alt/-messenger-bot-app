@@ -1419,22 +1419,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     messages = fin.messages;
     ladderSent = !!fin.summary;
   }
-  // CHỐT CHẶN: bot nhờ khách "kiểm tra lại" mà trong lượt này không có khối đơn nào (vd đơn trùng đã gửi trước đó nên bị chặn gửi lại)
-  // → khách không có gì để kiểm tra. Ghép lại khối đơn từ thông tin đã lưu và gửi kèm.
+  // CHỐT CHẶN: khách VỪA gửi SĐT/địa chỉ (hoặc đang bảo "kiểm tra") mà tin trả lời không có khối đơn nào
+  // (điều kiện ghép đơn chưa đủ, hoặc đơn trùng đã gửi trước đó) → hệ thống ghép khối đơn từ thông tin đã lưu và gửi, không để khách nhận câu trả lời trống.
   let forcedSummary = false;
   {
     const saysCheck = (messages || []).some((m) => /kiểm tra/i.test(String(m)));
     const hasBlock = (messages || []).some((m) => /SĐT:?\s*[\d .]{9,}/.test(String(m)));
     const haveContact = !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim());
     const custAskCheck = /kiểm tra|xem lại|đơn đâu|đâu rồi/i.test(String(customerMessage || ""));
-    if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck)) {
+    const gaveContactNow = phoneNow || replaceDraft;
+    if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || gaveContactNow)) {
       const tone = ladderTone(messages);
-      const forced = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: tone.kh, tu: tone.tu, noPrice: !ladderCtx?.dealTotal, detail: sumDetail, sentBefore: [], deliveryDays: null });
+      const sentTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
+      const askedCheck = saysCheck || custAskCheck;
+      const forced = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: tone.kh, tu: tone.tu, noPrice: !ladderCtx?.dealTotal, detail: sumDetail, sentBefore: askedCheck ? [] : sentTexts, deliveryDays: dDays });
       if (forced) {
-        const Tu = tone.tu.charAt(0).toUpperCase() + tone.tu.slice(1);
-        messages = [`Dạ ${tone.tu} gửi lại đơn để ${tone.kh} kiểm tra giúp ${tone.tu} nhé:\n${forced.block}`];
+        messages = askedCheck ? [`Dạ ${tone.tu} gửi lại đơn để ${tone.kh} kiểm tra giúp ${tone.tu} nhé:\n${forced.block}`] : forced.messages;
         forcedSummary = true;
-        console.log("Bot nhờ kiểm tra nhưng thiếu khối đơn → hệ thống ghép lại khối đơn.");
+        console.log("Thiếu khối đơn sau khi khách đưa SĐT/địa chỉ → hệ thống ghép khối đơn.", { gaveContactNow, askedCheck });
       }
     }
   }
