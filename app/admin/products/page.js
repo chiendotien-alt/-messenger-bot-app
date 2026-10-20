@@ -12,6 +12,7 @@ const EMPTY_FORM = {
   modelInfo: "", // thông tin bạn mẫu trong ảnh thực tế (cao, nặng, size...) — bot nói khi ảnh đã gửi rồi
   attributeGroups: [], // BỘ THUỘC TÍNH: [{ name, members: [tên thuộc tính], ask }]
   attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
+  shipFee: "", // phí ship 1 đơn (đồng); để trống = không tính / freeship
   priceLadder: [], // BẢNG GIÁ MẶC CẢ: [{ qty, list, steps, floor }] — hệ thống tự mặc cả đúng mức, bot không thấy giá sàn
   openingScript: "",
   openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
@@ -716,6 +717,7 @@ export default function AdminPage() {
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
+      shipFee: String(p.shipFee ?? ""),
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
@@ -780,6 +782,7 @@ export default function AdminPage() {
       attributes: Array.isArray(p.attributes) ? p.attributes.map((r) => ({ name: r.name || "", values: r.values || "", how: r.how || "", ask: r.ask || "" })) : [],
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
+      shipFee: String(p.shipFee ?? ""),
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
@@ -1106,6 +1109,18 @@ export default function AdminPage() {
         </Fold>
         <AttributeTable rows={form.attributes} groups={form.attributeGroups} onChange={(rows, groups) => setForm({ ...form, attributes: rows, attributeGroups: groups })} />
         <PriceLadderTable rows={form.priceLadder} onChange={(rows) => setForm({ ...form, priceLadder: rows })} />
+        <Fold title="Phí ship (không bắt buộc)" note={has(form.shipFee) ? form.shipFee : "chưa có"} filled={has(form.shipFee)}>
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Phí ship cho 1 đơn. Có số này thì tin tóm tắt đơn ghi "Tổng tiền: giá + ship (gồm ship)". Để trống nếu freeship
+            (ghi "freeship" trong nội dung sản phẩm) hoặc chưa tính phí ship.
+          </div>
+          <input
+            style={{ ...inputStyle, width: "100%", boxSizing: "border-box" }}
+            value={form.shipFee}
+            onChange={(e) => setForm({ ...form, shipFee: e.target.value })}
+            placeholder="Ví dụ: 30000 hoặc 30k"
+          />
+        </Fold>
         <Fold title="Lưu ý cho bot (không bắt buộc)" note={has(form.notes) ? "đã nhập" : "chưa có"} filled={has(form.notes)}>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
             Dặn riêng bot về sản phẩm này: đối tượng khách, cách xưng hô, điều nên/không nên nói... Bot sẽ tuân theo khi
