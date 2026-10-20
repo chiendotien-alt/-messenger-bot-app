@@ -1389,6 +1389,23 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return fallback;
     }
   }
+  // Sản phẩm KHÔNG có bảng giá mặc cả (hoặc chưa tính được giá): khách vừa gửi nốt SĐT/địa chỉ → HỆ THỐNG tự gửi tóm tắt đơn (không tin vào việc AI tự tóm tắt)
+  let basicSent = false;
+  if (!ladderCtx?.dealTotal && botAskedInfo && !images.length) {
+    const readyBasic =
+      !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()) &&
+      (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
+    if (readyBasic) {
+      const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"));
+      const tB = buildSummaryText({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true });
+      const botTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
+      if (tB && !summarySentBefore(tB, botTexts)) {
+        console.log("Đủ thông tin đơn → hệ thống gửi tóm tắt đơn (không có bảng giá).");
+        messages = [tB];
+        basicSent = true;
+      }
+    }
+  }
   let ladderSent = false;
   if (ladderCtx) {
     const tone = ladderTone(messages);
@@ -1397,7 +1414,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     messages = fin.messages;
     ladderSent = !!fin.summary;
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
