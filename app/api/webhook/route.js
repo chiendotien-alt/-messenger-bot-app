@@ -38,6 +38,14 @@ import { getSentImageUrls,
 } from "@/lib/conversations";
 import { ownerPriceNote } from "@/lib/dealPrice";
 import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, buildOrderMessages, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
+
+// Chỉ coi là "kiểm tra đơn / xem lại đơn" khi nói về ĐƠN hoặc THÔNG TIN đặt hàng. "Kiểm tra hàng thoải mái", "ưng thì trả" (chính sách đổi trả) KHÔNG tính.
+const ORDER_CHECK_RE = /(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)|kiểm tra (giúp|hộ|lại)\b|xem lại (giúp|hộ)\b/i;
+function mentionsOrderCheck(t) {
+  const x = String(t || "");
+  if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
+  return ORDER_CHECK_RE.test(x);
+}
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, nextAttrToAsk, colorCount, summaryDetail } from "@/lib/attributes";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -1423,10 +1431,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // (điều kiện ghép đơn chưa đủ, hoặc đơn trùng đã gửi trước đó) → hệ thống ghép khối đơn từ thông tin đã lưu và gửi, không để khách nhận câu trả lời trống.
   let forcedSummary = false;
   {
-    const saysCheck = (messages || []).some((m) => /kiểm tra/i.test(String(m)));
+    const saysCheck = (messages || []).some((m) => mentionsOrderCheck(m));
     const hasBlock = (messages || []).some((m) => /SĐT:?\s*[\d .]{9,}/.test(String(m)));
     const haveContact = !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim());
-    const custAskCheck = /kiểm tra|xem lại|đơn đâu|đâu rồi/i.test(String(customerMessage || ""));
+    const custAskCheck = mentionsOrderCheck(customerMessage) || /đơn đâu|đâu rồi/i.test(String(customerMessage || ""));
     const gaveContactNow = phoneNow || replaceDraft;
     if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || gaveContactNow)) {
       const tone = ladderTone(messages);
