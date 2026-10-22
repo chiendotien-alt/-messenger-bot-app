@@ -47,7 +47,7 @@ function mentionsOrderCheck(t) {
   return ORDER_CHECK_RE.test(x);
 }
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, nextAttrToAsk, colorCount, summaryDetail } from "@/lib/attributes";
-import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -93,6 +93,39 @@ const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(proce
 const NO_REPEAT_QUESTION_LAST = process.env.NO_REPEAT_QUESTION_LAST !== undefined ? Number(process.env.NO_REPEAT_QUESTION_LAST) : 3;
 // Mỗi khách chỉ 1 lượt trả lời chạy cùng lúc; tin đến sau xếp hàng chờ tối đa ngần này ms (25s). Đặt 0 để tắt.
 const REPLY_LOCK_WAIT_MS = process.env.REPLY_LOCK_WAIT_MS !== undefined ? Number(process.env.REPLY_LOCK_WAIT_MS) : 25000;
+
+// ---- Khách đang được xin SĐT + địa chỉ mà mới đưa MỘT trong 2 (chỉ SĐT hoặc chỉ địa chỉ) ----
+// Bot chờ ĐÚNG ngần này ms (tính từ lúc nhận tin) cho khách gửi nốt phần còn lại; hết giờ khách vẫn im mới hỏi phần còn thiếu.
+// Khách gửi nốt trong lúc chờ → tin cuối trả lời chung cho cả 2 tin (không hỏi thừa). Không cần dịch vụ hẹn giờ (cron): bot tự chờ trong lượt trả lời.
+// Đặt PAIR_WAIT_MS=0 (trên Vercel) để tắt.
+const PAIR_WAIT_MS = process.env.PAIR_WAIT_MS !== undefined && process.env.PAIR_WAIT_MS !== "" ? Number(process.env.PAIR_WAIT_MS) : 30000;
+/**
+ * Shop vừa xin SĐT + địa chỉ, khách mới đưa MỘT trong 2 (tính cả các tin khách chưa được trả lời) → true: cần chờ khách gửi nốt.
+ */
+async function contactHalfOnly(senderId, text) {
+  try {
+    const phoneNow = !!extractPhone(text);
+    const addrNow = looksLikeAddress(text);
+    if (phoneNow === addrNow) return false; // đưa cả 2 trong 1 tin, hoặc không phải tin thông tin liên hệ
+    const [recent, info, pend] = await Promise.all([
+      getRecentOutgoingTexts(senderId, 0, 3).catch(() => []),
+      getCustomerInfo(senderId).catch(() => ({})),
+      getPendingCustomerMessages(senderId).catch(() => []),
+    ]);
+    const asked = (recent || []).some((t) => {
+      const a = askedTopics(t);
+      return a.has("so dien thoai") || a.has("dia chi");
+    });
+    if (!asked) return false; // shop chưa hỏi SĐT/địa chỉ → không phải đang trả lời câu hỏi đó
+    const texts = [text, ...(pend || []).map((m) => (typeof m === "string" ? m : m?.text || ""))];
+    const havePhone = !!String(info?.phone || "").trim() || texts.some((t) => !!extractPhone(t));
+    const haveAddr = !!String(info?.address || "").trim() || texts.some((t) => looksLikeAddress(t));
+    return !(havePhone && haveAddr);
+  } catch (e) {
+    console.error("Lỗi kiểm tra khách mới đưa 1 nửa SĐT/địa chỉ:", e.message);
+    return false;
+  }
+}
 // Tin thứ 2 (khi bot tách 2 tin): mặc định giả gõ ~1-4,5s tùy độ dài. Đặt SECOND_MSG_HOLD_MS (ms) để cố định.
 const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : null;
 // Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau ~1,5s (câu ngắn) đến 6s (câu dài) — người thật không trả lời 3 dòng trong 1 giây. AI soạn lâu hơn thì gửi ngay khi soạn xong.
@@ -241,6 +274,12 @@ export async function POST(req) {
             if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
           if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 15 giây cho khách nhắn thêm
+          // Khách mới đưa MỘT trong 2 (SĐT hoặc địa chỉ) → chờ ĐÚNG 30 giây kể từ lúc nhận tin cho khách gửi nốt, hết giờ mới hỏi phần còn thiếu
+          if (PAIR_WAIT_MS > 0 && !imageOnly && (await contactHalfOnly(senderId, text))) {
+            const holdMs = Math.max(0, PAIR_WAIT_MS - (Date.now() - startedAt));
+            console.log("Khách mới đưa 1 nửa SĐT/địa chỉ → chờ", Math.round(holdMs / 1000), "giây cho khách gửi nốt:", text);
+            waitMs = Math.max(waitMs, holdMs);
+          }
           if (waitMs > 0) await sleep(waitMs);
           if (waitMs > 0 && await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
             console.log("Khách nhắn tiếp tin mới → để tin cuối cùng trả lời chung:", text);
@@ -1009,8 +1048,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const priceNote = ladderCtx ? priceTurnNote(ladderCtx) : "";
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   const sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
+  // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
+  const custTextNewest = () =>
+    [...currentTexts].reverse().concat((history || []).filter((m) => m.from === "customer").map((m) => m.text || "").reverse()).join("\n");
   const ladderTone = (msgs) =>
-    pronounsFrom([...(msgs || [])].reverse().concat(ladderOutgoing.slice(-8).map((m) => m.text).reverse()).join("\n"));
+    pronounsFrom([...(msgs || [])].reverse().concat(ladderOutgoing.slice(-8).map((m) => m.text).reverse()).join("\n"), custTextNewest());
 
   // Shop ĐÃ hỏi khách xin thông tin (màu, size, SĐT, địa chỉ...) rồi → dặn AI không hỏi lại; hỏi lại là việc của tin nhắn bồi
   let askNote = "";
@@ -1362,7 +1404,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (askContact && due.length && messages.length) {
       const asked = askedTopics(messages.join(" "));
       if (!asked.has("so dien thoai") && !asked.has("dia chi")) {
-        const pr = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"));
+        const pr = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
         const neutralNow = notesForbidPronouns(currentProduct?.notes);
         const ask = neutralNow
           ? "Shop xin số điện thoại và địa chỉ nhận hàng để lên đơn nha ạ."
@@ -1409,12 +1451,14 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()) &&
       (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
     if (readyBasic) {
-      const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"));
+      const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
       const botTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
       const orderB = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true, detail: sumDetail, sentBefore: botTexts, deliveryDays: dDays });
-      if (orderB && !summarySentBefore(orderB.block, botTexts)) {
+      // Đơn chỉ khác chút xíu, khách không đưa SĐT/địa chỉ mới và AI đã có câu trả lời thật → giữ câu của AI, không chèn tin mẫu "cập nhật đơn"
+      const keepAiReplyB = !!(orderB && orderB.ackOnly && !replaceDraft && (messages || []).length);
+      if (orderB && !keepAiReplyB && !summarySentBefore(orderB.block, botTexts)) {
         console.log("Đủ thông tin đơn → hệ thống gửi chuỗi chốt đơn (không có bảng giá).");
-        messages = orderB.messages;
+        messages = orderB.specChanged && !replaceDraft && (messages || []).length ? [messages[0], ...orderB.messages] : orderB.messages;
         basicSent = true;
       }
     }
