@@ -1059,8 +1059,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   if (modelPhotoAsk) {
     console.log("Khách xin ảnh NGƯỜI MẪU MẶC:", modelAskText.slice(0, 80), hasRealPhotos ? "(shop có ảnh thực tế)" : "(shop CHƯA có ảnh thực tế)");
     modelPhotoNote = hasRealPhotos
-      ? "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC (cách khách gọi là \"ảnh mẫu\"), KHÔNG phải ảnh các màu. Đặt send_images với type \"real\" cho sản phẩm này. KHÔNG gửi ảnh màu, KHÔNG đặt send_catalog."
-      : "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC (cách khách gọi là \"ảnh mẫu\") nhưng shop CHƯA có ảnh này. " +
+      ? "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC / ẢNH THỰC TẾ (khách có thể gọi là \"ảnh mẫu\", \"hình thật\", \"ảnh thực tế\"), KHÔNG phải ảnh các màu. Đặt send_images với type \"real\" cho sản phẩm này. KHÔNG gửi ảnh màu, KHÔNG đặt send_catalog."
+      : "\n\nLƯU Ý VỀ ẢNH: khách đang xin xem ẢNH NGƯỜI MẪU MẶC / ẢNH THỰC TẾ (khách có thể gọi là \"ảnh mẫu\", \"hình thật\", \"ảnh thực tế\") nhưng shop CHƯA có ảnh này. " +
         "KHÔNG đặt send_images, KHÔNG đặt send_catalog, KHÔNG hứa gửi ảnh (ảnh các màu không phải thứ khách cần). " +
         "Nói thật, ngắn gọn là bên shop chưa có ảnh bạn mẫu mặc, rồi trả lời NGAY điều khách đang cần biết (độ dài/size theo chiều cao khách đã nói, theo dữ liệu sản phẩm). " +
         "Không hỏi lại thông tin shop đã hỏi ở tin trước.";
