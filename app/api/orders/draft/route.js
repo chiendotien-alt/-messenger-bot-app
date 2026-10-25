@@ -24,10 +24,11 @@ export async function POST(req) {
     // Member chỉ được chọn trong các sản phẩm được cấp quyền
     if (!scope.isOwner) products = products.filter((p) => scope.productIds.has(String(p.id)));
 
-    const { order, aiOk } = await buildOrderDraft(conversationId, conv, products, { budgetMs: AI_BUDGET_MS, tryMs: AI_TRY_MS });
+    const { order, aiOk, warnings } = await buildOrderDraft(conversationId, conv, products, { budgetMs: AI_BUDGET_MS, tryMs: AI_TRY_MS });
     return NextResponse.json({
       order,
       aiOk,
+      warnings: warnings || [],
       products: products.map((p) => ({ id: String(p.id), name: p.name })),
     });
   } catch (err) {

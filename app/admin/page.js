@@ -830,6 +830,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
   const [aiOk, setAiOk] = useState(false);
+  const [warnings, setWarnings] = useState([]); // cảnh báo khi điền đơn từ chat (chiều dài lạ, số lượng chưa rõ...)
 
   // Ghi chú riêng về khách này (tự lưu sau khi ngừng gõ ~1 giây)
   const [note, setNote] = useState("");
@@ -913,6 +914,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
       setOrder(data.order);
       setProducts(data.products || []);
       setAiOk(!!data.aiOk);
+      setWarnings(Array.isArray(data.warnings) ? data.warnings : []);
       setOrderId(null);
     } catch (e) {
       setAiOk(false);
@@ -938,6 +940,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
     setOrder({ ...blankOrder, ...o });
     setOrderId(o.id);
     setAiOk(false);
+    setWarnings(Array.isArray(o.review) ? o.review : []);
     setLoading(false);
     setMsg("");
     setFormOpen(true);
@@ -1072,6 +1075,13 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
             {!loading && !orderId && aiOk && (
               <div style={{ color: "#888", fontSize: 12, marginTop: 6 }}>Đã tự điền từ chat. Bạn kiểm tra lại trước khi lưu.</div>
             )}
+            {!loading && warnings.length > 0 && (
+              <div style={{ color: "#b45309", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 6, padding: "6px 8px", fontSize: 12, marginTop: 6, lineHeight: 1.5 }}>
+                {warnings.map((w, k) => (
+                  <div key={k}>⚠️ {w}</div>
+                ))}
+              </div>
+            )}
 
             <label style={labelStyle}>Tên người nhận</label>
             <input style={inputStyle} value={order.customerName} onChange={(e) => set("customerName", e.target.value)} />
@@ -1148,6 +1158,7 @@ function OrderPanel({ conversationId, pageId, onChanged }) {
               <div>👤 {o.customerName}{o.phone ? ` — ${o.phone}` : ""}</div>
               <div>📍 {o.address}</div>
               <div>🛍 {o.productName}{o.variant ? ` - ${o.variant}` : ""} × {o.quantity}</div>
+              {Array.isArray(o.review) && o.review.length > 0 ? <div style={{ color: "#b45309", fontSize: 12 }}>⚠️ Cần xác minh: {o.review.join("; ")}</div> : null}
               <div style={{ color: "#555" }}>Đơn giá: {money(o.unitPrice)} · Ship: {money(o.shipFee)}</div>
               {o.note ? <div>📝 {o.note}</div> : null}
               <div style={{ color: "#c0392b", fontWeight: 600 }}>Tổng thu: {money(o.total)}</div>
