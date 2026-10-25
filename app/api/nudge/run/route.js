@@ -8,7 +8,13 @@ export const maxDuration = 60;
 import { NextResponse } from "next/server";
 import { runNudge } from "@/lib/nudge";
 
-export async function GET() {
+export async function GET(req) {
+  // Tuỳ chọn: đặt biến NUDGE_SECRET trên Vercel rồi gọi .../api/nudge/run?key=<NUDGE_SECRET> để người lạ không gọi bừa được.
+  // Chưa đặt NUDGE_SECRET thì chạy như cũ (không cần key).
+  const secret = process.env.NUDGE_SECRET;
+  if (secret && new URL(req.url).searchParams.get("key") !== secret) {
+    return NextResponse.json({ error: "Thiếu hoặc sai key" }, { status: 401 });
+  }
   try {
     return NextResponse.json(await runNudge({ deadlineMs: 50000, limit: 15 }));
   } catch (err) {

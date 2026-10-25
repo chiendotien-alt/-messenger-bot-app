@@ -3,6 +3,7 @@
 // Deploy lên Vercel cùng project Next.js hiện tại, URL webhook sẽ là:
 //   https://your-domain.com/api/webhook
 
+import { createHmac, timingSafeEqual } from "crypto";
 import { put } from "@vercel/blob";
 import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor, lengthPhotoAsk } from "@/lib/products";
 import { getSentImageUrls,
@@ -54,7 +55,8 @@ import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
 import { callGemini } from "@/lib/gemini";
-import { buildSystemPrompt } from "@/lib/botPrompt";
+import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
+import { tidyAddress, tidyName } from "@/lib/textTidy";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
 import { buildOrderContext, parseDeliveryDays } from "@/lib/orderContext";
@@ -102,6 +104,27 @@ const PAIR_WAIT_MS = process.env.PAIR_WAIT_MS !== undefined && process.env.PAIR_
 /**
  * Shop vừa xin SĐT + địa chỉ, khách mới đưa MỘT trong 2 (tính cả các tin khách chưa được trả lời) → true: cần chờ khách gửi nốt.
  */
+/**
+ * Lưới an toàn: lấy ĐỊA CHỈ nhận hàng thẳng từ tin của khách (khi AI — nhất là AI dự phòng — quên điền customer_info.address).
+ * texts = các tin khách theo thứ tự CŨ → MỚI (từ sau lần shop xin SĐT/địa chỉ). Lấy tin địa chỉ ĐẦU TIÊN, bỏ qua câu nói chuyện
+ * ("không có số nhà", "shipper tự gọi điện nhé"...). Trả "" nếu không có tin nào giống địa chỉ.
+ */
+function pickAddressFromTexts(texts) {
+  for (const raw of texts || []) {
+    const t = String(raw || "");
+    if (!looksLikeAddress(t)) continue;
+    if (/(?<![\p{L}])(?:không có|ko có|k có|shipper|shiper|gọi điện|tự gọi|ghi chú|giúp|nhờ|cứ giao)(?![\p{L}])/iu.test(t)) continue; // câu dặn dò, không phải địa chỉ
+    const clean = t
+      .replace(/(?:\+?84|0)(?:[\s.\-]?\d){9}/g, " ") // bỏ SĐT
+      .replace(/(?<![\p{L}])(?:số\s*điện\s*thoại|sđt|sdt|đt|điện\s*thoại|zalo)(?![\p{L}])\s*[:.\-]?/giu, " ")
+      .replace(/^\s*(?:địa\s*chỉ|dia\s*chi|đc)\s*[:\-]?\s*/iu, "")
+      .replace(/\s+/g, " ")
+      .replace(/^[\s,.;:\-]+|[\s,.;:\-]+$/g, "");
+    if (clean.split(/\s+/).length >= 3) return clean.slice(0, 300);
+  }
+  return "";
+}
+
 async function contactHalfOnly(senderId, text) {
   try {
     const phoneNow = !!extractPhone(text);
@@ -152,12 +175,42 @@ export async function GET(req) {
   return new Response("Forbidden", { status: 403 });
 }
 
+// ---- Chỉ nhận tin THẬT từ Facebook ----
+// Facebook ký mỗi tin bằng "App Secret" (header x-hub-signature-256). Trên Vercel đặt biến FB_APP_SECRET (Meta for Developers → App → Settings → Basic → App Secret)
+// → bot bỏ qua mọi tin giả do người lạ gửi vào đường dẫn webhook (tránh bị spam, tốn tiền AI, gửi tin bậy cho khách).
+// Chưa đặt FB_APP_SECRET thì bot chạy như cũ (không kiểm tra). Có thể đặt nhiều App Secret, cách nhau dấu phẩy.
+function validFacebookSignature(rawBody, header) {
+  const secrets = String(process.env.FB_APP_SECRET || "")
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+  if (!secrets.length) return true;
+  const got = String(header || "").replace(/^sha256=/i, "");
+  if (!/^[0-9a-f]{64}$/i.test(got)) return false;
+  const gotBuf = Buffer.from(got, "hex");
+  return secrets.some((sec) => {
+    const exp = createHmac("sha256", sec).update(rawBody).digest();
+    return exp.length === gotBuf.length && timingSafeEqual(exp, gotBuf);
+  });
+}
+
 // ---- 2. Facebook gọi POST mỗi khi có tin nhắn mới từ khách ----
 export async function POST(req) {
   const startedAt = Date.now();
-  const body = await req.json();
+  const rawBuf = Buffer.from(await req.arrayBuffer()); // đúng từng byte Facebook gửi (để kiểm tra chữ ký)
+  const rawBody = rawBuf.toString("utf8");
+  if (!validFacebookSignature(rawBuf, req.headers.get("x-hub-signature-256"))) {
+    console.error("Webhook: chữ ký Facebook không hợp lệ → bỏ qua (kiểm tra biến FB_APP_SECRET nếu tin thật cũng bị bỏ)");
+    return new Response("Invalid signature", { status: 403 });
+  }
+  let body;
+  try {
+    body = JSON.parse(rawBody);
+  } catch {
+    return new Response("Bad request", { status: 400 });
+  }
 
-  if (body.object !== "page") {
+  if (!body || body.object !== "page") {
     return new Response("Not a page event", { status: 404 });
   }
 
@@ -427,6 +480,16 @@ export async function POST(req) {
                 console.log("Bỏ câu hỏi/xin thông tin hỏi lại quá sớm:", messages[i], "→", cleaned || "(bỏ cả tin)");
                 if (!cleaned) continue;
                 messages[i] = cleaned; // vẫn gửi phần còn lại của tin
+              }
+            }
+            // Shop đã có SĐT/địa chỉ/tên của khách → bỏ câu xin lại đúng thông tin đó (tin tóm tắt đơn của hệ thống không bị đụng tới)
+            if (!reply.systemOrder && (reply.knownTopics || []).length) {
+              const known = new Set(reply.knownTopics);
+              const trimmed = removeInfoAsks(messages[i], known);
+              if (trimmed !== messages[i]) {
+                console.log("Bỏ câu xin lại thông tin đã có:", messages[i], "→", trimmed || "(bỏ cả tin)");
+                if (!trimmed) continue;
+                messages[i] = trimmed;
               }
             }
             const delivered = await sendMessage(senderId, messages[i], pageToken);
@@ -994,6 +1057,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     trainingText,
     orderContext
   );
+  // Bản GỌN cho AI dự phòng (Groq): prompt đầy đủ quá dài, Groq sẽ bị cắt mất phần giữa (mất luật chốt đơn)
+  const groqBasePrompt = buildCompactSystemPrompt(
+    formatProductsForPrompt(products),
+    settings.botPrompt,
+    currentProduct,
+    customerName,
+    customerInfo,
+    trainingText,
+    orderContext
+  );
 
   // Khách vừa nhắn LIÊN TIẾP nhiều tin (chưa ai trả lời) → dặn AI đọc hết rồi trả lời gộp 1 lần
   let burstNote = "";
@@ -1107,7 +1180,14 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "Nói thật, ngắn gọn là bên shop chưa có ảnh bạn mẫu mặc, rồi trả lời NGAY điều khách đang cần biết (độ dài/size theo chiều cao khách đã nói, theo dữ liệu sản phẩm). " +
         "Không hỏi lại thông tin shop đã hỏi ở tin trước.";
   }
-  const finalPrompt = systemPrompt + situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
+  // Hệ thống nhận ra khách đang LO LẮNG ở tin này (vd "Nhưng phải hợp với cân nặng nhé", "sợ không vừa") → ép AI chỉ trấn an, không thúc khách đổi lựa chọn
+  const worryProbe = [String(customerMessage || ""), ...pendingMsgs.map((m) => (m.text || "").trim())].join(" ");
+  const worryNote = isWorryText(worryProbe)
+    ? "\n\nKHÁCH ĐANG LO LẮNG ở tin này (hệ thống đã nhận ra): CHỈ trấn an 1-2 câu, đúng điều khách lo, bằng thông tin THẬT trong nội dung/ghi chú sản phẩm (vd \"size L vừa đến 75kg nên chị yên tâm nha\"). KHÔNG hỏi thêm màu/size/chiều dài/SĐT/địa chỉ. KHÔNG khuyên khách đổi giá trị khách đã chọn (khách đã chọn chiều dài nào thì tôn trọng, đừng nhắc lại gợi ý cũ). Không có thông tin thật thì nói sẽ hỏi lại shop, không bịa."
+    : "";
+  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
+  const finalPrompt = systemPrompt + promptNotes;
+  const groqPrompt = groqBasePrompt + promptNotes;
 
   // Không cho AI chạy quá lâu: hàm Vercel bị cắt ở 60s, phải chừa thời gian gửi tin cho khách
   const deadline = Math.min(Date.now() + REPLY_BUDGET_MS, hardDeadline);
@@ -1122,9 +1202,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let raw = "";
   let usedModel = null;
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys);
+    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys, { groqSystem: groqPrompt });
     raw = r.text;
     usedModel = r.model;
+    if (String(usedModel || "").startsWith("groq:")) console.warn("⚠ Câu trả lời này do AI DỰ PHÒNG Groq viết (Gemini lỗi/hết hạn mức) → kiểm tra key Gemini ở nút 🔑:", usedModel);
     if (isErrorText(raw)) {
       console.warn("AI trả về câu báo lỗi, bỏ qua và thử lại:", raw);
       raw = "";
@@ -1172,12 +1253,48 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       await mergeCustomerInfo(senderId, { variant: composed }).catch((e) => console.error("Không lưu được lựa chọn của khách:", e.message));
     }
   }
+  // Lưới an toàn: khách đã gửi địa chỉ (shop vừa xin SĐT/địa chỉ) mà AI không điền → tự lấy từ tin khách, để bot không hỏi lại / hỏi thêm "số nhà, đường phố"
+  if (!String(customerInfo?.address || "").trim() && !String(verified?.address || "").trim()) {
+    const histArr = history || [];
+    let askIdx = -1;
+    histArr.forEach((m, k) => {
+      if (m.from !== "customer" && /địa chỉ|dia chi|số điện thoại|sđt|so dien thoai|nhận hàng|nhan hang/i.test(String(m.text || ""))) askIdx = k;
+    });
+    if (askIdx >= 0) {
+      const sinceAsk = histArr.slice(askIdx + 1).filter((m) => m.from === "customer").map((m) => m.text || "");
+      const nowTexts = [...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || "")), String(customerMessage || "")];
+      const addr = pickAddressFromTexts([...sinceAsk, ...nowTexts]);
+      if (addr) {
+        verified = { ...(verified || {}), address: addr };
+        await mergeCustomerInfo(senderId, { address: addr }).catch((e) => console.error("Không lưu được địa chỉ tự lấy:", e.message));
+        console.log("AI không điền địa chỉ → hệ thống tự lấy từ tin khách:", addr);
+      }
+    }
+  }
+  // Tên + địa chỉ khách gõ → chỉnh chính tả trước khi dùng báo đơn / lưu đơn
+  if (verified) {
+    if (String(verified.address || "").trim()) verified = { ...verified, address: tidyAddress(verified.address) };
+    if (String(verified.name || "").trim()) verified = { ...verified, name: tidyName(verified.name) };
+  }
   const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
   // Khách VỪA gửi SĐT/địa chỉ ở lượt này → chuỗi chốt đơn thay hẳn câu nháp của AI
   const replaceDraft = !!(verified && (String(verified.phone || "").trim() || String(verified.address || "").trim()));
   const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
   // Có bảng thuộc tính: cặp chiều cao + cân nặng chỉ áp dụng khi mục "cặp" CHƯA chọn (khách đã nói "sz L" thì không hỏi nữa)
   const bodySizedNow = attrMode ? attrNow.list.some((x) => x.attr.kind === "pair" && x.state === "missing") : isBodySizedProduct(currentProduct);
+  // Thông tin shop ĐÃ CÓ (SĐT, địa chỉ, tên) → câu bot xin lại đúng thông tin đó bị bỏ. Trừ khi khách đang nói về chính thông tin đó/đổi thông tin.
+  const customerTouchesInfo = /(địa chỉ|dia chi|sđt|sdt|số điện thoại|so dien thoai|đổi|mới|khác|sai|nhầm|sửa|thay)/i.test(currentTexts.join(" "));
+  const knownTopics = customerTouchesInfo
+    ? []
+    : [
+        String(mergedInfo.phone || "").trim() && "so dien thoai",
+        String(mergedInfo.address || "").trim() && "dia chi",
+        // Đã có SĐT + địa chỉ thì không xin họ tên (đơn không cần), trừ khi chủ shop ghi rõ trong "Thông tin shop" là cần tên người nhận
+        (String(mergedInfo.name || "").trim() || (String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim() && !/(họ tên|tên người nhận|tên nhận hàng)/i.test(String(settings?.botPrompt || "")))) && "ten nguoi nhan",
+        // Màu đã chốt → không hỏi lại màu. Mọi mục còn lại (size, chiều dài...) đã chốt hết → không hỏi lại chiều cao/cân nặng/size
+        attrMode && attrNow && attrNow.list.some((x) => /(^| )mau( |$)/.test(x.attr.key) && x.state === "chosen") && "mau",
+        attrMode && attrNow && (() => { const rest = attrNow.list.filter((x) => !/(^| )mau( |$)/.test(x.attr.key)); return rest.length > 0 && rest.every((x) => x.state === "chosen"); })() && "size",
+      ].filter(Boolean);
   const unblockTopics = [
     ...new Set([
       ...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: bodySizedNow }),
@@ -1244,7 +1361,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Xét cả các tin khách vừa nhắn liền nhau. Khách tự gửi ảnh cho bot thì vẫn cho gửi.
   const allCurrent = currentTexts.join(" ");
   const photoWord = /\b(anh|hinh|video|clip|xem|feedback|review)\b/.test(normKey(allCurrent));
-  const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !customerImages.length && !adminHandled;
+  // Khách TỰ GỬI ảnh: chỉ cho bot gửi ảnh lại khi khách HỎI về ảnh ("có mẫu này không", "giống cái này", "giá bao nhiêu", dấu ?).
+  // Ảnh trơn / "lấy màu này" (khách chụp màn hình ảnh của shop để chỉ màu mình chọn) → KHÔNG gửi lại ảnh, chỉ xác nhận bằng chữ.
+  const customerAsksAboutImage = /\?|giong|tuong tu|y chang|gia\b|bao nhieu|(?<![a-z])(?:co|con)(?![a-z])[^.!?]{0,30}(?<![a-z])(?:khong|ko|k|hong|ha)(?![a-z])/.test(normKey(allCurrent));
+  const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !adminHandled && (!customerImages.length || !customerAsksAboutImage);
   const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText)) || unaskedImages || (modelPhotoAsk && !hasRealPhotos);
   if (blockImages) {
     if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách không xin xem ảnh:", msgText.slice(0, 80));
@@ -1340,6 +1460,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  // Khách chỉ gửi ảnh (chụp màn hình màu mình chọn...) mà không xin xem ảnh → không gửi ảnh lại, bỏ câu hứa "gửi ảnh"; không còn gì để nói thì xác nhận ngắn
+  if (unaskedImages && customerImages.length && !images.length && messages.length) {
+    const photoPromise = /(gửi|gui)[^,.!?\n]{0,40}(ảnh|hình|anh|hinh)|xem (ảnh|hình|anh|hinh)/i;
+    messages = messages
+      .map((m) => {
+        let out = String(m).split(/(?<=[,;.!?])\s*/).filter((c) => !photoPromise.test(c)).join(" ").trim().replace(/[,;]\s*$/, "");
+        if (out && !/[.!?]$/.test(out)) out += /ạ$/i.test(out) ? "." : " ạ.";
+        return out;
+      })
+      .filter(Boolean);
+    if (!messages.length) {
+      const colorPicked = attrMode ? (attrNow.list.find((x) => /(^| )mau( |$)/.test(x.attr.key))?.picked || []) : [];
+      const tn = ladderTone([]);
+      messages = [colorPicked.length ? `Dạ vâng, màu ${colorPicked.map((c) => String(c).toLowerCase()).join(", ")} nha ${tn.kh}.` : `Dạ em nhận được ảnh của ${tn.kh} rồi ạ.`];
+    }
+    console.log("Khách gửi ảnh mà không xin xem ảnh → không gửi ảnh lại:", messages.join(" | "));
+  }
+
   // Khách xin ảnh người mẫu mặc mà shop CHƯA có → không gửi ảnh màu, bỏ câu hứa "gửi ảnh", nói thật là chưa có ảnh bạn mẫu
   if (modelPhotoAsk && !hasRealPhotos && !images.length) {
     const neutralNow = notesForbidPronouns(currentProduct?.notes);
@@ -1395,7 +1533,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim();
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
-      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact);
+      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt);
       const redoText = redo.join(" ");
       if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = redo;
       else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
@@ -1434,7 +1572,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
       // nhưng câu mở đầu đã gửi rồi nên hệ thống không gửi lại → không còn gì để trả. Gọi lại AI, ép phải viết câu trả lời.
       console.warn("AI trả về messages rỗng.", { openingRequested, raw: (raw || "").slice(0, 300) });
-      const retried = await retryForcedText(finalPrompt, contents, deadline, apiKeys, hardDeadline);
+      const retried = await retryForcedText(finalPrompt, contents, deadline, apiKeys, hardDeadline, groqPrompt);
       if (retried.length) return { messages: retried, images: [], imageItems: [], imageNote: "" };
       // AI lỗi hẳn: im lặng, không gửi gì cho khách (chủ shop tự nhắn tay; khách nhắn tiếp thì bot thử lại bình thường)
       if (SILENT_ON_ERROR) {
@@ -1492,11 +1630,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       }
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || forcedSummary || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics };
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || forcedSummary || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
-async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages, askContact = false) {
+async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages, askContact = false, groqPrompt = "") {
   try {
     const need = items
       .map((x) => `- ${x.attr.name}: chọn đúng 1 giá trị trong [${x.attr.values.join(" / ")}]; cách chọn của chủ shop: ${x.attr.how || "theo số đo khách đã nói"}`)
@@ -1515,7 +1653,8 @@ async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDea
       contents,
       { maxOutputTokens: 2048, temperature: 0.6, responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "low" } },
       Math.min(Math.max(deadline, Date.now() + 12000), hardDeadline),
-      apiKeys
+      apiKeys,
+      groqPrompt ? { groqSystem: groqPrompt + extra } : {}
     );
     console.log(`---- Bot trả lời (viết lại để tư vấn, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
@@ -1528,7 +1667,7 @@ async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDea
 }
 
 /** Gọi lại Gemini lần nữa, nhắc bắt buộc phải có câu trả lời bằng chữ (không được để messages rỗng). */
-async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDeadline = Date.now() + 50000) {
+async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDeadline = Date.now() + 50000, groqPrompt = "") {
   try {
     const extra =
       "\n\nLƯU Ý BẮT BUỘC: mảng messages KHÔNG được rỗng. Câu mở đầu quảng cáo đã gửi rồi nên use_opening_product phải là null. " +
@@ -1543,7 +1682,8 @@ async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDe
         thinkingConfig: { thinkingLevel: "low" },
       },
       Math.min(Math.max(deadline, Date.now() + 15000), hardDeadline), // chừa tới 15s cho lần thử lại, nhưng không vượt giới hạn 60s của Vercel
-      apiKeys
+      apiKeys,
+      groqPrompt ? { groqSystem: groqPrompt + extra } : {}
     );
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
