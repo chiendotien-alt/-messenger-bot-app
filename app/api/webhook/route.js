@@ -47,7 +47,7 @@ function mentionsOrderCheck(t) {
   if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
   return ORDER_CHECK_RE.test(x);
 }
-import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
@@ -1137,7 +1137,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   // Số lượng khách tự nói ("lấy 2 cái") — dùng khi sản phẩm không có bảng giá mặc cả, để tin báo đơn không mặc định 1 cái
   const qtyHintNow = customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()));
-  const sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
+  let sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
   const custTextNewest = () =>
     [...currentTexts].reverse().concat((history || []).filter((m) => m.from === "customer").map((m) => m.text || "").reverse()).join("\n");
@@ -1281,6 +1281,17 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (joined.length <= 1900) messages = [joined];
   }
   const openingRequested = !!parsed?.use_opening_product;
+  // ĐỐI CHIẾU: AI đã nói giá trị khách chọn (vd "size L") mà bộ nhận diện còn thấy "missing" (khách gõ lạ như "zai l")
+  // → ghi nhận vào trạng thái để khối đơn + đơn lưu không bị thiếu, và bot không hỏi lại cân nặng để chọn size.
+  if (attrMode && attrNow) {
+    const recentBot = (history || []).filter((m) => m.from !== "customer").slice(-3).map((m) => m.text || "");
+    const recentCust = [...attrHistory.filter((m) => m.from === "customer").slice(-4).map((m) => String(m.text || "")), ...attrCurrent];
+    const fixedAttrs = reconcileWithReply(attrNow, { replyTexts: [...recentBot, ...messages], customerTexts: recentCust });
+    if (fixedAttrs.length) {
+      sumDetail = summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1);
+      console.log("Đối chiếu tin AI: bổ sung lựa chọn khách mà bộ nhận diện bỏ sót:", fixedAttrs.map((f) => `${f.name}=${f.value}`).join(", "));
+    }
+  }
 
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
   let verified = null;
