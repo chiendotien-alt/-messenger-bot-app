@@ -34,11 +34,12 @@ import { getSentImageUrls,
   mergeCustomerInfo,
   extractPhone,
   isConversationBotOff,
+  setConversationBotOff,
   getOwnerPriceTexts,
   getOutgoingTexts,
 } from "@/lib/conversations";
 import { ownerPriceNote } from "@/lib/dealPrice";
-import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, buildOrderMessages, summarySentBefore, productNeedsVariant } from "@/lib/priceLadder";
+import { hasLadder, computePriceContext, priceTurnNote, finalizePriceReply, buildSummaryText, buildOrderMessages, summarySentBefore, productNeedsVariant, isOrderClosingMessage, looksLikeOrderBlock } from "@/lib/priceLadder";
 
 // Chỉ coi là "kiểm tra đơn / xem lại đơn" khi nói về ĐƠN hoặc THÔNG TIN đặt hàng. "Kiểm tra hàng thoải mái", "ưng thì trả" (chính sách đổi trả) KHÔNG tính.
 const ORDER_CHECK_RE = /(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)|kiểm tra (giúp|hộ|lại)\b|xem lại (giúp|hộ)\b/i;
@@ -412,6 +413,8 @@ export async function POST(req) {
 
         const askGapMs = readAskConfig(settings).askGapMs;
         let sentCount = 0;
+        let orderBlockSent = false; // bảng đơn ("Em lên đơn ạ: ... SĐT ...") đã gửi thành công trong lượt này
+        let closingSent = false; // đã gửi xong câu chốt "Đơn hàng giao trong khoảng 3-4 ngày..." → hết việc của bot với khách này
         const sendTexts = async () => {
           for (let i = 0; i < messages.length; i++) {
             if (i > 0) {
@@ -490,6 +493,15 @@ export async function POST(req) {
               console.error("Không lưu được tin của bot:", e.message)
             );
             sentCount++;
+            if (looksLikeOrderBlock(messages[i])) orderBlockSent = true;
+            // Chỉ tính là chốt xong khi BẢNG ĐƠN đã gửi rồi, câu giao hàng 3-4 ngày gửi sau đó
+            else if (orderBlockSent && isOrderClosingMessage(messages[i])) closingSent = true;
+          }
+          // Chốt đơn xong (đã gửi câu giao hàng 3-4 ngày) → TẮT bot với khách này (chủ shop tự lo tiếp; bật lại bằng nút gạt trong khung chat)
+          if (closingSent && settings?.offAfterOrder !== false) {
+            await setConversationBotOff(senderId, true)
+              .then(() => console.log("Đã gửi câu chốt đơn → tắt bot với khách này."))
+              .catch((e) => console.error("Không tắt được bot sau khi chốt đơn:", e.message));
           }
           if (!sentCount) await fbAction(senderId, "typing_off", pageToken); // bỏ hết câu (toàn câu hỏi quá sớm) → tắt "đang gõ"
           return true;

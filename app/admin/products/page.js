@@ -539,6 +539,8 @@ export default function AdminPage() {
   const [firstWait, setFirstWait] = useState("12"); // giây chờ trước khi bot trả lời câu đầu tiên của khách mới
   const [firstWaitSaved, setFirstWaitSaved] = useState("12");
   const [firstWaitStatus, setFirstWaitStatus] = useState("");
+  const [offAfterOrder, setOffAfterOrder] = useState(true); // chốt đơn xong (gửi câu giao hàng 3-4 ngày) thì tự tắt bot với khách đó
+  const [offAfterOrderStatus, setOffAfterOrderStatus] = useState("");
   // Hỏi lại thông tin + nhắn bồi khi khách im
   const [askGap, setAskGap] = useState("180"); // giây
   const [nudgeOn, setNudgeOn] = useState(false);
@@ -588,6 +590,7 @@ export default function AdminPage() {
         const w = s.firstContactWaitSec === undefined || s.firstContactWaitSec === null || s.firstContactWaitSec === "" ? "12" : String(s.firstContactWaitSec);
         setFirstWait(w);
         setFirstWaitSaved(w);
+        setOffAfterOrder(s.offAfterOrder !== false);
         // Bản cũ lưu bằng phút (askGapMin) → đổi sang giây
         const g =
           s.askGapSec !== undefined && s.askGapSec !== null && s.askGapSec !== ""
@@ -625,6 +628,23 @@ export default function AdminPage() {
       setFirstWaitStatus("Lưu thất bại, thử lại nhé");
     }
     setTimeout(() => setFirstWaitStatus(""), 2500);
+  }
+
+  async function toggleOffAfterOrder(next) {
+    setOffAfterOrder(next);
+    setOffAfterOrderStatus("Đang lưu...");
+    const res = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ offAfterOrder: next }),
+    }).catch(() => null);
+    if (res && res.ok) {
+      setOffAfterOrderStatus("Đã lưu ✓");
+    } else {
+      setOffAfterOrder(!next);
+      setOffAfterOrderStatus("Lưu thất bại, thử lại nhé");
+    }
+    setTimeout(() => setOffAfterOrderStatus(""), 2500);
   }
 
   async function saveAskSettings() {
@@ -881,6 +901,16 @@ export default function AdminPage() {
           <span style={{ color: "#2d7a3a", fontSize: 13 }}>{firstWaitStatus}</span>
           <div style={{ width: "100%", color: "#666", fontSize: 12 }}>
             Khách mới nhắn lần đầu: bot chờ ngần này giây (cho khách gõ xong) rồi mới gửi ảnh mẫu + câu mở đầu. Nhập 0 = trả lời ngay.
+          </div>
+        </div>
+        <div style={{ margin: "12px 0", padding: "10px 12px", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 8 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", flexWrap: "wrap" }}>
+            <input type="checkbox" checked={offAfterOrder} onChange={(e) => toggleOffAfterOrder(e.target.checked)} />
+            <strong style={{ fontSize: 14 }}>Chốt đơn xong thì tự tắt bot với khách đó</strong>
+            <span style={{ color: "#2d7a3a", fontSize: 13 }}>{offAfterOrderStatus}</span>
+          </label>
+          <div style={{ color: "#666", fontSize: 12, marginTop: 6 }}>
+            Khi bot gửi xong câu "Đơn hàng giao trong khoảng 3-4 ngày chị để ý điện thoại giúp em nha", bot sẽ không trả lời khách đó nữa (cũng không nhắn bồi). Muốn bot trả lời lại thì bật nút gạt cạnh tên khách trong khung chat. Cần ghi thời gian giao hàng (vd "Giao hàng 3-4 ngày") trong ô thông tin shop để bot có câu này.
           </div>
         </div>
         <div style={{ margin: "12px 0", padding: "10px 12px", background: "#fff", border: "1px solid #e2e2e2", borderRadius: 8 }}>

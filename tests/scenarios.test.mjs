@@ -207,3 +207,130 @@ test("Tên đường/tên người có chữ giống màu không bị đọc th�
     assert.notEqual(by(st(h, [a]), "Màu").state, "chosen", a);
   }
 });
+
+// ===== 9. Hồi quy từ hội thoại thật: chữ "ko/không" không phải lúc nào cũng là từ chối =====
+const realAttrs = productAttributes({
+  name: "Chân váy 3 tầng",
+  attributes: [
+    { name: "Màu", values: "Đen, Kem, Trắng, Hồng", how: "" },
+    { name: "Size", values: "S, M, L, XL", how: "theo chiều cao cân nặng" },
+    { name: "Chiều dài váy", values: "75cm, 85cm, 92cm", how: "theo chiều cao" },
+  ],
+});
+const realConvo = [
+  B("Dạ chân váy bên em giá 185k 1 chiếc và được miễn phí giao hàng toàn quốc"),
+  B("Chị cho em xin chiều cao cân nặng để em chọn váy nhé"),
+  C("Cao 1 m62"),
+  B("Dạ chị cao 1m62 thì mình mặc chân váy dài 92cm là vừa đẹp ạ"),
+  B("Chị cho em xin thêm cân nặng để em chọn size váy cho mình nhé"),
+  C("Nặng 55-56 gì đó lâu ko cân lại"),
+  B("dạ chị nặng 55 đến 56kg thì mình mặc size L ạ"),
+  B("chị lấy chân váy màu nào ạ?"),
+  C("Lấy màu trắng"),
+  B("Dạ chị cao 1m62 mặc chân váy dài 92cm là đẹp ạ"),
+  C("Kết hợp áo màu đỏ được ko sóp"),
+  B("dạ chân váy màu trắng rất dễ phối đồ nên mình kết hợp với áo màu đỏ là rất nổi bật và xinh xắn nha chị"),
+  C("Cho kiểm tra hàng trước khi thanh toán ko sop"),
+  B("Dạ chị được kiểm tra hàng thoải mái trước khi thanh toán ạ"),
+  C("Xóm 3 thôn 2 xã Bắc ruộng huyện tánh linh tĩnh bình (củ)"),
+  B("Dạ em nhận được địa chỉ rồi ạ. Chị cho em xin thêm số điện thoại để em lên đơn gửi hàng nha."),
+];
+test("Hội thoại thật: tới lúc khách gửi SĐT, đơn có đủ màu Trắng, size L, dài 92cm", () => {
+  const s = attributeStatus(realAttrs, realConvo, ["0395969950"], "");
+  const get = (n) => s.list.find((x) => x.attr.name === n);
+  assert.deepEqual(get("Màu").picked, ["Trắng"]);
+  assert.deepEqual(get("Size").picked, ["L"]);
+  assert.deepEqual(get("Chiều dài váy").picked, ["92cm"]);
+  assert.equal(get("Chiều dài váy").state, "chosen");
+  assert.equal(composeVariant(s), "Màu Trắng, Size L, Chiều dài váy 92cm");
+  assert.deepEqual(summaryDetail(s).specs, ["size L", "dài 92cm"]);
+});
+test("Hội thoại thật: không có tin nào của khách làm mất lời tư vấn chiều dài", () => {
+  let lost = null;
+  let seenAdvice = false;
+  for (let n = 1; n <= realConvo.length; n++) {
+    const h = realConvo.slice(0, n);
+    const s = attributeStatus(realAttrs, h, [], "");
+    const len = s.list.find((x) => x.attr.name === "Chiều dài váy");
+    if (len.state === "proposed" || len.state === "chosen") seenAdvice = true;
+    else if (seenAdvice && !lost) lost = `${n}: ${h[h.length - 1].text} → ${len.state}`;
+  }
+  assert.ok(seenAdvice);
+  assert.equal(lost, null, `lời tư vấn bị mất ở tin ${lost}`);
+});
+test("Những câu có 'ko/k/chưa' nhưng KHÔNG phải từ chối → giữ lời tư vấn", () => {
+  for (const t of ["lâu ko cân lại", "cho kiểm tra hàng ko sop", "chưa cần gấp đâu em", "giờ chưa có tiền, mai chị chuyển", "k biết cân nặng chính xác", "ko biết mặc cái nào đẹp"]) {
+    const s = attributeStatus(realAttrs, realConvo.slice(0, 4), [t], "");
+    const len = s.list.find((x) => x.attr.name === "Chiều dài váy");
+    assert.ok(["proposed", "chosen"].includes(len.state) && len.picked[0] === "92cm", `${t} → ${len.state} ${len.picked}`);
+  }
+});
+test("Khách từ chối thật sự → bỏ lời tư vấn, không chốt số cũ", () => {
+  for (const t of ["không", "ko", "thôi", "không vừa", "không hợp", "chị không lấy dài 92cm", "k lấy đâu", "chưa ưng", "dài hơn nữa đi em", "đổi cái khác"]) {
+    const s = attributeStatus(realAttrs, realConvo.slice(0, 4), [t], "");
+    const len = s.list.find((x) => x.attr.name === "Chiều dài váy");
+    assert.notEqual(len.picked[0], "92cm", `${t} → ${len.state} ${len.picked}`);
+  }
+});
+test("Câu hỏi nghi ngờ kết thúc bằng 'không em/ko ạ' → coi là câu hỏi, chưa chốt", () => {
+  const adv = [C("Chị cao 1m60 nặng 55kg"), B("Dạ chị mặc size M dài 85cm là vừa đẹp ạ. Chị chọn màu nào ạ?")];
+  for (const q of ["dài 85cm có dài quá không em", "mặc vậy ổn không em", "vậy có vừa không ạ"]) {
+    const s = attributeStatus(attrs, adv, [q], "");
+    assert.notEqual(by(s, "Size").state, "chosen", q);
+    assert.notEqual(by(s, "Chiều dài").state, "chosen", q);
+  }
+});
+
+// ===== 10. Hồi quy: khách gọi tắt màu nhiều từ ("màu cam" = "Cam Đất", "màu đỏ" = "Đỏ đô") =====
+const colorAttrs = productAttributes({
+  name: "Chân váy 3 tầng",
+  attributes: [
+    { name: "Màu", values: "Trắng, Đen, Kem, Vàng, Xanh, Hồng, Đỏ đô, Cam Đất", how: "" },
+    { name: "Size", values: "S, M, L, XL, 2XL", how: "theo chiều cao cân nặng" },
+    { name: "Chiều dài váy", values: "75cm, 85cm, 92cm", how: "theo chiều cao" },
+  ],
+});
+test("Gọi tắt màu: 'màu cam' → Cam Đất, 'màu đỏ' → Đỏ đô", () => {
+  const color = colorAttrs[0];
+  for (const t of ["Màu cam", "màu cam nha", "lấy cam", "chọn màu cam đất", "Lấy màu cam em ơi"]) assert.deepEqual(matchValues(color, t), ["Cam Đất"], t);
+  for (const t of ["màu đỏ", "Lấy màu đỏ nha", "chọn đỏ"]) assert.deepEqual(matchValues(color, t), ["Đỏ đô"], t);
+});
+test("Gọi tắt màu KHÔNG nhầm với chữ thường gặp (cảm ơn, cam kết, lấy đồ, đo...)", () => {
+  const color = colorAttrs[0];
+  for (const t of ["cảm ơn shop", "cam on shop nha", "Cam kết nhận hàng không ưng hoàn hàng", "chị lấy đồ này", "để em đo lại", "mua đồ cho con", "chị muốn xem màu khác", "do chị cao 1m50"]) {
+    assert.deepEqual(matchValues(color, t), [], t);
+  }
+});
+test("Nhiều màu cùng đầu từ ('Xanh', 'Xanh lá') thì KHÔNG đoán", () => {
+  const a = productAttributes({ name: "Áo", attributes: [{ name: "Màu", values: "Xanh lá, Xanh dương, Trắng", how: "" }] })[0];
+  assert.deepEqual(matchValues(a, "màu xanh"), []);
+  assert.deepEqual(matchValues(a, "màu xanh lá"), ["Xanh lá"]);
+});
+test("Khách nhắn trơn 'cam' khi shop vừa hỏi màu → nhận Cam Đất; nhắn trơn 'cam' lúc khác thì không", () => {
+  const asked = attributeStatus(colorAttrs, [B("Chị chọn màu nào ạ?")], ["cam"], "");
+  assert.deepEqual(asked.list.find((x) => x.attr.name === "Màu").picked, ["Cam Đất"]);
+  const notAsked = attributeStatus(colorAttrs, [B("Dạ váy giá 185k ạ")], ["cam"], "");
+  assert.notEqual(notAsked.list.find((x) => x.attr.name === "Màu").state, "chosen");
+});
+test("Số lượng theo từng màu có màu gọi tắt: '2 cam 1 trắng' → Cam Đất x2, Trắng x1", () => {
+  const s = attributeStatus(colorAttrs, [B("Chị chọn màu nào ạ?")], ["Chị lấy 2 cam 1 trắng"], "");
+  const colors = summaryDetail(s).colors;
+  assert.deepEqual(colors.find((c) => c.name === "Cam Đất"), { name: "Cam Đất", qty: 2 });
+  assert.deepEqual(colors.find((c) => c.name === "Trắng"), { name: "Trắng", qty: 1 });
+});
+test("Hội thoại thật (màu cam): đơn có đủ Màu Cam Đất, size L, dài 75cm", () => {
+  const h = [
+    B("Chân váy bên em có 8 màu không biết chị chọn được màu nào chưa ạ ?"),
+    C("Màu cam"),
+    B("Dạ em lấy chân váy màu cam nha chị."),
+    B("Chị cho em xin chiều cao cân nặng để em chọn váy nha."),
+    C("Cao 1m50, nặng 55, eo 78, ngực 90, có bụng"),
+    B("Dạ chị cao 1m50 nặng 55kg thì mặc size L và lấy váy dài 75cm là vừa đẹp nha chị."),
+    B("Chị cho em xin số điện thoại và địa chỉ nhận hàng để em lên đơn nha."),
+  ];
+  const s = attributeStatus(colorAttrs, h, ["01 hoàng hoa thám, kh phố 1, phường phước hội , thị xã lagi, bình thuận-0977488660"], "");
+  assert.equal(composeVariant(s), "Màu Cam Đất, Size L, Chiều dài váy 75cm");
+  const d = summaryDetail(s);
+  assert.deepEqual(d.specs, ["size L", "dài 75cm"]);
+  assert.deepEqual(d.colors, [{ name: "Cam Đất", qty: 1 }]);
+});

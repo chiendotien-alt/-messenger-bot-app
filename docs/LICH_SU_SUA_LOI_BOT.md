@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10 cùng ngày). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -172,3 +172,53 @@ Chạy test: `npm test` (dùng `tests/loader.mjs`). Kết quả: 78 test, 78 qua
 ### 10.7. Cách áp dụng
 
 Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đường dẫn): `lib/replyDedupe.js`, `lib/products.js`, `lib/botPrompt.js`, `lib/pickAddress.js` (file MỚI), `app/api/webhook/route.js`, `tests/contactAsk.test.mjs`, `docs/LICH_SU_SUA_LOI_BOT.md`.
+
+## 11. Hai lỗi sửa thêm trong `lib/attributes.js` (cùng ngày 27/10/2026)
+
+### 11.1. Báo đơn thiếu chiều dài váy dù bot đã tư vấn "dài 92cm"
+
+- **Hiện tượng:** khách đưa chiều cao (1m62), bot tư vấn "mặc chân váy dài 92cm là vừa đẹp". Đến lúc khách gửi SĐT, tin báo đơn chỉ có `Màu trắng, size L, SL:1`, thiếu chiều dài. Log: `Thuộc tính: Size=chosen(L) | Chiều dài váy=measured | màu=chosen(Trắng)`, kèm `Chưa tư vấn giá trị cho: Chiều dài váy → nhờ AI viết lại`.
+- **Nguyên nhân (đã tái hiện bằng cách chạy lại từng tin của hội thoại thật):** lời tư vấn (`proposed`) bị hai tin của khách làm mất, dù cả hai KHÔNG phải từ chối:
+  1. `Nặng 55-56 gì đó lâu ko cân lại` ("ko cân lại" = lâu chưa cân)
+  2. `Cho kiểm tra hàng trước khi thanh toán ko sop` ("ko sop" = "không shop", trợ từ hỏi)
+  Nhánh từ chối chung chung trong `attributeStatus` coi mọi tin có chữ `ko/k/không/chưa/thôi/khác/đổi` mà không nhắc tới thuộc tính nào là từ chối, rồi hủy MỌI lời tư vấn đang chờ (biến `NEGATE`).
+- **Cách sửa:** thay `NEGATE` bằng `refusesAdvice(text)`. Chỉ coi là từ chối thật khi:
+  - tin chỉ là lời từ chối đơn thuần (`BARE_NO`: "không", "ko", "thôi", "chưa", "sai"...), hoặc
+  - có cụm từ chối rõ (`REFUSAL_RE`: "không lấy / không vừa / không hợp / chưa ưng / không chọn ..."), hoặc
+  - có tín hiệu đổi ý (`CHANGE_RE`: "đổi", "dài hơn", "ngắn hơn", "khác"), hoặc có chữ "thôi".
+  Chữ "ko/k/chưa" đứng một mình trong câu khác (`lâu ko cân lại`, `ko sop`, `chưa cần gấp`) không còn bị tính là từ chối.
+- **Sửa kèm theo:**
+  - Nhận câu hỏi nghi ngờ kết thúc bằng "không em / không ạ / ko nha..." là câu hỏi (trước đây chỉ nhận vài trợ từ ngắn), để "mặc vậy ổn không em" không bị coi là đồng ý ngầm. Trước khi sửa `NEGATE`, những câu này được giữ lại nhờ vô tình bị `NEGATE` chặn.
+  - Khách nhắn đúng chữ "không" / "thôi" thì hủy lời tư vấn (trước đây chữ "không" đứng một mình bị coi là câu hỏi nên không hủy được).
+- **Test:** nhóm 9 trong `tests/scenarios.test.mjs` (dựng lại đúng hội thoại thật, kiểm tra từng tin không làm mất lời tư vấn, 6 câu "ko/chưa" không phải từ chối, 10 câu từ chối thật).
+
+### 11.2. Báo đơn không nhận màu "cam" (sản phẩm có màu "Cam Đất")
+
+- **Hiện tượng:** khách nhắn `Màu cam`, bot trả lời "em lấy chân váy màu cam nha chị", nhưng tin báo đơn chỉ có `size L, dài 75cm, SL:1`, thiếu màu.
+- **Nguyên nhân:** màu trong sản phẩm tên là `Cam Đất` (2 từ). Hàm `matchValues` chỉ khớp khi khách gõ đủ "cam đất"; gọi tắt "màu cam" không khớp nên `Màu=missing`.
+- **Cách sửa:** thêm hàm `headAlias` và khớp theo TỪ ĐẦU của giá trị nhiều từ ("màu cam", "lấy cam", "chọn cam" → Cam Đất). Điều kiện an toàn:
+  - chỉ khi từ đầu là duy nhất trong các giá trị (nhiều màu "Xanh lá", "Xanh dương" thì không đoán);
+  - từ đầu từ 3 chữ trở lên và phải có chữ báo hiệu đứng trước (màu, lấy, chọn, đổi, thêm, mua, đặt); nhắn trơn "cam" chỉ nhận khi shop vừa hỏi màu;
+  - từ đầu 2 chữ có dấu ("Đỏ đô" → "màu đỏ") chỉ nhận khi khách gõ ĐÚNG có dấu "đỏ", để "lấy đồ", "để em đo" không bị đọc thành màu đỏ;
+  - các chữ dễ nhầm vẫn bị che: "cảm ơn", "cam kết", "cam on".
+  `colorQtys` cũng đọc được số lượng theo tên gọi tắt ("2 cam 1 trắng").
+- **Giới hạn đã biết:** gọi tắt bằng chữ KHÔNG dấu cho từ đầu 2 chữ (vd "mau do" cho "Đỏ đô") chưa được nhận, vì trùng với "do/đo/đồ". Khách gõ kiểu đó thì chỉ còn trông vào bước đối chiếu tin AI (`reconcileWithReply`, thay đổi 2) hoặc AI tự xin lại màu.
+- **Test:** nhóm 10 trong `tests/scenarios.test.mjs`.
+
+### 11.3. Kiểm tra
+
+- `npm test`: 98 test, 98 qua, 0 lỗi (cần `npm install` trước vì `contactAsk.test.mjs` nạp `@vercel/blob` và `@neondatabase/serverless`).
+- Chưa chạy thử trên bot thật. Sau khi deploy, nếu thấy đơn thiếu màu/size/chiều dài, lấy dòng log `Thuộc tính: ...` kèm tin khách để biết bộ nhận diện bỏ sót ở đâu.
+
+## 12. Tính năng mới: chốt đơn xong thì tự tắt bot với khách đó
+
+- **Yêu cầu của chủ shop:** khi bot chat tới câu cuối "Đơn hàng giao trong khoảng từ 3-4 ngày chị để ý điện thoại giúp em nha." thì tắt bot với khách đó luôn (các tin khách nhắn sau đó như "Sipbo giao kiểm tra hàng nếu ko như ý..." do chủ shop tự trả lời).
+- **Cách làm (dùng công tắc tắt bot theo từng khách đã có sẵn: cột `conversations.bot_off`, hàm `setConversationBotOff` trong `lib/conversations.js`):**
+  1. `lib/priceLadder.js`: thêm `isOrderClosingMessage(text)`. Chỉ nhận ĐÚNG cấu trúc câu mà `buildOrderMessages` sinh ra (`Đơn hàng giao trong khoảng từ X-Y ngày <xưng hô> để ý điện thoại giúp <xưng hô> nha.`, hoặc `... khoảng N ngày ...`). Câu do AI tự viết kiểu "ship khoảng 3-4 ngày" khi khách hỏi giao hàng KHÔNG bị nhận nhầm.
+  2. `app/api/webhook/route.js`, trong `sendTexts`: sau khi `sendMessage` gửi thành công từng tin, nếu tin đó là BẢNG ĐƠN (`looksLikeOrderBlock`, có dòng SĐT) thì đánh dấu `orderBlockSent`; chỉ khi bảng đơn đã gửi rồi mà tin sau đó là câu chốt thì mới đánh dấu `closingSent` (thứ tự bắt buộc: lên đơn trước, câu giao hàng sau); hết vòng gửi thì gọi `setConversationBotOff(senderId, true)` và ghi log `Đã gửi câu chốt đơn → tắt bot với khách này.`. Nếu khách nhắn thêm khiến câu chốt không được gửi thì không tắt.
+  3. Công tắc tính năng: `offAfterOrder` trong cài đặt (`/api/settings`), mặc định BẬT (chỉ tắt khi giá trị là `false`). Ô tích nằm trong `app/admin/products/page.js`, mục "Thông tin & quy tắc của shop cho bot", dòng "Chốt đơn xong thì tự tắt bot với khách đó".
+- **Khi bot đã tắt với một khách:** webhook vẫn LƯU tin khách nhắn và vẫn ghi/cập nhật đơn (`wantOrderSync`, `syncAutoOrder`), chỉ không trả lời; tin nhắn bồi (`nudge`) cũng bỏ qua khách này (`lib/nudge.js` lọc `bot_off`). Muốn bot trả lời lại thì gạt nút cạnh tên khách trong khung chat (nút có sẵn).
+- **Khi nào KHÔNG tắt:** (a) shop chưa ghi thời gian giao hàng (vd "Giao hàng 3-4 ngày") trong ô thông tin shop thì hệ thống không sinh câu chốt, nên bot không tự tắt; (b) đơn chỉ được cập nhật (khách đổi màu, địa chỉ...) thì không gửi lại câu chốt nên không tắt lần nữa; (c) công tắc `offAfterOrder` đang tắt.
+- **Hệ quả cần biết:** sau khi tắt, nếu khách nhắn muốn đổi/thêm hàng thì bot không trả lời, chủ shop phải vào xem. Khách quay lại mua đơn MỚI sau vài tuần cũng không được bot trả lời cho tới khi chủ shop gạt bật lại nút của khách đó. Hệ thống chưa tự bật lại bot sau một khoảng thời gian.
+- **Test:** `tests/orderClose.test.mjs` (8 test: câu chốt được nhận diện, 1 mốc ngày và cách xưng hô khác, thiếu thời gian giao hàng thì không có câu chốt, đơn chỉ cập nhật thì không chốt lại, 9 câu không phải câu chốt, kiểm tra webhook chỉ tắt sau khi gửi thành công và tôn trọng `offAfterOrder`). `npm test`: 106 test, 106 qua.
+- **Chưa kiểm tra trên bot thật:** phần gọi `setConversationBotOff` trong webhook mới được kiểm bằng đọc code và test cấu trúc, chưa chạy với Facebook và Neon thật. Sau khi deploy, theo dõi log `Đã gửi câu chốt đơn → tắt bot với khách này.` và xem nút gạt cạnh tên khách có chuyển sang tắt không.
