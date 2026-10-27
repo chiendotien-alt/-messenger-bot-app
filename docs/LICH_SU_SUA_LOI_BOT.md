@@ -27,7 +27,7 @@ Khách nhắn: `Chị lấy Màu kem zai l dài váy 75 cm` ("zai l" = "size L" 
 - Log lúc lỗi: `Thuộc tính: Size=missing | Chiều dài váy=chosen(75cm) | màu=chosen(Kem)`.
 - Dòng log liên quan: `Thiếu khối đơn sau khi khách đưa SĐT/địa chỉ → hệ thống ghép khối đơn`.
 
-## 3. Nguyên nhân gốc
+## 3. Nguyên nhân gốc (lỗi chính)
 
 Có **hai bộ phận đọc tin khách riêng, kết quả lệch nhau**:
 
@@ -67,6 +67,12 @@ Có **hai bộ phận đọc tin khách riêng, kết quả lệch nhau**:
 - Không chốt (vẫn là `proposed`) khi: khách phản đối, khách hỏi lại về size/chiều dài ("size M có chật không?"), khách nhắn câu hỏi hoặc có chữ phủ định, hoặc tin cuối cùng của hội thoại là tin tư vấn của shop (khách chưa trả lời).
 - Test: `tests/silentAccept.test.mjs`.
 
+### Thay đổi 4: sửa lỗi có sẵn khi khách đổi ý lúc bot vừa xin SĐT (phát hiện qua bộ test kịch bản)
+- Hiện tượng: bot vừa xin SĐT/địa chỉ, khách nhắn "Chị đổi lấy size L nha" thì bot vẫn giữ size cũ (M). Câu "lấy L" hay "đổi L" thì đổi đúng. Lỗi này có từ trước, không do Thay đổi 1–3.
+- Nguyên nhân: khi tin của khách là tin liên hệ (hoặc bot vừa xin SĐT), hệ thống chỉ đọc phần khách "nói rõ là chọn" qua `EXPLICIT_CHOICE_RE` / `explicitChoiceText` (để tên đường như "Lê Hồng Phong" không bị đọc thành màu). Regex lấy từ khóa kèm 2 từ liền sau rồi bỏ qua phần đã lấy, nên "đổi lấy size L" bị cắt thành "đổi lấy size", mất chữ "L".
+- Cách sửa (`lib/attributes.js`): dùng lookahead để các đoạn chồng nhau: "đổi lấy size L" → "đổi lấy size" | "lấy size L" | "size L". Cũng sửa luôn ca "màu hồng dài 92" (trước đây "dài 92" bị nuốt).
+- Test: nhóm "Hồi quy" cuối `tests/scenarios.test.mjs`, gồm kiểm tra tên đường/tên người không bị đọc thành màu.
+
 ## 5. Kịch bản kiểm chứng (đã chạy trên code thật)
 
 Khách "Chị cao 1m60 nặng 55kg" → bot tư vấn "size M dài 85cm, chị chọn màu nào ạ?" → khách "Màu kem":
@@ -79,7 +85,7 @@ Khách "Chị cao 1m60 nặng 55kg" → bot tư vấn "size M dài 85cm, chị c
 
 `variant` lưu: `Màu Kem, Size M, Chiều dài 85cm`.
 
-Chạy test: `npm test` (dùng `tests/loader.mjs`). Kết quả: 51 test, 51 qua, 0 lỗi (37 test cũ của dự án + 14 test mới: 2 trong sizeTypo, 6 trong reconcile, 6 trong silentAccept).
+Chạy test: `npm test` (dùng `tests/loader.mjs`). Kết quả: 78 test, 78 qua, 0 lỗi (37 test cũ của dự án + 41 test mới: 2 sizeTypo, 6 reconcile, 6 silentAccept, 27 scenarios gồm kịch bản nhiều lượt chat, địa chỉ/SĐT, đổi ý, sản phẩm không size, fuzz 3000 tổ hợp ngẫu nhiên, hiệu năng).
 
 ## 6. Đã xem xét nhưng KHÔNG làm
 
