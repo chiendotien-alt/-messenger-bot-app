@@ -55,6 +55,9 @@ import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
 import { getAllRawKeys } from "@/lib/apiKeys";
 import { callGemini } from "@/lib/gemini";
+import { reportError, errText } from "@/lib/alert";
+import { missingContactAsk } from "@/lib/contactAsk";
+import { isComplexTurn, modelsForTurn } from "@/lib/modelPick";
 import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
 import { tidyAddress, tidyName } from "@/lib/textTidy";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
@@ -202,6 +205,7 @@ export async function POST(req) {
   const rawBody = rawBuf.toString("utf8");
   if (!validFacebookSignature(rawBuf, req.headers.get("x-hub-signature-256"))) {
     console.error("Webhook: chữ ký Facebook không hợp lệ → bỏ qua (kiểm tra biến FB_APP_SECRET nếu tin thật cũng bị bỏ)");
+    await reportError("fb_signature_invalid", "Webhook từ chối tin vì chữ ký Facebook sai", { "Gợi ý": "Nếu khách nhắn thật mà bot im lặng → kiểm tra biến FB_APP_SECRET trên Vercel. Nếu chỉ thỉnh thoảng thì có thể là người lạ dò đường, bỏ qua." }, { gapMs: 60 * 60 * 1000 });
     return new Response("Invalid signature", { status: 403 });
   }
   let body;
@@ -268,7 +272,10 @@ export async function POST(req) {
         ]);
         settingsNow = settings;
         // Khách để lại SĐT → tự tạo đơn nháp (chạy song song, không làm bot trả lời chậm đi). Làm cả khi bot đang tắt.
-        if (phoneInMsg) orderP = syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings, ai: false }).catch((e) => console.error("Lỗi tự tạo đơn:", e.message));
+        if (phoneInMsg) orderP = syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings, ai: false }).catch((e) => {
+          console.error("Lỗi tự tạo đơn:", e.message);
+          return reportError("auto_order_failed", "Lỗi tự tạo đơn nháp khi khách để lại SĐT", { "Khách": senderId, "Page": pageId, "Lỗi": errText(e) });
+        });
         if (settings.botEnabled === false) {
           // Bot đang tắt — chỉ lưu lại tin nhắn để chủ shop tự trả lời qua trang quản trị
           wantOrderSync = true;
@@ -534,6 +541,12 @@ export async function POST(req) {
         wantOrderSync = true;
       } catch (err) {
         console.error("Lỗi xử lý tin nhắn:", err);
+        await reportError("webhook_exception", "Lỗi khi xử lý tin nhắn của khách (khách có thể đã nhận câu xin lỗi)", {
+          "Khách": senderId,
+          "Page": pageId,
+          "Tin khách": text || (fbImages.length ? "[ảnh]" : ""),
+          "Lỗi": errText(err),
+        }, { gapMs: 5 * 60 * 1000 });
         if (openedProductId) await releaseOpening(senderId, openedProductId).catch(() => {});
         if (!SILENT_ON_ERROR) {
           await sendMessage(
@@ -547,9 +560,10 @@ export async function POST(req) {
         // Sau khi đã nhả khóa (khách nhắn tiếp không bị chờ): hoàn tất việc tự tạo đơn, rồi điền thêm địa chỉ/sản phẩm cho đơn đó
         if (orderP) await orderP;
         if (wantOrderSync && settingsNow) {
-          await syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings: settingsNow, ai: true, budgetMs: 52000 - (Date.now() - startedAt) }).catch((e) =>
-            console.error("Lỗi cập nhật đơn tự tạo:", e.message)
-          );
+          await syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings: settingsNow, ai: true, budgetMs: 52000 - (Date.now() - startedAt) }).catch((e) => {
+            console.error("Lỗi cập nhật đơn tự tạo:", e.message);
+            return reportError("auto_order_update_failed", "Lỗi cập nhật đơn tự tạo (điền địa chỉ/sản phẩm)", { "Khách": senderId, "Page": pageId, "Lỗi": errText(e) });
+          });
         }
       }
     }
@@ -1202,17 +1216,46 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     { maxOutputTokens: 4096, temperature: 0.8, thinkingConfig: { thinkingLevel: "low" } },
   ];
 
+  // Tin KHÓ (phân vân, lo lắng, mặc cả, đổi trả, phàn nàn, đang chốt đơn / đưa SĐT-địa chỉ) → thử model mạnh hơn trước (GEMINI_COMPLEX_MODEL, mặc định gemini-3.6-flash);
+  // tin dễ (hỏi size, giá, ship...) vẫn dùng model mặc định cho nhanh + đỡ tốn quota. Model mạnh lỗi/hết quota → tự rơi về model thường.
+  const lastBotTextNow = ([...history].reverse().find((m) => m.from !== "customer") || {}).text || "";
+  const complexTurn = isComplexTurn({
+    label: situationLabel,
+    worry: isWorryText(worryProbe),
+    gaveContact: attrCurrent.some((t) => PHONE_TEXT_RE.test(String(t).replace(/[\s.\-]/g, "")) || looksLikeAddress(t)),
+    botAskedContact: /địa chỉ|số điện thoại|sđt|so dien thoai|dia chi/i.test(String(lastBotTextNow)),
+  });
+  const turnModels = modelsForTurn(complexTurn);
+  if (turnModels) console.log(`Tin khó (nhãn: ${situationLabel}) → ưu tiên ${turnModels[0]}`);
+
   let raw = "";
   let usedModel = null;
+  let aiErrors = [];
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys, { groqSystem: groqPrompt });
+    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys, { groqSystem: groqPrompt, ...(turnModels ? { models: turnModels } : {}) });
     raw = r.text;
     usedModel = r.model;
-    if (String(usedModel || "").startsWith("groq:")) console.warn("⚠ Câu trả lời này do AI DỰ PHÒNG Groq viết (Gemini lỗi/hết hạn mức) → kiểm tra key Gemini ở nút 🔑:", usedModel);
+    aiErrors = r.errors || aiErrors;
+    if (String(usedModel || "").startsWith("groq:")) {
+      console.warn("⚠ Câu trả lời này do AI DỰ PHÒNG Groq viết (Gemini lỗi/hết hạn mức) → kiểm tra key Gemini ở nút 🔑:", usedModel);
+      await reportError("ai_backup_groq", "Gemini lỗi/chậm → bot đang trả lời bằng Groq dự phòng", {
+        "Các lỗi Gemini": aiErrors.join("\n"),
+        "Khách": senderId,
+        "Tin khách": customerMessage,
+      }, { gapMs: 15 * 60 * 1000 });
+    }
     if (isErrorText(raw)) {
       console.warn("AI trả về câu báo lỗi, bỏ qua và thử lại:", raw);
       raw = "";
     }
+  }
+  if (!raw.trim()) {
+    await reportError("ai_no_answer", "AI KHÔNG trả lời được (cả Gemini lẫn Groq đều lỗi)", {
+      "Các lỗi": aiErrors.join("\n"),
+      "Khách": senderId,
+      "Page": pageId,
+      "Tin khách": customerMessage,
+    }, { gapMs: 5 * 60 * 1000 });
   }
   console.log("---- Khách hỏi:", customerMessage);
   console.log(`---- Bot trả lời (${usedModel || "không có model nào trả lời"}):`, raw || "(không có nội dung)");
@@ -1655,7 +1698,28 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       }
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || forcedSummary || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
+  // CHỐT CHẶN: khách VỪA đưa đúng MỘT nửa của cặp (địa chỉ hoặc SĐT) mà AI quên xin nửa còn lại
+  // (hay gặp: AI chỉ viết "dạ em nhận được thông tin rồi ạ" theo câu ví dụ trong luật chốt đơn) → hệ thống tự thêm câu xin phần còn thiếu.
+  let contactAskAdded = false;
+  if (!forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length) {
+    const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+    const fix = missingContactAsk({
+      messages,
+      gaveAddress: !!String(verified?.address || "").trim() || currentTexts.some((t) => looksLikeAddress(t)),
+      gavePhone: phoneNow || !!String(verified?.phone || "").trim(),
+      havePhone: !!String(mergedInfo.phone || "").trim(),
+      haveAddress: !!String(mergedInfo.address || "").trim(),
+      kh: trChat.kh,
+      tu: trChat.tu,
+      neutral: notesForbidPronouns(currentProduct?.notes),
+    });
+    if (fix) {
+      console.log(`Khách mới đưa ${fix.need === "phone" ? "địa chỉ" : "SĐT"} mà AI quên xin ${fix.need === "phone" ? "SĐT" : "địa chỉ"} → hệ thống thêm câu xin:`, fix.ask);
+      messages = fix.messages;
+      contactAskAdded = true;
+    }
+  }
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || forcedSummary || contactAskAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
@@ -1769,6 +1833,15 @@ async function fbPost(payload, token) {
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     console.error("Facebook từ chối:", JSON.stringify(err.error || err));
+    if (!payload.sender_action) {
+      const fe = err.error || {};
+      await reportError(`fb_send_${fe.code ?? res.status}`, "Facebook từ chối gửi tin cho khách", {
+        "Mã lỗi Facebook": `${fe.code ?? res.status}${fe.error_subcode ? "/" + fe.error_subcode : ""}`,
+        "Nội dung": fe.message || JSON.stringify(err),
+        "Khách": payload.recipient?.id,
+        "Gợi ý": fe.code === 190 ? "Token Page hết hạn/bị đổi → lấy token mới và cập nhật lại." : fe.code === 10 || fe.code === 551 || fe.error_subcode === 2018278 ? "Có thể khách nhắn đã quá 24 giờ hoặc đã chặn Page — thường không phải lỗi bot." : "",
+      }, { gapMs: 30 * 60 * 1000 });
+    }
     return false;
   }
   return true;
