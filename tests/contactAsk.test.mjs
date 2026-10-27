@@ -63,3 +63,42 @@ test("khách hỏi chung các màu / xin bảng màu vẫn là xin ảnh tổng 
     assert.equal(isCatalogQuestion(t), true, t);
   }
 });
+
+import { looksLikeAddressStrict, PROVINCES_63 } from "../lib/replyDedupe.js";
+
+test("danh sách tỉnh có đúng 63 tỉnh thành (tên cũ trước sáp nhập)", () => {
+  assert.equal(PROVINCES_63.length, 63);
+  assert.equal(new Set(PROVINCES_63.map((x) => x[0])).size, 63);
+});
+
+test("luật chặt: câu chat thường / số đo / tên người trùng tên tỉnh / hỏi ship KHÔNG phải địa chỉ", () => {
+  for (const t of [
+    "Cho chị xin thêm chút thông tin nữa nha", "Để chị suy nghĩ thêm rồi nhắn lại nha", "Chị đang bận chút lát chị nhắn lại",
+    "Chiều cao 55 cân nặng 54", "Chị ở Hà Nội", "Ship về Hà Nội mất mấy ngày", "Ship về Hà Nội bao nhiêu tiền shop",
+    "Em gửi về Hà Nội nhé", "Chị đang ở nhà Hà Nội", "Nguyễn Thị Thanh Hoa", "Trần Thị Mỹ Thanh Hoa", "Nguyễn Thị Huế",
+    "Phạm Thị Minh Khánh Hòa ạ", "Chị lấy 2 cái váy gửi về Hà Nội",
+  ]) assert.equal(looksLikeAddressStrict(t), false, t);
+});
+
+test("luật chặt: địa chỉ thật (có từ khóa, hoặc kết thúc bằng tên tỉnh kèm đủ chữ) vẫn nhận ra", () => {
+  for (const t of [
+    "Văn phòng phẩm Văn Sinh Đông Khúc Nghĩa Trụ Hưng Yên", "Đông Khúc Nghĩa Trụ Hưng Yên ạ", "dong khuc nghia tru hung yen",
+    "Chị ở Đông Khúc Nghĩa Trụ Hưng Yên nha", "Thôn 3 xã Hòa An", "Số 5 ngõ 12 Cầu Giấy", "12 Nguyễn Trãi Hà Nội",
+    "Nghĩa Trụ, Văn Giang, Thanh Hóa", "Thôn Đông Khúc Nghĩa Trụ Văn Giang Hưng Yên Việt Nam",
+    "Tân Hòa Đồng Văn, Hà Nam nha", "Phường Bến Nghé quận 1 TPHCM",
+  ]) assert.equal(looksLikeAddressStrict(t), true, t);
+});
+
+import { pickAddressFromTexts } from "../lib/pickAddress.js";
+
+test("lưu địa chỉ: câu chat thường dài KHÔNG bị lưu thành địa chỉ giao hàng", () => {
+  for (const t of ["Để chị suy nghĩ thêm rồi nhắn lại nha", "Cho chị xin thêm chút thông tin nữa nha", "Chị đang bận chút lát chị nhắn lại"]) {
+    assert.equal(pickAddressFromTexts([t]), "", t);
+  }
+});
+
+test("lưu địa chỉ: địa chỉ thật được lấy, bỏ SĐT, bỏ qua câu dặn dò ở trước", () => {
+  assert.equal(pickAddressFromTexts(["Số 5 ngõ 12 Cầu Giấy Hà Nội 0912345678"]), "Số 5 ngõ 12 Cầu Giấy Hà Nội");
+  assert.equal(pickAddressFromTexts(["shipper tự gọi điện nhé", "Đông Khúc Nghĩa Trụ Hưng Yên"]), "Đông Khúc Nghĩa Trụ Hưng Yên");
+  assert.equal(pickAddressFromTexts(["Để chị suy nghĩ thêm rồi nhắn lại nha", "Thôn 3 xã Hòa An Cao Bằng"]), "Thôn 3 xã Hòa An Cao Bằng");
+});

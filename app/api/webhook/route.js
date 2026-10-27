@@ -48,7 +48,8 @@ function mentionsOrderCheck(t) {
   return ORDER_CHECK_RE.test(x);
 }
 import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
-import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { pickAddressFromTexts } from "@/lib/pickAddress";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
@@ -108,27 +109,6 @@ const PAIR_WAIT_MS = process.env.PAIR_WAIT_MS !== undefined && process.env.PAIR_
 /**
  * Shop vừa xin SĐT + địa chỉ, khách mới đưa MỘT trong 2 (tính cả các tin khách chưa được trả lời) → true: cần chờ khách gửi nốt.
  */
-/**
- * Lưới an toàn: lấy ĐỊA CHỈ nhận hàng thẳng từ tin của khách (khi AI — nhất là AI dự phòng — quên điền customer_info.address).
- * texts = các tin khách theo thứ tự CŨ → MỚI (từ sau lần shop xin SĐT/địa chỉ). Lấy tin địa chỉ ĐẦU TIÊN, bỏ qua câu nói chuyện
- * ("không có số nhà", "shipper tự gọi điện nhé"...). Trả "" nếu không có tin nào giống địa chỉ.
- */
-function pickAddressFromTexts(texts) {
-  for (const raw of texts || []) {
-    const t = String(raw || "");
-    if (!looksLikeAddress(t)) continue;
-    if (/(?<![\p{L}])(?:không có|ko có|k có|shipper|shiper|gọi điện|tự gọi|ghi chú|giúp|nhờ|cứ giao)(?![\p{L}])/iu.test(t)) continue; // câu dặn dò, không phải địa chỉ
-    const clean = t
-      .replace(/(?:\+?84|0)(?:[\s.\-]?\d){9}/g, " ") // bỏ SĐT
-      .replace(/(?<![\p{L}])(?:số\s*điện\s*thoại|sđt|sdt|đt|điện\s*thoại|zalo)(?![\p{L}])\s*[:.\-]?/giu, " ")
-      .replace(/^\s*(?:địa\s*chỉ|dia\s*chi|đc)\s*[:\-]?\s*/iu, "")
-      .replace(/\s+/g, " ")
-      .replace(/^[\s,.;:\-]+|[\s,.;:\-]+$/g, "");
-    if (clean.split(/\s+/).length >= 3) return clean.slice(0, 300);
-  }
-  return "";
-}
-
 async function contactHalfOnly(senderId, text) {
   try {
     const phoneNow = !!extractPhone(text);
@@ -1716,7 +1696,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
-      gaveAddress: !!String(verified?.address || "").trim() || currentTexts.some((t) => looksLikeAddress(t)),
+      gaveAddress: !!String(verified?.address || "").trim() || currentTexts.some((t) => looksLikeAddressStrict(t)), // luật CHẶT: câu này làm hệ thống tự gửi tin cho khách
       gavePhone: phoneNow || !!String(verified?.phone || "").trim(),
       havePhone: !!String(mergedInfo.phone || "").trim(),
       haveAddress: !!String(mergedInfo.address || "").trim(),

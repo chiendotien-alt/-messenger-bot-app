@@ -136,10 +136,39 @@ Chạy test: `npm test` (dùng `tests/loader.mjs`). Kết quả: 78 test, 78 qua
 
 ### 10.3. Kiểm tra sau khi sửa
 
-- `npm test`: 82 test, 82 qua, 0 lỗi (cần chạy `npm install` trước, vì test mới nạp `lib/products.js` phụ thuộc `@vercel/blob`).
+- `npm test`: 87 test, 87 qua, 0 lỗi, tính cả mục 10.5 và 10.6 (cần chạy `npm install` trước, vì test mới nạp `lib/products.js` phụ thuộc `@vercel/blob`).
 - Chưa chạy thử trên bot thật. Sau khi deploy, theo dõi 2 dòng log: `Khách mới đưa địa chỉ mà AI quên xin SĐT` (chỉ nên xuất hiện khi khách thật sự gửi địa chỉ) và `Gửi ảnh tổng hợp mẫu mã cho khách` (chỉ nên xuất hiện khi khách hỏi chung các màu).
 - **Giới hạn đã biết:** nhóm từ "câu xin tư vấn" (`mặc`, `hợp`, `tuổi`...) là danh sách cố định. Nếu có khách xin tư vấn bằng cách nói khác (vd "da em ngăm, màu nào ổn nhất") mà vẫn bị gửi ảnh thì cần thêm từ vào biến `adviceAsk` trong `isCatalogQuestion`.
 
-### 10.4. Cách áp dụng
+### 10.4. Vì sao hai lỗi trên không nằm trong các thay đổi 1–4 ở trên
 
-Chép đè 4 file vào repo rồi push lên GitHub để Vercel deploy: `lib/replyDedupe.js`, `lib/products.js`, `lib/botPrompt.js`, `tests/contactAsk.test.mjs`.
+- Các thay đổi 1–4 chỉ đụng `lib/attributes.js` và `app/api/webhook/route.js` (lỗi thiếu size). Không thay đổi nào chạm `looksLikeAddress`, `isCatalogQuestion` hay `contactAsk`.
+- Hai lỗi cùng một kiểu: bot ĐOÁN ý khách bằng từ khóa/độ dài câu, và có một chốt chặn tự gửi tin cho khách dựa trên phép đoán đó. Đoán sai ở đầu vào thì chốt chặn đẩy sai ra thành tin gửi khách (`contactAsk` dùng `looksLikeAddress`; chốt chặn "khách không xin ảnh" dùng `isCatalogQuestion`).
+
+### 10.5. Luật nhận địa chỉ CHẶT cho chỗ hệ thống tự gửi câu xin SĐT
+
+- **Vấn đề còn lại sau 10.1:** `looksLikeAddress` vẫn coi mọi tin chat thường từ 6 từ trở lên là địa chỉ, ví dụ "Cho chị xin thêm chút thông tin nữa nha", "Để chị suy nghĩ thêm rồi nhắn lại nha". Nếu khách nhắn các câu này lúc bot đang chờ SĐT thì bot có thể thêm câu xin SĐT sai chỗ.
+- **Cách sửa:** thêm hàm `looksLikeAddressStrict` (`lib/replyDedupe.js`) chạy song song với `looksLikeAddress`. Chỉ đổi đúng 1 chỗ gọi: `gaveAddress` của `missingContactAsk` trong `app/api/webhook/route.js` (khoảng dòng 1719). Các chỗ gọi `looksLikeAddress` còn lại (nhặt địa chỉ lưu đơn, chờ khách gửi nốt nửa còn lại, `attributes.js`) giữ nguyên.
+- **Luật chặt coi là địa chỉ khi:**
+  1. có từ khóa địa chỉ thật (đường, phường, xã, số nhà, tp...), hoặc dạng "12 Nguyễn Trãi Hà Nội"; hoặc
+  2. tin KẾT THÚC bằng tên 1 trong 63 tỉnh thành (tên cũ trước sáp nhập, `PROVINCES_63`; 34 tỉnh mới đều mang tên một tỉnh cũ; nhận cả không dấu và cách gọi HCM/TPHCM/Sài Gòn/Hà Nội viết liền), có ít nhất 3 từ nội dung khác (không tính chị/em/ạ/nha/về/gửi...), không phải câu hỏi, không hỏi phí/thời gian ship, không có từ về sản phẩm (cái, màu, size, kg...). Đuôi "ạ/nha/nhé/Việt Nam" được bỏ qua.
+  3. Tỉnh có tên trùng tên người (Thanh Hóa, Hải Dương, Khánh Hòa, Thái Bình, Hà Giang, Hòa Bình, Quảng Ninh, Vĩnh Phúc, Bình Dương, Phú Thọ, Hà Nam, Huế, Phú Yên, Nam Định) phải kèm số hoặc dấu phẩy/chấm phẩy mới tính, để "Nguyễn Thị Thanh Hoa" không bị đọc thành địa chỉ.
+- **File đổi:** `lib/replyDedupe.js`, `app/api/webhook/route.js`, `tests/contactAsk.test.mjs` (3 test mới: đủ 63 tỉnh; 14 câu KHÔNG phải địa chỉ; 11 địa chỉ thật vẫn nhận ra).
+- **Cái được/mất:** câu chat thường không còn kéo theo câu xin SĐT sai chỗ. Đổi lại, địa chỉ viết trơn không có từ khóa và không kết thúc bằng tên tỉnh (vd "Cầu Giấy Hà Nội") sẽ không được lưới an toàn này nhận; lúc đó chỉ còn trông vào AI tự xin nốt SĐT (các chỗ dùng luật lỏng vẫn nhận được).
+- **Giới hạn đã biết:** câu kiểu "Chị đang ở nhà Hà Nội" đã được loại nhờ bộ từ bỏ qua (`ADDR_STOP`), nhưng một câu chat dài có đủ 3 từ nội dung rồi kết thúc bằng tên tỉnh vẫn có thể lọt. Nếu gặp ca thật, thêm từ vào `ADDR_STOP` hoặc `SHIP_Q_RE`.
+
+### 10.6. Chỗ LƯU địa chỉ vào đơn cũng dùng luật chặt
+
+- **Vấn đề:** `pickAddressFromTexts` lấy địa chỉ từ tin khách khi AI quên điền `customer_info.address` (chỉ chạy sau khi shop vừa xin SĐT/địa chỉ). Hàm này dùng `looksLikeAddress` (luật lỏng) nên theo code, câu chat thường từ 6 từ trở lên như "Để chị suy nghĩ thêm rồi nhắn lại nha" có thể bị lưu thành địa chỉ giao hàng của khách và đi thẳng vào đơn. Đây là kết luận từ đọc code và chạy hàm riêng lẻ, chưa thử trên bot thật.
+- **Cách sửa:** chuyển hàm ra file mới `lib/pickAddress.js` (để chạy test được; file route của Next không export được hàm phụ) và đổi sang `looksLikeAddressStrict`. `webhook/route.js` chỉ import lại hàm này.
+- **Nguyên tắc:** AI điền `customer_info.address` là nguồn chính (đã được đối chiếu với tin khách thật trong `verifyCustomerInfo`). Luật chặt chỉ là lưới dự phòng khi AI không điền.
+- **Cái mất:** địa chỉ viết trơn, không từ khóa và không kết thúc bằng tên tỉnh (vd "Cầu Giấy Hà Nội"), sẽ không tự lưu được nếu AI không điền.
+- **File đổi:** `lib/pickAddress.js` (mới), `app/api/webhook/route.js`, `tests/contactAsk.test.mjs` (thêm 2 test: câu chat thường không bị lưu thành địa chỉ; địa chỉ thật được lấy, bỏ SĐT, bỏ qua câu dặn dò).
+- **Chưa đổi (còn luật lỏng):**
+  - `contactHalfOnly` (khoảng dòng 113–135 của `route.js`, quyết định chờ khách gửi nốt nửa còn lại). Đoán sai ở đây chỉ làm bot chờ thêm `PAIR_WAIT_MS` trước khi trả lời, không gửi sai nội dung.
+  - `gaveContact` trong `isComplexTurn` (khoảng dòng 1205) và `attributes.js` dòng 477. Chưa kiểm tra kỹ hậu quả nên chưa đổi.
+  - Nếu thấy bot trả lời chậm bất thường sau khi shop xin SĐT/địa chỉ mà khách nhắn câu chat thường, thì đây là chỗ cần xem trước.
+
+### 10.7. Cách áp dụng
+
+Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đường dẫn): `lib/replyDedupe.js`, `lib/products.js`, `lib/botPrompt.js`, `lib/pickAddress.js` (file MỚI), `app/api/webhook/route.js`, `tests/contactAsk.test.mjs`, `docs/LICH_SU_SUA_LOI_BOT.md`.
