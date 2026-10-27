@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026. Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10 cùng ngày). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -112,3 +112,34 @@ Chạy test: `npm test` (dùng `tests/loader.mjs`). Kết quả: 78 test, 78 qua
 - Đọc trước: mục 3 (nguyên nhân), hàm `matchValues`, `attributeStatus`, `reconcileWithReply` trong `lib/attributes.js`.
 - Khi thấy lỗi thiếu giá trị mới: lấy tin khách gốc + dòng log `Thuộc tính: ...` để biết bộ nhận diện bỏ sót ở đâu.
 - Đừng sửa theo hướng cho AI tự điền giá trị vào đơn mà khách chưa nhắn; nguyên tắc của dự án là đơn chỉ ghi những gì khách đã chọn, hoặc shop gợi ý rồi khách không phản đối.
+
+## 10. Các lỗi sửa thêm ngày 27/10/2026 (sau lỗi thiếu size)
+
+### 10.1. Bot hỏi gộp màu với xin số điện thoại sau khi khách đưa chiều cao/cân nặng
+
+- **Hiện tượng:** khách nhắn `Chiều cao 55 cân nặng 54`. Bot tư vấn dài 85cm và hỏi màu đúng, nhưng cuối tin lại dính thêm câu `Em xin thêm số điện thoại nữa nha chị.` (khách chưa hề gửi địa chỉ).
+- **Dòng log nhận biết:** `Khách mới đưa địa chỉ mà AI quên xin SĐT → hệ thống thêm câu xin: ...`
+- **Nguyên nhân:** hàm `looksLikeAddress` (`lib/replyDedupe.js`) có luật "tin từ 6 từ trở lên, không có từ về sản phẩm (màu/size/cm/kg...) thì coi là địa chỉ". Tin số đo viết không kèm chữ `kg`/`cm` có đúng 6 từ nên bị đọc nhầm là địa chỉ. Chốt chặn `missingContactAsk` (`lib/contactAsk.js`, gọi trong `app/api/webhook/route.js`) tưởng khách vừa đưa địa chỉ mà chưa có SĐT nên tự thêm câu xin SĐT.
+- **Cách sửa:** thêm `BODY_MEASURE_RE` trong `lib/replyDedupe.js`. Tin có từ về số đo (`chiều cao`, `cân nặng`, `nặng`, `cân`, `kg`, `ký`, `kí`, hoặc `cao` + số) kèm chữ số thì KHÔNG coi là địa chỉ. Nếu tin có từ khóa địa chỉ thật (đường, phường, quận, số nhà...) thì vẫn là địa chỉ (từ khóa được kiểm tra trước).
+- **File đổi:** `lib/replyDedupe.js`, `tests/contactAsk.test.mjs` (thêm 2 test: tin số đo không phải địa chỉ; địa chỉ thật như `12 Cao Thắng Hà Nội Việt Nam` vẫn nhận ra).
+
+### 10.2. Khách hỏi "53 tuổi mặc màu nào chị" mà bot gửi ảnh tổng hợp các màu
+
+- **Hiện tượng:** khách xin tư vấn màu hợp với tuổi, không xin xem ảnh. Bot trả lời chữ đúng ("đen, kem hoặc đỏ đô") rồi vẫn gửi ảnh tổng hợp 8 màu.
+- **Dòng log nhận biết:** `Gửi ảnh tổng hợp mẫu mã cho khách: 53 tuổi mặc màu nào chị`
+- **Nguyên nhân:** `isCatalogQuestion` (`lib/products.js`) nhận "xin xem các màu" bằng cụm `màu nào`, nên câu "mặc màu nào" bị coi là xin bảng màu. Hàm này còn được dùng làm điều kiện trong chốt chặn "khách không xin xem ảnh thì không gửi" (`unaskedImages`, `blockImages` trong `app/api/webhook/route.js`), nên cùng lúc chốt chặn đó cũng bị tắt.
+- **Cách sửa:**
+  1. `lib/products.js`: câu có `mặc`, `hợp`, `phù hợp`, `tuổi`, `nên mặc/lấy/chọn` thì cụm `màu/kiểu/loại nào` không còn tính là xin xem ảnh. Các câu hỏi chung vẫn gửi ảnh như cũ: `có mấy màu`, `có những màu nào`, `xin bảng màu`, `shop có màu nào`, `cho xem các mẫu`.
+  2. `lib/botPrompt.js` (luật ẢNH TỔNG HỢP): thêm ngoại lệ, khách xin tư vấn màu hợp với bản thân thì chỉ tư vấn bằng chữ (nêu 2-3 màu trong danh sách), không đặt `send_catalog`, không đặt `send_images`.
+- **File đổi:** `lib/products.js`, `lib/botPrompt.js`, `tests/contactAsk.test.mjs` (thêm 2 test cho 2 chiều: câu xin tư vấn không gửi ảnh, câu hỏi chung vẫn gửi ảnh).
+- **Chưa xác định được:** log chụp bị cắt phần cuối nên không biết lần đó do luật từ khóa hay do AI tự đặt `send_catalog`. Hai chỗ sửa trên chặn được cả hai đường.
+
+### 10.3. Kiểm tra sau khi sửa
+
+- `npm test`: 82 test, 82 qua, 0 lỗi (cần chạy `npm install` trước, vì test mới nạp `lib/products.js` phụ thuộc `@vercel/blob`).
+- Chưa chạy thử trên bot thật. Sau khi deploy, theo dõi 2 dòng log: `Khách mới đưa địa chỉ mà AI quên xin SĐT` (chỉ nên xuất hiện khi khách thật sự gửi địa chỉ) và `Gửi ảnh tổng hợp mẫu mã cho khách` (chỉ nên xuất hiện khi khách hỏi chung các màu).
+- **Giới hạn đã biết:** nhóm từ "câu xin tư vấn" (`mặc`, `hợp`, `tuổi`...) là danh sách cố định. Nếu có khách xin tư vấn bằng cách nói khác (vd "da em ngăm, màu nào ổn nhất") mà vẫn bị gửi ảnh thì cần thêm từ vào biến `adviceAsk` trong `isCatalogQuestion`.
+
+### 10.4. Cách áp dụng
+
+Chép đè 4 file vào repo rồi push lên GitHub để Vercel deploy: `lib/replyDedupe.js`, `lib/products.js`, `lib/botPrompt.js`, `tests/contactAsk.test.mjs`.

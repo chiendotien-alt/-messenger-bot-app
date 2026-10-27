@@ -35,3 +35,31 @@ test("đã có 2 tin → nối câu xin vào tin cuối (tối đa 2 tin); sản
   assert.equal(r.messages.length, 2);
   assert.equal(r.messages[1], "Shop nhận được địa chỉ rồi ạ Shop xin thêm số điện thoại nữa nha ạ.");
 });
+
+import { looksLikeAddress } from "../lib/replyDedupe.js";
+
+test("tin số đo không có chữ kg/cm ('Chiều cao 55 cân nặng 54') KHÔNG bị đọc nhầm là địa chỉ", () => {
+  for (const t of ["Chiều cao 55 cân nặng 54", "chieu cao 155 can nang 54", "cao 155 nặng 54"]) {
+    assert.equal(looksLikeAddress(t), false, t);
+  }
+});
+
+test("địa chỉ thật vẫn nhận ra (kể cả có chữ 'Cao' trong tên đường)", () => {
+  for (const t of ["12 Cao Thắng Hà Nội Việt Nam", "số 5 ngõ 12 Cầu Giấy Hà Nội", "12 Nguyễn Trãi Hà Nội"]) {
+    assert.equal(looksLikeAddress(t), true, t);
+  }
+});
+
+import { isCatalogQuestion } from "../lib/products.js";
+
+test("khách xin tư vấn màu hợp ('53 tuổi mặc màu nào chị') KHÔNG bị coi là xin xem ảnh các màu", () => {
+  for (const t of ["53 tuổi mặc màu nào chị", "Da ngăm mặc màu nào đẹp shop", "màu nào hợp với em"]) {
+    assert.equal(isCatalogQuestion(t), false, t);
+  }
+});
+
+test("khách hỏi chung các màu / xin bảng màu vẫn là xin ảnh tổng hợp", () => {
+  for (const t of ["có mấy màu vậy shop", "Có những màu nào", "xin bảng màu", "shop có màu nào", "cho xem các mẫu"]) {
+    assert.equal(isCatalogQuestion(t), true, t);
+  }
+});
