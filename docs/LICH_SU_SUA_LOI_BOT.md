@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -222,3 +222,13 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
 - **Hệ quả cần biết:** sau khi tắt, nếu khách nhắn muốn đổi/thêm hàng thì bot không trả lời, chủ shop phải vào xem. Khách quay lại mua đơn MỚI sau vài tuần cũng không được bot trả lời cho tới khi chủ shop gạt bật lại nút của khách đó. Hệ thống chưa tự bật lại bot sau một khoảng thời gian.
 - **Test:** `tests/orderClose.test.mjs` (8 test: câu chốt được nhận diện, 1 mốc ngày và cách xưng hô khác, thiếu thời gian giao hàng thì không có câu chốt, đơn chỉ cập nhật thì không chốt lại, 9 câu không phải câu chốt, kiểm tra webhook chỉ tắt sau khi gửi thành công và tôn trọng `offAfterOrder`). `npm test`: 106 test, 106 qua.
 - **Chưa kiểm tra trên bot thật:** phần gọi `setConversationBotOff` trong webhook mới được kiểm bằng đọc code và test cấu trúc, chưa chạy với Facebook và Neon thật. Sau khi deploy, theo dõi log `Đã gửi câu chốt đơn → tắt bot với khách này.` và xem nút gạt cạnh tên khách có chuyển sang tắt không.
+
+## 13. Lỗi bot gửi cả "Bước phân tích tình huống" cho khách (28/10/2026)
+
+- Hiện tượng: khách nhắn "Can nang 61 kg chieu cao 145" → bot gửi nguyên đoạn "ক্ষমতার / Bước phân tích tình huống: ... Tin nhắn: 1. ... 2. ..." (kèm 1 chữ Bengali lạ ở đầu) thay vì 2 tin ngắn.
+- Nguyên nhân: AI không trả JSON (lần thử 2 trong `generateReply` tắt `responseMimeType`, hoặc AI dự phòng Groq) mà viết chữ thường theo đúng tiêu đề "PHÂN TÍCH TÌNH HUỐNG..." trong prompt. `parseModelJson` ra null → `salvageMessages` coi là "chữ bình thường" → gửi cả đoạn cho khách.
+- Cách sửa:
+  - `lib/replyGuard.js` (mới): gỡ chữ lạ (Bengali, Thái, Hindi, Hán...), nhận ra phần phân tích bị lộ và chỉ lấy phần sau "Tin nhắn:" (tối đa 2 tin); không có phần đó thì bỏ hết để hệ thống gọi AI lại.
+  - `app/api/webhook/route.js`: `salvageMessages` và 3 chỗ lọc tin đầu ra đều đi qua `cleanReplyList`. `lib/botPlayground.js` (trang Dạy bot) cũng vậy.
+  - `lib/botPrompt.js`: đổi tiêu đề thành "GHI CHÚ NỘI BỘ...", thêm luật cấm viết "Bước phân tích", "Tin nhắn:"... và cấm chèn chữ ngôn ngữ khác.
+- Test: `tests/replyGuard.test.mjs` (có ca lỗi thật y như ảnh).

@@ -52,6 +52,7 @@ import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, 
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
+import { cleanReplyList } from "@/lib/replyGuard";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
 import { getSettings } from "@/lib/settings";
 import { getPageToken, isPageBotEnabled } from "@/lib/pages";
@@ -775,7 +776,7 @@ function salvageMessages(raw) {
   const t = String(raw || "").replace(/```json|```/g, "").trim();
   if (!t || isErrorText(t)) return [];
   if (!/^[\[{]/.test(t) && !/"messages"\s*:/.test(t) && !/"use_opening_product"|"send_images"|"customer_info"|"tinh_huong"/.test(t)) {
-    return [t]; // chữ bình thường, không phải JSON
+    return cleanReplyList([t]); // chữ bình thường, không phải JSON (đã bóc phần phân tích/chữ lạ nếu AI lỡ viết ra)
   }
   const out = [];
   const m = t.match(/"messages"\s*:\s*\[([\s\S]*)/);
@@ -1263,10 +1264,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   else if (!parsed && raw.trim()) list = salvageMessages(raw);
   // AI nhét chữ "send_images" vào danh sách tin (thay vì đặt đúng trường send_images) → bỏ chữ đó, nhưng vẫn hiểu là khách cần xem ảnh
   const strayImages = list.some((m) => /^[\W_]*send_images\b/i.test(String(m || "")));
-  let messages = list
-    .map((m) => stripBotNotes(m).slice(0, 1900))
-    .filter((m) => m && !isErrorText(m) && !isInternalToken(m))
-    .slice(0, 2);
+  let messages = cleanReplyList(
+    list
+      .map((m) => stripBotNotes(m).slice(0, 1900))
+      .filter((m) => m && !isErrorText(m) && !isInternalToken(m))
+  );
   // Khách nhắn liền nhiều tin → gộp thành MỘT tin trả lời (không gửi 2 tin rời làm khách rối)
   if (burstNote && messages.length > 1) {
     const joined = messages.join("\n\n");
@@ -1751,7 +1753,7 @@ async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDea
     console.log(`---- Bot trả lời (viết lại để tư vấn, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
     const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
-    return list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m) && !isInternalToken(m)).slice(0, 2);
+    return cleanReplyList(list.map((m) => stripBotNotes(m).slice(0, 1900)).filter((m) => m && !isErrorText(m) && !isInternalToken(m)));
   } catch (e) {
     console.error("Lỗi viết lại để tư vấn:", e.message);
     return [];
@@ -1780,7 +1782,7 @@ async function retryForcedText(systemPrompt, contents, deadline, apiKeys, hardDe
     console.log(`---- Bot trả lời (thử lại, ${model || "lỗi"}):`, raw || "(không có nội dung)");
     const parsed = parseModelJson(raw);
     const list = Array.isArray(parsed?.messages) ? parsed.messages : parsed?.reply ? [parsed.reply] : [];
-    return list.map((m) => stripBotNotes(m)).filter((m) => m && !isErrorText(m)).slice(0, 2);
+    return cleanReplyList(list.map((m) => stripBotNotes(m)).filter((m) => m && !isErrorText(m)));
   } catch (e) {
     console.error("Lỗi thử lại Gemini:", e.message);
     return [];
