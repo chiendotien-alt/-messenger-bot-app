@@ -232,3 +232,34 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
   - `app/api/webhook/route.js`: `salvageMessages` và 3 chỗ lọc tin đầu ra đều đi qua `cleanReplyList`. `lib/botPlayground.js` (trang Dạy bot) cũng vậy.
   - `lib/botPrompt.js`: đổi tiêu đề thành "GHI CHÚ NỘI BỘ...", thêm luật cấm viết "Bước phân tích", "Tin nhắn:"... và cấm chèn chữ ngôn ngữ khác.
 - Test: `tests/replyGuard.test.mjs` (có ca lỗi thật y như ảnh).
+
+## 14. Tính năng mới: ô "Gemini key trả phí" (30/10/2026)
+
+- **Yêu cầu của chủ shop:** key Gemini miễn phí hay báo quá tải / timeout → muốn có 1 ô dán key TRẢ PHÍ; khi tất cả key miễn phí lỗi hoặc timeout thì chuyển sang key trả phí dùng model gemini-3.6-flash; key trả phí cũng lỗi thì mới sang Groq.
+- **Thứ tự gọi AI bây giờ:** key Gemini miễn phí (xoay vòng như cũ) → 1 key Gemini trả phí (gemini-3.6-flash) → Groq. Key miễn phí còn dùng được thì KHÔNG tốn tiền; chưa dán key trả phí thì bot chạy y như cũ.
+- **Nơi dán key:** nút 🔑 ở trang quản trị → mục "Gemini key trả phí (dự phòng 1)" (nằm giữa Gemini miễn phí và Groq). Chỉ có 1 ô: dán key mới là thay key cũ. Dùng được ngay, không cần deploy lại (bot đọc lại key trả phí tối đa sau ~20 giây). Cũng có thể đặt biến môi trường `GOOGLE_PAID_API_KEY` thay cho việc dán.
+- **Các file sửa:** `lib/gemini.js` (hàm `callGemini` thêm bước key trả phí, hàm mới `callGeminiPaid`, `getPaidKey`), `lib/apiKeys.js` (nhóm key `gemini_paid`, `getPaidRawKeys`, chặn 1 key nằm ở 2 mục), `app/api/keys/route.js` + `app/api/keys/check/route.js`, `app/admin/page.js` (ô mới), `lib/botPlayground.js` (trang Dạy bot cũng đi đúng thứ tự này), `tests/paidFallback.test.mjs`.
+- **Chia thời gian cho 1 câu trả lời (tối đa 45 giây):** key miễn phí tối đa 14 giây (`GEMINI_FREE_PHASE_MS`), key trả phí tối đa 16 giây (`GEMINI_PAID_PHASE_MS`), chừa 4 giây cho Groq. Key trả phí gặp 503/timeout được thử lại 1 lần (`GEMINI_PAID_RETRIES`); hết quota hoặc key sai thì không thử lại. Model của key trả phí đổi được bằng `GEMINI_PAID_MODELS`.
+- **Cầu dao:** khi key miễn phí hỏng cả loạt, 30 giây kế tiếp bot bỏ qua key miễn phí và đi thẳng key trả phí (trước đây đi thẳng Groq).
+- **Báo Telegram:** mỗi khi bot phải dùng key trả phí thì báo 1 tin (tối đa 1 tin / giờ, mã `ai_paid_key_used`) để chủ shop biết đang tốn tiền; có kèm lỗi của các key miễn phí.
+- **Việc chưa làm:** bộ phân loại tình huống (`lib/situation.js`, dùng gemini-3.5-flash-lite) vẫn chỉ dùng key miễn phí rồi Groq, không dùng key trả phí để khỏi tốn tiền cho việc nhỏ. Bot chưa có giới hạn chi tiêu riêng: nên đặt ngân sách/cảnh báo chi phí trong Google Cloud.
+- **Test:** `tests/paidFallback.test.mjs` (ban đầu 6 test, xem thêm mục 15: key miễn phí ổn thì không đụng key trả phí; miễn phí lỗi hết → key trả phí; trả phí cũng lỗi → Groq; trả phí 503 một lần rồi thử lại được; chưa có key trả phí → như cũ; key trả phí sai 401 không thử lại). `npm test`: 117 test, 117 qua; `next build` chạy được.
+- **Chưa kiểm tra trên bot thật:** chưa gọi Google thật với key trả phí. Sau khi deploy, dán key và bấm "Kiểm tra" cạnh key; muốn thử luồng dự phòng thì xem log có dòng `Key Gemini miễn phí không trả lời được → thử key TRẢ PHÍ` và `💰 Câu trả lời này dùng key Gemini TRẢ PHÍ`.
+
+## 15. Tin khó: thử model mạnh trên MỌI key rồi mới xuống model yếu (30/10/2026)
+
+- **Hiện tượng:** chủ shop để nhiều key và tin rằng khi 3.6-flash hết quota ở 1 key thì bot sang key khác. Chạy thử 5 key giả thấy bot chỉ thử 3.6 trên 2 key rồi tụt xuống gemini-3.5-flash dù 3 key còn lại còn quota 3.6 (tin khó vì vậy nhiều khi do model yếu trả lời). Có key trả phí thì cũng không bao giờ được gọi, vì model yếu trên key miễn phí vẫn trả lời được.
+- **Nguyên nhân:** `callGeminiOnly` xếp thứ tự thử XEN KẼ (model tốt/key 1 → model tốt/key 2 → model yếu/key 1 → model tốt/key 3 ...).
+- **Cách sửa (chỉ cho TIN KHÓ; tin dễ giữ nguyên):** `callGemini` nhận thêm `strongFirst` (webhook truyền khi `modelsForTurn` trả danh sách model riêng). Thứ tự: (A) model mạnh (mặc định gemini-3.6-flash) trên TẤT CẢ key miễn phí, bỏ qua key đang nghỉ (`respectCooldown` mới trong `callGeminiOnly`, nên key vừa báo hết quota ngày không bị gọi lại 30 phút) → (B) key trả phí (gemini-3.6-flash) → (C) model thường trên key miễn phí → (D) Groq. Bước C bị bỏ qua nếu bước A đã gặp ≥ 2 lần chậm/quá tải (Gemini miễn phí hỏng cả loạt) để sang Groq cho nhanh.
+- **File sửa:** `lib/gemini.js`, `app/api/webhook/route.js` (1 dòng: thêm `strongFirst: true`), `tests/paidFallback.test.mjs` (thêm 6 test: 3.6 hết ở 2 key đầu vẫn trúng key còn lại; hết cả 5 key → thử đủ 5 key rồi key trả phí; không có key trả phí → thử đủ 5 key rồi mới xuống model thường; key hết quota ngày không bị gọi lại; key trả phí lỗi → model thường; tin dễ giữ nguyên). `npm test`: 123 test, 123 qua; `next build` chạy được.
+- **Cái giá:** mỗi lỗi 429 trả về rất nhanh (dưới 1 giây) nên thử đủ 5 key chỉ tốn thêm vài giây ở tin khó khi quota 3.6 vừa cạn; các tin sau đã nhớ key nào đang nghỉ nên không lặp lại.
+- **Chưa kiểm tra trên bot thật** (test dùng phản hồi giả). Xem log Vercel: dòng `Gemini OK [tên model] (key ...)` cho biết model nào thực sự trả lời tin khó; dòng `Tin khó: ... hết đường → thử model thường` nghĩa là cả key miễn phí lẫn key trả phí đều không trả lời được model mạnh.
+
+## 16. Đo thời gian chờ khi Gemini treo (30/10/2026)
+
+- **Câu hỏi của chủ shop:** thử đủ key rồi mới sang bước kế tiếp thì khách có phải chờ lâu khi key lỗi không.
+- **Cách đo:** chạy `callGemini` với fetch giả cho Gemini TREO hẳn (không bao giờ trả lời), Groq trả ngay, ngân sách 45 giây như webhook. Chưa đo bằng Google thật.
+- **Kết quả (trường hợp xấu nhất):** không có key trả phí (như trước) → 22 giây rồi sang Groq. Có key trả phí → 29 giây (key miễn phí 14 giây + key trả phí ~15 giây), cả tin dễ lẫn tin khó. Tin kế tiếp trong vòng 30 giây (cầu dao bật, bỏ qua key miễn phí) → 15 giây khi key trả phí cũng treo; nếu key trả phí chạy bình thường thì chỉ vài giây. Tin khó không chậm hơn tin dễ vì bước C (model thường) tự bỏ qua khi key miễn phí đã chậm/quá tải.
+- **Lỗi 429 (hết quota)** trả về nhanh nên thử đủ 5 key chỉ tốn thêm vài giây (ước lượng, chưa đo), và key vừa hết quota được cho nghỉ nên tin sau không lặp lại.
+- **Muốn rút ngắn:** đặt biến môi trường trên Vercel `GEMINI_FREE_PHASE_MS` (mặc định 14000) và `GEMINI_PAID_PHASE_MS` (mặc định 16000); ví dụ 10000 + 10000 thì xấu nhất còn ~20 giây. Đặt quá thấp sẽ cắt oan câu trả lời đang chạy bình thường nhưng hơi chậm → nên xem log `Gemini OK [model] ... X.Xs` để biết thời gian trả lời bình thường trước khi chỉnh.
+

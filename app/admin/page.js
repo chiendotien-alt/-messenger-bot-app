@@ -471,8 +471,9 @@ function SettingsModal({ pages, onClose, onChanged }) {
   );
 }
 
-// Một nhóm key của 1 nhà cung cấp AI (provider = "gemini" | "groq"): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
-function KeySection({ provider, title, subtitle, placeholder, help }) {
+// Một nhóm key của 1 nhà cung cấp AI (provider = "gemini" | "gemini_paid" | "groq"): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
+// (gemini_paid chỉ có 1 ô: dán key mới là thay key cũ)
+function KeySection({ provider, title, subtitle, placeholder, help, addLabel = "Thêm API key mới", listLabel = "Các key đang dùng", emptyText = "Chưa có key nào." }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
   const [keyValue, setKeyValue] = useState("");
@@ -573,7 +574,7 @@ function KeySection({ provider, title, subtitle, placeholder, help }) {
         {subtitle && <div style={{ fontSize: 12, color: "#888", marginTop: 2 }}>{subtitle}</div>}
       </div>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-          <div style={{ fontSize: 13, color: "#666" }}>Các key đang dùng ({keys.length})</div>
+          <div style={{ fontSize: 13, color: "#666" }}>{listLabel} ({keys.length})</div>
           {keys.length > 0 && (
             <button
               onClick={() => handleCheck()}
@@ -587,7 +588,7 @@ function KeySection({ provider, title, subtitle, placeholder, help }) {
         <div style={{ border: "1px solid #eee", borderRadius: 10, marginBottom: 20 }}>
           {loading && <div style={{ padding: 14, color: "#888", fontSize: 14 }}>Đang tải...</div>}
           {!loading && keys.length === 0 && (
-            <div style={{ padding: 14, color: "#888", fontSize: 14 }}>Chưa có key nào.</div>
+            <div style={{ padding: 14, color: "#888", fontSize: 14 }}>{emptyText}</div>
           )}
           {keys.map((k, i) => (
             <div
@@ -653,7 +654,7 @@ function KeySection({ provider, title, subtitle, placeholder, help }) {
         </div>
 
         <form onSubmit={handleAdd}>
-          <label style={{ fontSize: 13, color: "#666", display: "block", marginBottom: 6 }}>Thêm API key mới</label>
+          <label style={{ fontSize: 13, color: "#666", display: "block", marginBottom: 6 }}>{addLabel}</label>
           <input
             type="password"
             autoComplete="off"
@@ -692,7 +693,7 @@ function KeySection({ provider, title, subtitle, placeholder, help }) {
   );
 }
 
-// Hộp thoại API key AI: Gemini (chính) + Groq (dự phòng khi Gemini lỗi/hết hạn mức)
+// Hộp thoại API key AI: Gemini miễn phí (chính) → Gemini key trả phí (dự phòng 1) → Groq (dự phòng 2)
 function ApiKeysModal({ onClose }) {
   return (
     <div
@@ -733,8 +734,8 @@ function ApiKeysModal({ onClose }) {
 
         <KeySection
           provider="gemini"
-          title="Gemini (chính)"
-          subtitle="Bot luôn thử Gemini trước."
+          title="Gemini miễn phí (chính)"
+          subtitle="Bot luôn thử các key Gemini miễn phí này trước."
           placeholder="AIza..."
           help="Lấy key miễn phí tại Google AI Studio. Có nhiều key thì bot tự chuyển sang key khác khi 1 key hết hạn mức."
         />
@@ -742,9 +743,22 @@ function ApiKeysModal({ onClose }) {
         <div style={{ borderTop: "1px solid #eee", margin: "0 0 20px" }} />
 
         <KeySection
+          provider="gemini_paid"
+          title="Gemini key trả phí (dự phòng 1)"
+          subtitle="Chỉ dùng khi TẤT CẢ key Gemini miễn phí ở trên lỗi, hết hạn mức hoặc timeout. Dùng model gemini-3.6-flash, tính tiền theo lượt dùng."
+          placeholder="AIza... (key của project đã bật thanh toán)"
+          addLabel="Dán key trả phí (dán key mới sẽ thay key cũ)"
+          listLabel="Key trả phí đang dùng"
+          emptyText="Chưa có key trả phí — bot sẽ đi thẳng sang Groq khi key miễn phí lỗi."
+          help="Lấy ở Google AI Studio, chọn project đã bật thanh toán (Billing). Nếu key trả phí cũng lỗi thì bot mới sang Groq. Dán xong dùng được ngay, không cần deploy lại."
+        />
+
+        <div style={{ borderTop: "1px solid #eee", margin: "0 0 20px" }} />
+
+        <KeySection
           provider="groq"
-          title="Groq (dự phòng)"
-          subtitle="Chỉ dùng khi tất cả key Gemini lỗi hoặc hết hạn mức."
+          title="Groq (dự phòng 2)"
+          subtitle="Chỉ dùng khi tất cả key Gemini (kể cả key trả phí) lỗi hoặc hết hạn mức."
           placeholder="gsk_..."
           help="Lấy key miễn phí tại console.groq.com/keys (bắt đầu bằng gsk_). Thêm xong là bot dùng được ngay, không cần deploy lại."
         />

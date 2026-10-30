@@ -1225,7 +1225,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let usedModel = null;
   let aiErrors = [];
   for (let i = 0; i < attempts.length && !raw.trim(); i++) {
-    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys, { groqSystem: groqPrompt, ...(turnModels ? { models: turnModels } : {}) });
+    const r = await callGemini(finalPrompt, contents, attempts[i], deadline, apiKeys, { groqSystem: groqPrompt, ...(turnModels ? { models: turnModels, strongFirst: true } : {}) });
     raw = r.text;
     usedModel = r.model;
     aiErrors = r.errors || aiErrors;
