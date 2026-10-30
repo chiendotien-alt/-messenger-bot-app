@@ -2,11 +2,11 @@ export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 import { NextResponse } from "next/server";
-import { listKeys, addKey, deleteKey, normProvider } from "@/lib/apiKeys";
+import { listKeys, addKey, deleteKey } from "@/lib/apiKeys";
 
-const prov = normProvider;
+const prov = (v) => (v === "groq" ? "groq" : "gemini");
 
-// provider: "gemini" (mặc định, key miễn phí) | "gemini_paid" (1 key trả phí) | "groq" (AI dự phòng)
+// provider: "gemini" (mặc định) | "groq" (AI dự phòng)
 export async function GET(req) {
   try {
     const provider = prov(new URL(req.url).searchParams.get("provider"));
