@@ -98,3 +98,44 @@ test("sản phẩm khác không bị áp danh sách chiều dài của chân vá
   const st = attributeStatus(other, [], ["70cm"], "");
   assert.deepEqual(st.list.find((x) => x.attr.name === "Chiều dài").picked, ["70cm"]);
 });
+
+// ---- Số đo VÒNG NGƯỜI (eo/bụng) không được nhầm thành chiều dài váy ----
+const lenOf = (st) => by(st, "Chiều dài");
+const bodyBase = [
+  { from: "customer", text: "Mh 85kg" },
+  { from: "bot", text: "Dạ cân nặng 85kg thì form váy bên em lớn nhất là 75kg nên mặc không vừa ạ" },
+];
+
+test("C: 'bụng 125cm' → không phải chiều dài, không hỏi xác nhận 92cm", () => {
+  const st = attributeStatus(attrs, bodyBase, ["Nhưng mh 85kg bụng 125cm"], "");
+  assert.notEqual(lenOf(st).state, "confirm");
+  assert.equal(confirmItems(st).length, 0);
+});
+
+test("D: shop hỏi 'eo chị nhiêu ạ' → khách trả '125cm' trơn là số đo eo, không hỏi xác nhận chiều dài", () => {
+  const hist = [...bodyBase, { from: "customer", text: "Chị thông cảm giúp em nha" }, { from: "shop", text: "eo chị nhiêu ạ" }];
+  const st = attributeStatus(attrs, hist, ["125cm"], "");
+  assert.equal(confirmItems(st).length, 0);
+});
+
+test("E: '125cm' trơn (số quá lớn so với 92cm, không nói dài) → bỏ qua", () => {
+  const st = attributeStatus(attrs, base, ["125cm"], "");
+  assert.equal(confirmItems(st).length, 0);
+});
+
+test("F: 'eo 78', '78 eo', 'vòng bụng 100cm' không bị nhầm thành chiều dài", () => {
+  for (const t of ["eo 78", "78cm eo", "vòng bụng 100cm", "bụng tầm 110", "mông 100cm"]) {
+    assert.equal(confirmItems(attributeStatus(attrs, base, [t], "")).length, 0, t);
+  }
+});
+
+test("G: không phá luật cũ: 70cm / 'lấy dài 100cm' vẫn hỏi xác nhận; 'dài 125cm' vẫn là chiều dài ngoài danh sách", () => {
+  assert.equal(confirmItems(attributeStatus(attrs, base, ["70cm"], "")).length, 1);
+  assert.equal(confirmItems(attributeStatus(attrs, base, ["lấy dài 100cm"], "")).length, 1);
+  assert.equal(confirmItems(attributeStatus(attrs, base, ["dài 125cm"], "")).length, 1);
+});
+
+test("H: 'bụng 135cm' không bị tính là chiều cao khách đã nói", () => {
+  const st = attributeStatus(attrs, base, ["bụng 135cm"], "");
+  assert.equal(st.body.height, false);
+});
