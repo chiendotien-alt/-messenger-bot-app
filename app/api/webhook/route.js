@@ -1209,7 +1209,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     { maxOutputTokens: 4096, temperature: 0.8, thinkingConfig: { thinkingLevel: "low" } },
   ];
 
-  // Tin KHÓ (phân vân, lo lắng, mặc cả, đổi trả, phàn nàn, đang chốt đơn / đưa SĐT-địa chỉ) → thử model mạnh hơn trước (GEMINI_COMPLEX_MODEL, mặc định gemini-3.6-flash);
+  // Tin KHÓ (phân vân, lo lắng, mặc cả, đổi trả, phàn nàn, đang chốt đơn / đưa SĐT-địa chỉ) → thử model mạnh hơn trước (GEMINI_COMPLEX_MODEL, mặc định TẮT — mọi tin dùng gemini-3.5-flash-lite trước);
   // tin dễ (hỏi size, giá, ship...) vẫn dùng model mặc định cho nhanh + đỡ tốn quota. Model mạnh lỗi/hết quota → tự rơi về model thường.
   const lastBotTextNow = ([...history].reverse().find((m) => m.from !== "customer") || {}).text || "";
   const complexTurn = isComplexTurn({
