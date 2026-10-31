@@ -232,3 +232,13 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
   - `app/api/webhook/route.js`: `salvageMessages` và 3 chỗ lọc tin đầu ra đều đi qua `cleanReplyList`. `lib/botPlayground.js` (trang Dạy bot) cũng vậy.
   - `lib/botPrompt.js`: đổi tiêu đề thành "GHI CHÚ NỘI BỘ...", thêm luật cấm viết "Bước phân tích", "Tin nhắn:"... và cấm chèn chữ ngôn ngữ khác.
 - Test: `tests/replyGuard.test.mjs` (có ca lỗi thật y như ảnh).
+
+## 14. Gemini vẫn timeout dù đã có nhánh dự phòng song song (31/10/2026)
+
+- Hiện tượng (log Vercel 18:38): `gemini-3.5-flash` treo ở CẢ 3 key (key env, 6, 7) cùng lúc, tới 20-22s mới ngắt, rồi sang Groq. Groq `gpt-oss-120b` báo 429 (hết 8000 token/phút) nên rơi xuống `gpt-oss-20b` viết câu trả lời → khách chờ ~22s và nhận câu trả lời của AI yếu hơn. Cùng lúc đó các lần gọi khác vẫn OK trong 1.5-3.5s (`gemini-3.5-flash-lite` 1.5s, `gemini-3.5-flash` 1.7-3.5s).
+- Nguyên nhân: treo là lỗi phía Google trên CẢ MODEL ở thời điểm đó, đổi key không giúp (key nằm ở 5 project khác nhau mà vẫn treo cùng lúc). Nhưng nhánh dự phòng song song trong `lib/gemini.js` (làm ngày 26/10) xếp hàng theo thứ tự "cùng model, key kế tiếp" trước, "model kế tiếp" sau (hàm sắp `queue.sort`), nên 3 lần gọi đều đâm vào đúng model đang treo.
+- Cách sửa (chỉ `lib/gemini.js`): khi gọi nhánh dự phòng, `pickNext(true)` ưu tiên (model, key) có MODEL chưa đang chạy; không còn model nào khác thì mới dùng key khác của cùng model. Ghi log "timeout sau Ns" đúng số giây thật của lần gọi đó (trước đây luôn in 20s dù lần gọi muộn bị cắt sớm hơn do giới hạn tổng 22s).
+- Không đổi: thời gian chờ mỗi lần gọi (20s), thời gian chờ trước khi gọi nhánh dự phòng (5s), tổng 22s trước khi sang Groq, cầu dao 30s, thứ tự model.
+- Test: `tests/hedgeModel.test.mjs` (3 test: model đầu treo → nhánh dự phòng sang model khác thắng ngay; chỉ có 1 model → dùng key khác; model đầu nhanh → không gọi thêm). Test 1 lỗi trên bản cũ, qua trên bản mới.
+- Giới hạn: nếu CẢ HAI model đều treo cùng lúc thì vẫn phải chờ tới 22s rồi mới sang Groq. Không có cách nào làm Google hết treo, chỉ giảm thời gian khách phải chờ.
+- Ghi chú về bộ test: 10 test hiện lỗi từ TRƯỚC khi sửa — 9 test trong `tests/paidFallback.test.mjs` và `tests/modelPick.test.mjs` nói về tính năng "key Gemini trả phí" (`GOOGLE_PAID_API_KEY`) mà `lib/gemini.js` hiện tại không có; 1 test (`contactAsk.test.mjs`) lỗi chỉ vì chưa chạy `npm install`.
