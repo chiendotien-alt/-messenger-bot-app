@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -242,3 +242,40 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
 - Test: `tests/hedgeModel.test.mjs` (3 test: model đầu treo → nhánh dự phòng sang model khác thắng ngay; chỉ có 1 model → dùng key khác; model đầu nhanh → không gọi thêm). Test 1 lỗi trên bản cũ, qua trên bản mới.
 - Giới hạn: nếu CẢ HAI model đều treo cùng lúc thì vẫn phải chờ tới 22s rồi mới sang Groq. Không có cách nào làm Google hết treo, chỉ giảm thời gian khách phải chờ.
 - Ghi chú về bộ test: 10 test hiện lỗi từ TRƯỚC khi sửa — 9 test trong `tests/paidFallback.test.mjs` và `tests/modelPick.test.mjs` nói về tính năng "key Gemini trả phí" (`GOOGLE_PAID_API_KEY`) mà `lib/gemini.js` hiện tại không có; 1 test (`contactAsk.test.mjs`) lỗi chỉ vì chưa chạy `npm install`.
+
+## 15. Khách hẹn "mai gửi địa chỉ / thông tin" mà bot vẫn xin thêm SĐT (01/11/2026)
+
+- Hiện tượng (ảnh chụp chat): bot xin SĐT + địa chỉ, khách trả lời `Mai chị gửi địa chỉ cty nha y`. Bot đáp đúng "dạ vâng ạ, mai chị gửi địa chỉ công ty cho em nhé ạ" nhưng ngay sau đó tự gửi thêm `Em xin thêm số điện thoại nữa nha chị.`
+- Nguyên nhân: câu hẹn có chữ "địa chỉ" nên `looksLikeAddressStrict` (lib/replyDedupe.js) coi là khách VỪA ĐƯA địa chỉ. Hậu quả: (1) chốt chặn `missingContactAsk` (lib/contactAsk.js) thấy "có địa chỉ, thiếu SĐT" nên tự thêm câu xin SĐT; (2) lưới an toàn `pickAddressFromTexts` có thể lưu nguyên câu hẹn làm địa chỉ giao hàng; (3) `partialPairTopics` mở khóa cho phép hỏi lại nửa còn lại.
+- Cách sửa:
+  - `lib/laterStop.js`: thêm `analyzeDefer` nhận ra khách HẸN GỬI SAU ("mai/tối/lát nữa/để sau/khi nào tiện + gửi/đưa/nhắn/ib + địa chỉ/SĐT/thông tin", "chưa có địa chỉ", "mai tư vấn cho chị"), trả về chủ đề được hẹn và phần tin còn lại sau khi bỏ câu hẹn. Không nhầm các câu như "mai gửi hàng cho chị", "ship mai tới không", "chiều dài váy chị gửi em", "mai chị gửi tiền cọc". Thêm `dropAsksForDeferred`: bỏ câu bot xin lại thông tin đã hẹn, giữ câu đáp lời hẹn. `saidLater` (dùng cho tin bồi trong lib/nudge.js) cũng hiểu câu hẹn này nên không nhắn bồi.
+  - `app/api/webhook/route.js`: khi khách hẹn gửi sau thì (a) không lưu câu hẹn làm địa chỉ; (b) không chạy `missingContactAsk` và khối tự xin SĐT/địa chỉ sau khi tư vấn xong; (c) không mở khóa hỏi nốt nửa còn lại; (d) bỏ câu AI lỡ xin lại, AI chỉ toàn câu xin thì thay bằng "Dạ vâng ạ, khi nào tiện chị gửi em nhé ạ"; (e) `skipAskClean` = true để câu đáp lời hẹn không bị bộ lọc chống hỏi lặp cắt mất.
+  - `lib/botPrompt.js`: thêm luật "KHÁCH HẸN GỬI SAU / TƯ VẤN SAU" vào cả prompt đầy đủ và prompt gọn của Groq.
+- Test: `tests/deferInfo.test.mjs` (8 test, có đúng câu trong ảnh). Toàn bộ bộ test: 147 test, 9 lỗi cũ (tính năng key Gemini trả phí) vẫn như trước, không có lỗi mới. `next build` chạy qua.
+- Giới hạn: chỉ nhận các cách nói hẹn phổ biến (mai, tối, chiều, lát nữa, sau, khi nào tiện...). Cách nói lạ chưa có trong danh sách thì vẫn như cũ; thêm từ vào `TIME_ALTS` trong `lib/laterStop.js`.
+
+## 16. Khách bị bỏ rơi mà chủ shop không biết (02/11/2026)
+
+- Vấn đề: sau khi chốt đơn bot tự TẮT với khách đó; khách nhắn tiếp ("bao giờ giao", "đổi địa chỉ") thì bot im và không ai báo cho chủ shop. Bot lỗi / chủ shop bận cũng vậy — Telegram chỉ báo lỗi hệ thống, không báo "khách đang chờ".
+- Cách sửa (file mới `lib/unanswered.js`):
+  - BÁO NGAY qua Telegram khi khách nhắn lúc bot đang tắt với khách đó (cùng khách chỉ báo 1 lần / 5 phút).
+  - NHẮC LẠI khi khách nhắn xong quá `UNANSWERED_ALERT_MIN` phút (mặc định 10) mà tin cuối vẫn là của khách; gom nhiều khách vào 1 tin; mỗi tin khách chỉ báo 1 lần (cột mới `conversations.unanswered_alert_at`, tự tạo khi chạy). Chỉ xét khách nhắn trong 22 giờ gần nhất.
+  - KHÔNG báo: tin chỉ là "cảm ơn / ok / dạ / emoji", các lần bot CHỦ Ý im lặng (khách lặp lại thông tin đã chốt, tin gửi trùng), giờ nghỉ đêm 23h-6h (sáng 6h báo gộp).
+  - Chạy ở 2 chỗ: mỗi lần gọi `/api/nudge/run` (hẹn giờ mỗi phút, cùng cái đang chạy nhắn bồi) và kèm mỗi lần webhook chạy (giới hạn 1 lần / 60 giây). Muốn nhắc đúng giờ cả khi không có khách nào nhắn thêm thì BẮT BUỘC có hẹn giờ gọi `/api/nudge/run` mỗi phút.
+  - Câu lệnh lấy khách + đánh dấu "đã báo" là 1 lệnh duy nhất nên 2 lượt chạy cùng lúc không báo trùng; gửi Telegram lỗi thì trả lại trạng thái chưa báo để phút sau thử lại.
+- Cần có: `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` trên Vercel (đã dùng cho báo lỗi). Chưa có thì mọi thứ im lặng.
+- Cài đặt (không bắt buộc): `UNANSWERED_ALERT_MIN` (đặt 0 = chỉ báo ngay, không nhắc lại), `UNANSWERED_ALERT=off` để tắt hẳn.
+- Test: `tests/unanswered.test.mjs` (6 test: lọc tin cảm ơn/ok, cài đặt, nội dung tin báo). Câu lệnh SQL đã thử trên Postgres thật (PGlite): chọn đúng khách, không báo trùng, trả lại trạng thái khi gửi lỗi.
+
+## 17. Khách chọn 2 màu nhưng đơn chỉ ghi "Màu đen, SL:2" (02/11/2026)
+
+- Hiện tượng (ảnh chụp chat): bot hỏi "Chị lấy chân váy màu nào ạ?", khách trả lời `Chốt chị 2 váy =380 miễn phí ( màu đen và xanh ) Sđt 0974161328 . Hồi cù, Hoàng Sơn...`. Bot lên đơn `Màu đen, size S, dài 75cm, SL:2` (mất màu xanh; lẽ ra `Màu xanh + đen ... SL:2`).
+- Dựng lại được lỗi bằng test. Hai nguyên nhân cộng lại (`lib/attributes.js`):
+  1. Thuộc tính của sản phẩm tên "Chiều dài váy" có chữ "váy" trùng tên sản phẩm "Chân váy 3 tầng". Câu shop hỏi "chị lấy chân VÁY MÀU nào ạ?" bị hiểu là hỏi cả chiều dài lẫn màu → bot không biết đang hỏi màu, nên không đọc kỹ câu trả lời về màu.
+  2. Tin có SĐT/địa chỉ chỉ được đọc phần khách "nói rõ là chọn" và chỉ lấy 2 chữ sau chữ "màu" → "màu đen và xanh" chỉ lấy "đen và", rơi mất "xanh".
+- Cách sửa:
+  - Từ trong tên thuộc tính nhiều từ mà trùng tên sản phẩm (vd "váy") không còn dùng riêng lẻ để nhận ra thuộc tính (tên đầy đủ "chiều dài váy", từ "chiều", "dài" vẫn nhận). Tên thuộc tính chỉ 1 từ giữ nguyên.
+  - Đọc cả danh sách màu sau chữ "màu": "màu đen và xanh", "màu đen + kem", "màu đen, trắng và kem". Sau dấu phẩy chỉ lấy 1 chữ để "màu đen, Lê Hồng Phong" không bị đọc thêm màu Hồng từ tên đường.
+- Test: `tests/multiColor.test.mjs` (7 test, có đúng câu trong ảnh). Toàn bộ bộ test: 160 test, 9 lỗi cũ (Gemini trả phí) như trước.
+- Chưa xác định: tổng tiền trong đơn đó là 350k trong khi khách ghi 380k. Quy tắc của bot: tổng tiền = mức thấp nhất shop ĐÃ BÁO cho đúng số lượng đó, nên 350k nghĩa là trong chat từng có câu báo 350k cho 2 váy. Nếu không đúng thì cần xem phần chat phía trên và bảng giá của sản phẩm.
+

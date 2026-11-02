@@ -7,6 +7,7 @@ export const maxDuration = 60;
 // không hẹn giờ thì bot vẫn tự bồi kèm mỗi khi có tin nhắn mới về.
 import { NextResponse } from "next/server";
 import { runNudge } from "@/lib/nudge";
+import { runUnansweredWatch } from "@/lib/unanswered";
 
 export async function GET(req) {
   // Tuỳ chọn: đặt biến NUDGE_SECRET trên Vercel rồi gọi .../api/nudge/run?key=<NUDGE_SECRET> để người lạ không gọi bừa được.
@@ -16,7 +17,10 @@ export async function GET(req) {
     return NextResponse.json({ error: "Thiếu hoặc sai key" }, { status: 401 });
   }
   try {
-    return NextResponse.json(await runNudge({ deadlineMs: 50000, limit: 15 }));
+    const nudge = await runNudge({ deadlineMs: 50000, limit: 15 });
+    // Cùng lượt gọi mỗi phút: nhắc chủ shop các khách đang chờ trả lời (lỗi phần này không làm hỏng phần nhắn bồi)
+    const unanswered = await runUnansweredWatch({ throttle: false }).catch((e) => ({ error: String(e.message || e) }));
+    return NextResponse.json({ ...nudge, unanswered });
   } catch (err) {
     console.error("Lỗi chạy nhắn bồi:", err);
     return NextResponse.json({ error: String(err.message || err) }, { status: 500 });

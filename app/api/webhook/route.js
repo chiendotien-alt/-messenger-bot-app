@@ -60,6 +60,8 @@ import { getAllRawKeys } from "@/lib/apiKeys";
 import { callGemini } from "@/lib/gemini";
 import { reportError, errText } from "@/lib/alert";
 import { missingContactAsk } from "@/lib/contactAsk";
+import { analyzeDefer, dropAsksForDeferred } from "@/lib/laterStop";
+import { notifyBotOffMessage, markHandled, runUnansweredWatch } from "@/lib/unanswered";
 import { isComplexTurn, modelsForTurn } from "@/lib/modelPick";
 import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
 import { tidyAddress, tidyName } from "@/lib/textTidy";
@@ -271,6 +273,9 @@ export async function POST(req) {
         if (convBotOff) {
           // Bot đang tắt riêng cho khách này — chỉ lưu tin nhắn để chủ shop tự trả lời
           wantOrderSync = true;
+          // Báo chủ shop qua Telegram ngay (không để khách chờ mà không ai biết); lỗi Telegram không ảnh hưởng gì
+          const nameForAlert = await getCustomerName(senderId).catch(() => "");
+          await notifyBotOffMessage({ conversationId: senderId, name: nameForAlert, text: text || "[ảnh]" }).catch(() => {});
           continue;
         }
 
@@ -339,6 +344,7 @@ export async function POST(req) {
           (await isRepeatedMessage(senderId, text, messageId).catch(() => false))
         ) {
           console.log("Bỏ qua tin trùng của khách:", text);
+          await markHandled(senderId).catch(() => {});
           continue;
         }
 
@@ -387,6 +393,7 @@ export async function POST(req) {
         if (reply.skip) {
           await fbAction(senderId, "typing_off", pageToken);
           wantOrderSync = true;
+          if (reply.deliberate) await markHandled(senderId).catch(() => {}); // bot chủ ý im lặng → không nhắc "khách chưa được trả lời"
           continue;
         }
 
@@ -568,6 +575,12 @@ export async function POST(req) {
       await maybeRunNudge(await getSettings());
     } catch (e) {
       console.error("Lỗi nhắn bồi (chạy kèm):", e.message);
+    }
+    // Nhắc chủ shop các khách chờ quá lâu chưa ai trả lời (Telegram)
+    try {
+      await runUnansweredWatch();
+    } catch (e) {
+      console.error("Lỗi nhắc khách chờ (chạy kèm):", e.message);
     }
   }
 
@@ -1287,10 +1300,19 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
 
+  // Khách HẸN GỬI SAU ("mai chị gửi địa chỉ nha", "để chị gửi thông tin sau", "chưa có địa chỉ"...):
+  // bot chỉ đáp lịch sự, KHÔNG xin SĐT/địa chỉ nữa và KHÔNG lưu câu hẹn đó làm địa chỉ giao hàng.
+  const deferNow = analyzeDefer([String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))]);
+  if (deferNow.defer) console.log("Khách hẹn gửi sau → không xin thông tin:", [...deferNow.topics].join(", "), "|", String(customerMessage || "").slice(0, 80));
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
   let verified = null;
   if (parsed?.customer_info && typeof parsed.customer_info === "object") {
     verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
+    // Câu hẹn gửi sau không phải địa chỉ: bỏ địa chỉ AI tự điền nếu phần còn lại của tin không có địa chỉ thật
+    if (deferNow.defer && deferNow.topics.has("dia chi") && !deferNow.rest.some((t) => looksLikeAddressStrict(t))) {
+      delete verified.address;
+      parsed.customer_info = { ...parsed.customer_info, address: "" };
+    }
     // Sản phẩm có bảng thuộc tính: màu/size/chiều dài do HỆ THỐNG ghép từ lựa chọn đã xác nhận, KHÔNG nhận chữ AI tự ghi (AI từng ghi cả chiều dài không có như 70cm)
     if (attrMode) delete verified.variant;
     await mergeCustomerInfo(senderId, verified).catch((e) =>
@@ -1324,7 +1346,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     });
     if (askIdx >= 0) {
       const sinceAsk = histArr.slice(askIdx + 1).filter((m) => m.from === "customer").map((m) => m.text || "");
-      const nowTexts = [...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || "")), String(customerMessage || "")];
+      const nowTexts = deferNow.defer
+        ? deferNow.rest // đã bỏ câu hẹn gửi sau → không nhận "mai chị gửi địa chỉ cty nha" làm địa chỉ
+        : [...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || "")), String(customerMessage || "")];
       const addr = pickAddressFromTexts([...sinceAsk, ...nowTexts]);
       if (addr) {
         verified = { ...(verified || {}), address: addr };
@@ -1359,7 +1383,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       ].filter(Boolean);
   const unblockTopics = [
     ...new Set([
-      ...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: bodySizedNow }),
+      ...[...partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySized: bodySizedNow })].filter((t) => !deferNow.topics.has(t)),
       // Khách vừa trả lời một mục → được hỏi mục kế tiếp (vd vừa chốt size L thì được hỏi chiều cao để chọn chiều dài)
       ...(attrMode ? topicsToUnblock(attrNow, progressedBy(attrBefore, attrNow)) : []),
     ]),
@@ -1392,7 +1416,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
   if (!mustReplyOrderInfo && !ladderSummary && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
     console.log("AI quyết định không trả lời (tin khách chỉ lặp lại thông tin đã chốt):", customerMessage);
-    return { skip: true };
+    return { skip: true, deliberate: true };
   }
   // Khách VỪA đưa số đo không có trong danh sách (vd chiều dài 70cm khi chỉ có 75/85/92cm): HỆ THỐNG tự hỏi xác nhận,
   // không để AI tự chốt hay tự ghi nhận giá trị lạ. Chưa xin SĐT/địa chỉ, chưa lên đơn cho tới khi khách xác nhận một giá trị hợp lệ.
@@ -1603,7 +1627,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const said = messages.join(" ");
     const lacking = due.filter((x) => !matchValues(x.attr, said).length);
     // Các mục khác đã đủ + chưa có SĐT → sau khi tư vấn xong phải xin SĐT + địa chỉ NGAY trong lượt này (không chờ khách nhắn tiếp)
-    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim();
+    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim() && !deferNow.defer;
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
       const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt);
@@ -1706,7 +1730,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // CHỐT CHẶN: khách VỪA đưa đúng MỘT nửa của cặp (địa chỉ hoặc SĐT) mà AI quên xin nửa còn lại
   // (hay gặp: AI chỉ viết "dạ em nhận được thông tin rồi ạ" theo câu ví dụ trong luật chốt đơn) → hệ thống tự thêm câu xin phần còn thiếu.
   let contactAskAdded = false;
-  if (!forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length) {
+  if (!forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length && !deferNow.defer) {
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
@@ -1724,7 +1748,17 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       contactAskAdded = true;
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: ladderSent || basicSent || forcedSummary || contactAskAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
+  // Khách hẹn gửi sau: giữ câu đáp lịch sự của AI, bỏ mọi câu xin lại SĐT/địa chỉ; AI chỉ toàn câu xin → thay bằng 1 câu đáp ngắn
+  if (deferNow.defer && !forcedSummary && !ladderSent && !basicSent && !images.length) {
+    const before = messages;
+    messages = dropAsksForDeferred(messages, deferNow.topics);
+    if (!messages.length) {
+      const trD = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, khi nào tiện mình gửi shop nhé ạ." : `Dạ vâng ạ, khi nào tiện ${trD.kh} gửi ${trD.tu} nhé ạ.`];
+    }
+    if (before.join("|") !== messages.join("|")) console.log("Khách hẹn gửi sau → bỏ câu xin thông tin:", before.join(" | "), "→", messages.join(" | "));
+  }
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: deferNow.defer || ladderSent || basicSent || forcedSummary || contactAskAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
