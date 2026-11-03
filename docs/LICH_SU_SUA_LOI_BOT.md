@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -278,4 +278,28 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
   - Đọc cả danh sách màu sau chữ "màu": "màu đen và xanh", "màu đen + kem", "màu đen, trắng và kem". Sau dấu phẩy chỉ lấy 1 chữ để "màu đen, Lê Hồng Phong" không bị đọc thêm màu Hồng từ tên đường.
 - Test: `tests/multiColor.test.mjs` (7 test, có đúng câu trong ảnh). Toàn bộ bộ test: 160 test, 9 lỗi cũ (Gemini trả phí) như trước.
 - Chưa xác định: tổng tiền trong đơn đó là 350k trong khi khách ghi 380k. Quy tắc của bot: tổng tiền = mức thấp nhất shop ĐÃ BÁO cho đúng số lượng đó, nên 350k nghĩa là trong chat từng có câu báo 350k cho 2 váy. Nếu không đúng thì cần xem phần chat phía trên và bảng giá của sản phẩm.
+
+## 18. Khách đặt 2 váy KHÁC NHAU mà đơn chỉ ghi 1 váy, 185k (02/11/2026)
+
+- Hiện tượng (ảnh chụp chat): khách nhắn `Cho 1 chân váy màu kem chiêu dài 75cm sai m. 1 váy màu chắng dài 92 cm sai xl`. AI trả lời đúng "đã ghi nhận 2 chân váy gồm 1 kem M 75cm và 1 trắng XL 92cm", nhưng tin báo đơn do hệ thống ghép chỉ có `Màu kem, size M, dài 75cm, SL:1`, tổng 185k (giá 1 váy) thay vì 350k.
+- Nguyên nhân (`lib/attributes.js`): (1) khách gõ sai "sai m / sai xl" (thay cho size), "chắng" (thay cho trắng) nên bộ đọc chỉ nhận món đầu; (2) kể cả khi gõ đúng, bộ đọc chỉ gộp thành "màu kem + trắng, size M + XL, dài 75 + 92" — mất việc màu nào đi với size/dài nào; (3) số lượng lấy theo "1 váy" cuối cùng nên ra 1.
+- Cách sửa:
+  - `fixTypos`: sửa lỗi gõ phổ biến trước khi đọc ("sai/siz/sz + cỡ" → size, "chắng" → trắng, "màu sanh" → xanh). Câu thường như "sai rồi", "em gửi sai size" không bị đổi.
+  - `extractItems`/`formatItems`: nhận ra khách liệt kê NHIỀU MÓN, mỗi món bắt đầu bằng số lượng ("1 váy…", "1 chân váy…", "1 cái…", "1 màu…"); tách từng món, đọc màu/size/dài RIÊNG cho từng món. Tin báo đơn ghi mỗi món một dòng: `Màu kem, size M, dài 75cm, SL:1` / `Màu trắng, size XL, dài 92cm, SL:1`; SL = tổng các món; giá theo bảng giá của tổng số lượng (350k); đơn lưu (`lines`) cũng đúng từng món.
+  - Chỉ dùng khi chắc chắn: món nào thiếu thông tin mà món khác có, món có 2 giá trị cho 1 mục ("đen hoặc trắng"), hoặc khách nhắn tiếp đổi/thêm/bớt ("đổi cái trắng thành đen", "lấy thêm 1 cái") → bỏ danh sách món, chạy như cũ (như trước khi sửa).
+- Test: `tests/multiItem.test.mjs` (9 test, có đúng tin trong ảnh). Toàn bộ: 169 test, 9 lỗi cũ (Gemini trả phí) như trước.
+- Giới hạn: khách đổi ý SAU khi đã liệt kê nhiều món thì bot quay về cách gộp cũ (không ghép cặp màu/size) — chủ shop nên kiểm tra tay đơn đó.
+
+## 19. AI + hệ thống cùng đọc đơn, không hỏi lại khách (02/11/2026)
+
+- Yêu cầu của chủ shop: không hỏi khách xác nhận lại đơn, muốn đọc đơn đúng từ 95% trở lên. Trước đây chỉ hệ thống đọc bằng luật nên mỗi kiểu khách nhắn lạ (gõ sai, nhiều món khác nhau...) lại phải thêm luật.
+- Cách làm (lib/orderItems.js, lib/orderReading.js):
+  1. AI ghi danh sách món trong CÙNG câu trả lời (trường mới `order_items`, không tốn thêm lần gọi AI; cả prompt đầy đủ và prompt gọn của Groq): `[{ "qty": 1, "values": { "Màu": "Kem", "Size": "M", "Chiều dài váy": "75cm" } }]`.
+  2. Hệ thống KIỂM từng giá trị AI ghi: phải trùng đúng một giá trị trong danh sách của sản phẩm (không cho "3XL" khớp nhầm "XL", không có "70cm"), và khách phải thật sự nhắc tới (có xét gõ sai 1-2 chữ cái, ch/tr, s/x). Giá trị nào không qua thì bỏ CẢ bản AI (`ai_invalid`).
+  3. Đối chiếu với cách đọc bằng luật: giống nhau (`agree`, nếu AI ghi nhiều món thì nhận cách ghép cặp màu/size/dài của AI) | AI đọc được thêm điều luật bỏ sót (`ai_filled`, chỉ ĐIỀN mục còn trống, không ghi đè mục luật đã đọc chắc) | mâu thuẫn (`conflict`) thì dùng bản HỆ THỐNG và báo Telegram "Đơn của ... cần bạn xem" (cùng khách 1 lần / 10 phút, không báo ban đêm) | AI không ghi món (`ai_none`, không tính vào tỉ lệ).
+  4. Nhiều món thì danh sách món được lưu (cột mới `conversations.order_items`) để các lượt sau và ĐƠN LƯU dùng đúng từng món; khách nhắn tiếp đổi/thêm/bớt thì không dùng nữa. Tiền và định dạng tin báo đơn vẫn do hệ thống tính.
+  5. Mỗi lượt đọc được ghi vào bảng `order_reading_log` (mỗi kết quả khác nhau của cùng khách chỉ ghi 1 lần; SĐT trong chữ khách nhắn bị che). Trang chủ shop xem: `/admin/doc-don` (nút "%" trên thanh trên của trang chat): tỉ lệ hai bên giống nhau, tỉ lệ dùng được, tỉ lệ cần xem, và danh sách các lượt cần xem kèm chữ khách nhắn.
+- Đây là tỉ lệ HAI BÊN ĐỌC GIỐNG NHAU, chưa phải tỉ lệ đúng tuyệt đối so với ý khách. Muốn biết tỉ lệ đúng thật cần đối chiếu một số đơn với đơn đúng do chủ shop xác nhận.
+- Lỗi AI đọc sai: bản AI chỉ được dùng khi (a) mọi giá trị hợp lệ và có trong chữ khách, (b) và hoặc giống hệ thống hoặc bổ sung chứ không mâu thuẫn. Mọi trường hợp mâu thuẫn dùng bản hệ thống.
+- Test: `tests/orderReading.test.mjs` (13 test). Câu lệnh SQL (ghi nhật ký, thống kê, lưu danh sách món) đã thử trên Postgres thật (PGlite). Toàn bộ: 182 test, 9 lỗi cũ (Gemini trả phí) như trước. Chưa thử với AI thật (không gọi được Gemini trong môi trường phát triển) — cần theo dõi trang /admin/doc-don vài ngày đầu.
 

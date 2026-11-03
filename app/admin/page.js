@@ -1634,6 +1634,11 @@ export default function ChatAdminPage() {
           </a>
         )}
         {isOwner && (
+          <a href="/admin/doc-don" title="Độ chính xác đọc đơn (AI so với hệ thống)" aria-label="Độ chính xác đọc đơn" style={{ ...navButtonStyle, fontWeight: 700, fontSize: 15 }}>
+            %
+          </a>
+        )}
+        {isOwner && (
 <button
           onClick={toggleBot}
           style={{
