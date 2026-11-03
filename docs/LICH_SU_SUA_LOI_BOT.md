@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -302,4 +302,12 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
 - Đây là tỉ lệ HAI BÊN ĐỌC GIỐNG NHAU, chưa phải tỉ lệ đúng tuyệt đối so với ý khách. Muốn biết tỉ lệ đúng thật cần đối chiếu một số đơn với đơn đúng do chủ shop xác nhận.
 - Lỗi AI đọc sai: bản AI chỉ được dùng khi (a) mọi giá trị hợp lệ và có trong chữ khách, (b) và hoặc giống hệ thống hoặc bổ sung chứ không mâu thuẫn. Mọi trường hợp mâu thuẫn dùng bản hệ thống.
 - Test: `tests/orderReading.test.mjs` (13 test). Câu lệnh SQL (ghi nhật ký, thống kê, lưu danh sách món) đã thử trên Postgres thật (PGlite). Toàn bộ: 182 test, 9 lỗi cũ (Gemini trả phí) như trước. Chưa thử với AI thật (không gọi được Gemini trong môi trường phát triển) — cần theo dõi trang /admin/doc-don vài ngày đầu.
+
+## 20. Tin báo đơn thiếu chiều dài dù bot đã tư vấn 85cm (03/11/2026)
+
+- Hiện tượng (ảnh chụp chat): shop tư vấn "chị cao 1m54 mặc chân váy dài 85cm", khách trả lời `Xem hàng ko ưng ko nhận nha sop` rồi `Màu đen đi`. Tin báo đơn chỉ có `Màu đen, size L, SL:1`, thiếu chiều dài.
+- Nguyên nhân (`lib/attributes.js`): câu "xem hàng ko ưng ko nhận" (xem hàng, không ưng thì không nhận) có chữ "ko ưng" và "ko nhận" nên `refusesAdvice` hiểu là khách TỪ CHỐI lời tư vấn gần nhất (85cm) → bỏ giá trị chiều dài. Size L không mất vì đã được chốt trước đó.
+- Cách sửa: câu nói về xem/kiểm tra/nhận/hoàn/đổi trả hàng, COD ("cho kiểm tra hàng", "ko ưng thì hoàn hàng", "ship cod", "nhận hàng rồi mới thanh toán") KHÔNG còn bị coi là từ chối lời tư vấn. Từ chối thật ("không lấy dài 85cm", "thôi", "đổi dài 92cm", "dài hơn chút") vẫn hoạt động.
+- Kèm theo, phần AI+hệ thống (mục 19): giá trị AI ghi được chấp nhận nếu có trong chữ khách HOẶC trong lời tư vấn của shop ở 10 tin gần nhất (size/chiều dài thường do shop tư vấn theo số đo rồi khách đồng ý ngầm). Trước đó mục 19 sẽ coi "85cm" là khách không nhắc → bỏ bản AI. Giờ nếu luật bỏ sót một giá trị shop đã tư vấn mà AI ghi đúng thì AI điền vào (ai_filled).
+- Test: `tests/deliveryTalk.test.mjs` (4 test, có đúng cuộc chat trong ảnh). Toàn bộ: 186 test, 9 lỗi cũ (Gemini trả phí) như trước.
 

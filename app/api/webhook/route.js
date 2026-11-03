@@ -48,7 +48,7 @@ function mentionsOrderCheck(t) {
   if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
   return ORDER_CHECK_RE.test(x);
 }
-import { productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -61,6 +61,8 @@ import { callGemini } from "@/lib/gemini";
 import { reportError, errText } from "@/lib/alert";
 import { missingContactAsk } from "@/lib/contactAsk";
 import { analyzeDefer, dropAsksForDeferred } from "@/lib/laterStop";
+import { readOrder, savedItemsStillValid } from "@/lib/orderItems";
+import { logReading, alertConflict, saveItems, getSavedItems } from "@/lib/orderReading";
 import { notifyBotOffMessage, markHandled, runUnansweredWatch } from "@/lib/unanswered";
 import { isComplexTurn, modelsForTurn } from "@/lib/modelPick";
 import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
@@ -1297,6 +1299,64 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (fixedAttrs.length) {
       sumDetail = summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1);
       console.log("Đối chiếu tin AI: bổ sung lựa chọn khách mà bộ nhận diện bỏ sót:", fixedAttrs.map((f) => `${f.name}=${f.value}`).join(", "));
+    }
+  }
+
+  // ĐỌC ĐƠN = AI + HỆ THỐNG (không hỏi lại khách): AI ghi danh sách món (order_items) → hệ thống kiểm từng giá trị rồi đối chiếu với cách đọc bằng luật.
+  //   giống nhau → dùng | AI đọc được thêm điều luật bỏ sót → dùng bản AI | mâu thuẫn → dùng bản hệ thống + báo chủ shop | AI ghi sai → bỏ bản AI
+  let reading = null;
+  if (attrMode && attrNow) {
+    try {
+      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrent].reverse()];
+      // Khách đã chốt danh sách món ở lượt trước và không nhắn gì đổi → vẫn dùng (AI lượt này thường không ghi lại)
+      let statusChanged = false;
+      let aiRaw = Array.isArray(parsed?.order_items) ? parsed.order_items : null;
+      const sysQty = Math.max(1, qtyHintNow || 0, colorCount(attrNow) || 0);
+      const shopTexts = (history || []).filter((m) => m.from !== "customer").slice(-10).map((m) => String(m.text || "")); // lời tư vấn size/chiều dài của shop cũng là căn cứ
+      reading = readOrder({ attrs, status: attrNow, aiRaw, customerTexts: custTexts, shopTexts, sysQty });
+      if (!reading.final && !attrNow.items) {
+        const saved = await getSavedItems(senderId);
+        const still = saved ? savedItemsStillValid(attrs, saved, custTexts) : null;
+        if (still && still.length >= 2 && !attrNow.items) {
+          const ch = applyItemsToStatus(attrs, attrNow, still, { mode: "multi" });
+          if (attrNow.items) statusChanged = true;
+          console.log("Dùng lại danh sách món đã lưu:", ch.join(", ") || "(không đổi)");
+        }
+      }
+      if (reading.final) {
+        const ch = applyItemsToStatus(attrs, attrNow, reading.final, { mode: reading.mode === "multi" ? "multi" : "fill" });
+        console.log(`Đọc đơn [${reading.verdict}] dùng bản AI:`, ch.join(", ") || "(không đổi)");
+        statusChanged = true;
+      }
+      if (statusChanged) {
+        if (attrNow.itemsRaw?.length >= 2 && ladderOn && ladderCtx) {
+          try {
+            ladderCtx = computePriceContext({
+              product: currentProduct,
+              outgoing: ladderOutgoing,
+              customerNow: attrCurrent,
+              customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
+              lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
+              minQty: colorCount(attrNow),
+            });
+          } catch (e) {
+            console.error("Lỗi tính lại bảng giá sau khi đọc đơn:", e.message);
+          }
+        }
+        sumDetail = summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1);
+      } else if (reading.verdict !== "none") {
+        console.log(`Đọc đơn [${reading.verdict}]`, reading.notes.join("; "));
+      }
+      // Lưu danh sách món (nhiều món) để các lượt sau + đơn lưu dùng đúng; đổi sang 1 món thì xóa
+      if (attrNow.itemsRaw?.length >= 2) await saveItems(senderId, attrs, attrNow.itemsRaw, attrCurrent[0] || customerMessage);
+      else if (reading.verdict === "agree" || reading.verdict === "ai_filled" || reading.verdict === "conflict") await saveItems(senderId, attrs, null, "");
+      // Nhật ký + báo chủ shop khi mâu thuẫn
+      if (reading.verdict !== "none") {
+        await logReading({ conversationId: senderId, product: currentProduct?.name, attrs, reading, customerText: String(customerMessage || attrCurrent[0] || "") });
+        if (reading.verdict === "conflict") await alertConflict({ conversationId: senderId, name: await getCustomerName(senderId).catch(() => ""), attrs, reading });
+      }
+    } catch (e) {
+      console.error("Lỗi đọc đơn (AI + hệ thống) — bỏ qua, dùng cách đọc cũ:", e.message);
     }
   }
 
