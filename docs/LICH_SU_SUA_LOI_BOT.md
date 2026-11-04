@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -310,4 +310,24 @@ Chép vào repo rồi push lên GitHub để Vercel deploy (giữ đúng đườ
 - Cách sửa: câu nói về xem/kiểm tra/nhận/hoàn/đổi trả hàng, COD ("cho kiểm tra hàng", "ko ưng thì hoàn hàng", "ship cod", "nhận hàng rồi mới thanh toán") KHÔNG còn bị coi là từ chối lời tư vấn. Từ chối thật ("không lấy dài 85cm", "thôi", "đổi dài 92cm", "dài hơn chút") vẫn hoạt động.
 - Kèm theo, phần AI+hệ thống (mục 19): giá trị AI ghi được chấp nhận nếu có trong chữ khách HOẶC trong lời tư vấn của shop ở 10 tin gần nhất (size/chiều dài thường do shop tư vấn theo số đo rồi khách đồng ý ngầm). Trước đó mục 19 sẽ coi "85cm" là khách không nhắc → bỏ bản AI. Giờ nếu luật bỏ sót một giá trị shop đã tư vấn mà AI ghi đúng thì AI điền vào (ai_filled).
 - Test: `tests/deliveryTalk.test.mjs` (4 test, có đúng cuộc chat trong ảnh). Toàn bộ: 186 test, 9 lỗi cũ (Gemini trả phí) như trước.
+
+## 21. Rà soát các kiểu đọc nhầm đơn (03/11/2026)
+
+Dựng ~170 tình huống khách nhắn thật (gõ tắt, không dấu, địa chỉ có số, tên đường trùng tên màu, vừa chọn vừa hỏi, đổi ý, hỏi ship/đổi trả, số đo trùng chiều dài, số lượng...) kèm đáp án đúng, chạy qua bot, sửa mọi ca sai. Bộ này giờ là test cố định (`tests/stressReading.test.mjs`, `tests/addressStress.test.mjs`).
+
+Các lỗi tìm ra và đã sửa:
+1. **Lỗ hổng gốc**: khi khách vừa gửi SĐT + địa chỉ mà đơn còn thiếu size / chiều dài (chưa chốt), "chốt chặn" trong webhook vẫn tự ghép tin báo đơn thiếu thông tin. Giờ nếu còn thiếu thuộc tính chưa chốt thì KHÔNG tự ghép (trừ khi khách chủ động bảo kiểm tra đơn); AI sẽ tư vấn / hỏi nốt phần thiếu (`attributesComplete`).
+2. **"vâng ạ" gõ không dấu**: "vang a mau den" bị đọc là màu Vàng + Đen → 2 cái, giá 350k. Giờ "vang" đứng trước/sau chữ xã giao (a, chị, em, nha...) không bị tính là màu Vàng.
+3. **"m" = mình**: "m lấy màu đen nha" bị đọc là size M. Giờ chữ m đứng trước động từ (lấy, muốn, chọn...) hoặc sau "cho/với/của" không phải size.
+4. **Đổi ý ngay trong một tin**: "lấy đen nhé à thôi lấy màu trắng" bị tính 2 màu (2 cái, 350k). Giờ chỉ đọc phần sau "à thôi / thôi lấy / nhầm / lộn / ý chị là" cho thuộc tính được nói lại.
+5. **Chê giá trị**: "85 dài quá, lấy 75", "size L nhỏ quá, lấy XL" → coi là từ chối giá trị bị chê.
+6. **Vừa chọn vừa hỏi trong một tin**: "màu đen, ngắn hơn chút được không", "màu đen ạ. mặc có nóng không em", "lấy màu đen, sao shop không trả lời sớm" trước đây coi cả tin là câu hỏi nên mất màu. Giờ chỉ bỏ vế câu hỏi, đọc vế còn lại ("màu đen, có không shop?" vẫn là câu hỏi cả tin).
+7. **Số lượng**: shop hỏi "chị lấy mấy cái ạ?" khách trả lời trơn "2" → 2 cái (trước ra 1 cái); "đen 2c" = 2 cái.
+8. **"đỏ" nhắn trơn** khi shop vừa hỏi màu (giá trị "Đỏ đô") → nhận.
+9. **Viết tắt tỉnh** HN / HP / DN / SG trong địa chỉ ("Cty abc 123 Nguyễn Trãi Thanh Xuân HN") → nhận là địa chỉ.
+
+Đã kiểm tra và đọc ĐÚNG (không cần sửa): số đo trùng chiều dài (nặng 75kg, cao 1m85, "75 ký"...), SĐT / địa chỉ chứa 75/85/92 hoặc tên trùng màu (Hồng Hà, thôn Vàng, Nguyễn Thị Hồng...), "cảm ơn" không dấu (cam on), câu hỏi ship / bớt giá / đổi trả / kiểm tra hàng, khách tự đổi size / dài, nhiều món khác nhau.
+
+Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay trong tin có SĐT khi bot chưa hỏi màu (hiếm) thì chưa đọc; (b) khách chê chung chung ("chưa ưng lắm") rồi chọn tiếp thì bot sẽ tư vấn lại chiều dài thay vì chốt thiếu.
+- Test: 406 test, 9 lỗi cũ (Gemini trả phí) như trước.
 
