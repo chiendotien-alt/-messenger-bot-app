@@ -110,6 +110,7 @@ Cách thêm key Claude (chọn 1 trong 2):
 Lấy key ở https://console.anthropic.com/settings/keys, nạp tiền ở Plans & Billing. **Nên đặt hạn mức chi tiêu hàng tháng** bên Anthropic để không bị tốn ngoài ý muốn.
 
 - Model mặc định: `claude-haiku-5-5`, rồi `claude-sonnet-5-5`. Đổi bằng biến `CLAUDE_MODELS` (xem `.env.local.example`).
+- Mức suy nghĩ: `CLAUDE_EFFORT` (mặc định `low` → nhanh và rẻ hơn; nếu thấy tư vấn kém hơn Gemini thì đặt `medium`).
 - Tắt tạm Claude mà không xoá key: đặt `CLAUDE_ENABLED=0`.
 - Khi Claude trả lời thay Gemini, log có dòng `Bot trả lời (claude:...)` và chủ shop nhận tin Telegram (tối đa 30 phút/lần). Khi tài khoản Claude hết tiền hoặc key bị từ chối cũng có tin Telegram riêng (6 giờ/lần).
 - Mã nguồn: `lib/claude.js` (gọi Claude), `lib/gemini.js` → hàm `callGemini` (thứ tự dự phòng).

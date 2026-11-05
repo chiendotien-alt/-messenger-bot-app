@@ -94,3 +94,27 @@ test("toClaudeMessages: vai xen kẽ, tin đầu là của khách, không có kh
   assert.ok(msgs[0].content.some((b) => b.type === "image" && b.source.media_type === "image/png"));
   assert.ok(msgs.every((m) => m.content.every((b) => b.type !== "text" || b.text.trim())));
 });
+
+test("Claude: mặc định gửi effort=low; CLAUDE_EFFORT rỗng thì không gửi", async () => {
+  const a = installFetch({ gemini: () => BAD(503), claude: () => CLAUDE_OK("{}"), groq: () => GROQ_OK("g") });
+  await run();
+  assert.deepEqual(a.bodies[0].output_config, { effort: "low" });
+  process.env.CLAUDE_EFFORT = "";
+  const b = installFetch({ gemini: () => BAD(503), claude: () => CLAUDE_OK("{}"), groq: () => GROQ_OK("g") });
+  await run();
+  assert.ok(!("output_config" in b.bodies[0]));
+  delete process.env.CLAUDE_EFFORT;
+});
+
+test("Claude từ chối effort (400) → tự gọi lại KHÔNG có effort, khách vẫn nhận câu trả lời của Claude", async () => {
+  let first = true;
+  const { bodies } = installFetch({
+    gemini: () => BAD(503),
+    claude: () => (first ? ((first = false), BAD(400, "output_config.effort: not supported for this model")) : CLAUDE_OK('{"messages":["ok"]}')),
+    groq: () => GROQ_OK("g"),
+  });
+  const r = await run();
+  assert.match(r.model, /^claude:/);
+  assert.equal(r.text, '{"messages":["ok"]}');
+  assert.ok("output_config" in bodies[0] && !("output_config" in bodies[1]));
+});
