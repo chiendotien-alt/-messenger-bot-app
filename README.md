@@ -95,9 +95,28 @@ Biến môi trường (không bắt buộc):
 - `SITUATION_BUDGET_MS` — thời gian tối đa cho lớp 3 (mặc định 4500).
 
 
+## AI dự phòng: Gemini → Claude → Groq
+
+Thứ tự bot gọi AI cho mỗi tin nhắn:
+
+1. **Gemini** (chính, miễn phí) — luôn thử trước.
+2. **Claude** (dự phòng 1, **trả phí**) — chỉ được gọi khi mọi model/key Gemini đều lỗi, quá tải (503) hoặc hết hạn mức. Dùng đúng câu lệnh đầy đủ như Gemini nên chất lượng trả lời gần như không đổi.
+3. **Groq** (dự phòng 2, miễn phí) — chỉ khi cả Gemini lẫn Claude đều lỗi.
+
+Cách thêm key Claude (chọn 1 trong 2):
+- **Trên trang quản trị (khuyên dùng):** nút 🔑 → mục "Claude (dự phòng 1 — trả phí)" → dán key `sk-ant-...` → Thêm. Dùng được ngay (tối đa ~30 giây để nhận key mới), không cần deploy lại. Nút "Kiểm tra" báo key còn dùng được / hết tiền.
+- **Biến môi trường:** `ANTHROPIC_API_KEY` trên Vercel (nhiều key ngăn cách bằng dấu phẩy) → Redeploy.
+
+Lấy key ở https://console.anthropic.com/settings/keys, nạp tiền ở Plans & Billing. **Nên đặt hạn mức chi tiêu hàng tháng** bên Anthropic để không bị tốn ngoài ý muốn.
+
+- Model mặc định: `claude-haiku-5-5`, rồi `claude-sonnet-5-5`. Đổi bằng biến `CLAUDE_MODELS` (xem `.env.local.example`).
+- Tắt tạm Claude mà không xoá key: đặt `CLAUDE_ENABLED=0`.
+- Khi Claude trả lời thay Gemini, log có dòng `Bot trả lời (claude:...)` và chủ shop nhận tin Telegram (tối đa 30 phút/lần). Khi tài khoản Claude hết tiền hoặc key bị từ chối cũng có tin Telegram riêng (6 giờ/lần).
+- Mã nguồn: `lib/claude.js` (gọi Claude), `lib/gemini.js` → hàm `callGemini` (thứ tự dự phòng).
+
 ## AI dự phòng bằng Groq
 
-Khi toàn bộ model/key Gemini lỗi hoặc hết hạn mức, bot tự chuyển sang Groq (miễn phí) để vẫn trả lời khách.
+Khi Gemini lỗi/hết hạn mức (và Claude không có hoặc cũng lỗi), bot tự chuyển sang Groq (miễn phí) để vẫn trả lời khách.
 
 Cách thêm key Groq (chọn 1 trong 2):
 - **Trên trang quản trị (khuyên dùng):** bấm nút 🔑 → mục "Groq (dự phòng)" → dán key `gsk_...` → Thêm. Dùng được ngay, không cần deploy lại. Có nút "Kiểm tra" để xem key còn hạn mức không.

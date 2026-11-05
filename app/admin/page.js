@@ -471,7 +471,7 @@ function SettingsModal({ pages, onClose, onChanged }) {
   );
 }
 
-// Một nhóm key của 1 nhà cung cấp AI (provider = "gemini" | "groq"): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
+// Một nhóm key của 1 nhà cung cấp AI (provider = "gemini" | "claude" | "groq"): thêm nhiều key, bot tự xoay vòng khi 1 key hết hạn mức
 function KeySection({ provider, title, subtitle, placeholder, help }) {
   const [keys, setKeys] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -692,7 +692,7 @@ function KeySection({ provider, title, subtitle, placeholder, help }) {
   );
 }
 
-// Hộp thoại API key AI: Gemini (chính) + Groq (dự phòng khi Gemini lỗi/hết hạn mức)
+// Hộp thoại API key AI: Gemini (chính) → Claude (dự phòng trả phí) → Groq (dự phòng cuối)
 function ApiKeysModal({ onClose }) {
   return (
     <div
@@ -742,9 +742,19 @@ function ApiKeysModal({ onClose }) {
         <div style={{ borderTop: "1px solid #eee", margin: "0 0 20px" }} />
 
         <KeySection
+          provider="claude"
+          title="Claude (dự phòng 1 — trả phí)"
+          subtitle="Chỉ dùng khi tất cả key Gemini lỗi hoặc hết hạn mức. Thử trước Groq."
+          placeholder="sk-ant-..."
+          help="Lấy key tại console.anthropic.com/settings/keys (bắt đầu bằng sk-ant-) và nạp tiền ở Plans & Billing. Chỉ tốn tiền khi Gemini hỏng. Nên đặt hạn mức chi tiêu hàng tháng bên Anthropic để yên tâm."
+        />
+
+        <div style={{ borderTop: "1px solid #eee", margin: "0 0 20px" }} />
+
+        <KeySection
           provider="groq"
-          title="Groq (dự phòng)"
-          subtitle="Chỉ dùng khi tất cả key Gemini lỗi hoặc hết hạn mức."
+          title="Groq (dự phòng 2 — miễn phí)"
+          subtitle="Chỉ dùng khi cả Gemini lẫn Claude đều lỗi."
           placeholder="gsk_..."
           help="Lấy key miễn phí tại console.groq.com/keys (bắt đầu bằng gsk_). Thêm xong là bot dùng được ngay, không cần deploy lại."
         />

@@ -8,7 +8,7 @@ import { checkKeys } from "@/lib/apiKeys";
 export async function POST(req) {
   try {
     const { id, provider } = await req.json().catch(() => ({}));
-    return NextResponse.json({ results: await checkKeys(id, provider === "groq" ? "groq" : "gemini") });
+    return NextResponse.json({ results: await checkKeys(id, provider === "groq" ? "groq" : provider === "claude" ? "claude" : "gemini") });
   } catch (e) {
     return NextResponse.json({ error: e.message }, { status: 400 });
   }

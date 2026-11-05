@@ -4,9 +4,9 @@ export const revalidate = 0;
 import { NextResponse } from "next/server";
 import { listKeys, addKey, deleteKey } from "@/lib/apiKeys";
 
-const prov = (v) => (v === "groq" ? "groq" : "gemini");
+const prov = (v) => (v === "groq" ? "groq" : v === "claude" ? "claude" : "gemini");
 
-// provider: "gemini" (mặc định) | "groq" (AI dự phòng)
+// provider: "gemini" (mặc định) | "claude" (dự phòng trả phí) | "groq" (dự phòng miễn phí)
 export async function GET(req) {
   try {
     const provider = prov(new URL(req.url).searchParams.get("provider"));

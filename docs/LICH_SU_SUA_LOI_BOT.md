@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -330,4 +330,24 @@ Các lỗi tìm ra và đã sửa:
 
 Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay trong tin có SĐT khi bot chưa hỏi màu (hiếm) thì chưa đọc; (b) khách chê chung chung ("chưa ưng lắm") rồi chọn tiếp thì bot sẽ tư vấn lại chiều dài thay vì chốt thiếu.
 - Test: 406 test, 9 lỗi cũ (Gemini trả phí) như trước.
+
+## 22. Khách đưa lựa chọn sản phẩm cùng tin với SĐT / địa chỉ (04/11/2026)
+
+- Vấn đề: tin có SĐT hoặc địa chỉ chỉ được đọc phần khách NÓI RÕ là chọn ("màu đen", "size M"). Khách nhắn kiểu `đen - 0972985918 - ngõ 75 Kim Mã`, `0912345678 đen 12 Lê Lợi HN`, `đen M 85 0912345678 12 Lê Lợi` thì mất màu / size / dài.
+- Cách sửa (`contactResidual` trong lib/attributes.js): tách tin thành phần SẢN PHẨM và phần GIAO HÀNG — bỏ SĐT (kể cả có nhãn sđt/zalo), bỏ đoạn địa chỉ (từ chữ mở đầu địa chỉ như số/ngõ/thôn/xã/phường/quận/đường/cty... hoặc "12 Lê Lợi" tới chữ báo phần sản phẩm như lấy/màu/size), sau SĐT mà toàn chữ địa chỉ viết liền thì bỏ cả đoạn. Phần còn lại mới đọc, kể cả chữ trơn ("đen", "M", "85").
+- Chỉ đọc chữ trơn khi shop vừa hỏi đúng thuộc tính đó hoặc thuộc tính đó CHƯA chốt (đã chốt rồi thì chỉ đọc khi khách nói rõ, như trước).
+- Chống đọc nhầm: tên người trùng tên màu viết hoa ("Nguyễn Thị Hồng", "Hồng 0912.. 12 Hà Nội" khi shop vừa xin SĐT) là TÊN; phần còn lại kết thúc bằng tên tỉnh/thành ("hồng hà hà nội") là địa chỉ; số trong địa chỉ (ngõ 75, số 92, 85 Hồng Bàng) không bị đọc thành chiều dài. Nếu shop vừa hỏi màu mà khách nhắn "Hồng 0912345678 12 Lê Lợi HN" thì là chọn màu hồng.
+- Test: thêm vào tests/stressReading.test.mjs (nhóm run4 + run5, ~42 ca). Toàn bộ: 448 test, 9 lỗi cũ (Gemini trả phí) như trước.
+- Giới hạn: `0912345678 đen Hà Nội` (màu + tỉnh viết liền sau SĐT, không có chữ mở đầu địa chỉ) bị coi là địa chỉ nên chưa đọc màu.
+
+## 23. Bot hỏi lại chiều cao dù khách đã nói "cao m150" (04/11/2026)
+
+- Hiện tượng (ảnh chụp chat + nhật ký Vercel): khách nhắn `Mình cao m150 năng 53kg`. Bot tư vấn đúng "size M, dài 75cm" nhưng ngay sau đó hỏi lại "Chị cao tầm mét mấy ạ?". Nhật ký: `Thuộc tính: Size=measured | Chiều dài váy=missing` — bot thấy cân nặng nhưng không nhận ra chiều cao nên coi chiều dài là chưa có số đo.
+- Nguyên nhân: bộ nhận chiều cao (`HEIGHT_TEXT_RE`) chỉ hiểu "1m50", "1,5m", "150cm", "cao 150"; không hiểu "m150", "1met50", "1 mét 50", "một mét rưỡi", "1m rưỡi", "cao m50", "1m50cm". Cân nặng chỉ hiểu khi có chữ "kg / ký / cân / nặng", nên "1m50 53", "1m50/53", "53", "1m5 50k" bị mất cân nặng.
+- Cách sửa (`lib/replyDedupe.js`):
+  - Mở rộng `HEIGHT_TEXT_RE` cho các cách viết trên (cả "150/53").
+  - `normalizeBodyText`: chuẩn hóa số đo trước khi đọc, dùng tin shop ngay trước làm ngữ cảnh: khách trả lời trơn "160", "1.6", "m6", "mét 6" khi shop vừa hỏi chiều cao → cao 1m60; trả lời trơn "53" khi shop vừa hỏi cân nặng → 53kg; viết liền "1m50 53", "1m50/53", "53 1m50", "150 53", "1m5 50k" → thêm "kg" cho số cân nặng. Không đoán khi shop không hỏi số đo; số đứng sau số nhà / ngõ / size / dài / giá / lấy không bị đọc thành cân nặng; SĐT không bị đụng. Dùng ở `attributeStatus` (đơn) và `bodyInfoGiven` (tin nhắn bồi).
+- Kèm theo (phần AI + hệ thống, mục 19): khi một mục (size / chiều dài) đang chờ shop tư vấn (`measured`), giá trị AI ghi cho mục đó trong cùng lượt là lời tư vấn của chính bot nên bị bỏ qua khi kiểm, không còn bị ghi nhật ký là "AI ghi sai — khách không hề nhắc" (như dòng `Đọc đơn [ai_invalid] Size: "M" khách không hề nhắc` trong nhật ký).
+- Test: `tests/bodyMeasure.test.mjs` (7 test, có đúng câu trong ảnh). Toàn bộ: 455 test, 9 lỗi cũ (Gemini trả phí) như trước.
+- Giới hạn: con số trơn ("160", "53") chỉ hiểu khi shop vừa hỏi đúng chiều cao / cân nặng ngay trước đó.
 

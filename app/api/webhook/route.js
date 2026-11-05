@@ -48,7 +48,7 @@ function mentionsOrderCheck(t) {
   if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
   return ORDER_CHECK_RE.test(x);
 }
-import { applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -69,7 +69,7 @@ import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
 import { tidyAddress, tidyName } from "@/lib/textTidy";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
-import { customerQtyHint } from "@/lib/orderFacts";
+import { customerQtyHint, qtyFromReplies } from "@/lib/orderFacts";
 import { buildOrderContext, parseDeliveryDays } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
 import { detectSituation, shouldClassify, classifySituation, situationNote } from "@/lib/situation";
@@ -1134,7 +1134,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         customerNow: attrCurrent,
         customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
         lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
-        minQty: attrMode ? colorCount(attrNow) : 0,
+        minQty: Math.max(attrMode ? colorCount(attrNow) : 0, qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]) || 0),
       });
     } catch (e) {
       console.error("Lỗi tính bảng giá mặc cả:", e.message);
@@ -1144,7 +1144,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const priceNote = ladderCtx ? priceTurnNote(ladderCtx) : "";
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   // Số lượng khách tự nói ("lấy 2 cái") — dùng khi sản phẩm không có bảng giá mặc cả, để tin báo đơn không mặc định 1 cái
-  const qtyHintNow = customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()));
+  const qtyHintNow =
+    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse())) ||
+    qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]);
   let sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
   const custTextNewest = () =>
@@ -1244,7 +1246,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     raw = r.text;
     usedModel = r.model;
     aiErrors = r.errors || aiErrors;
-    if (String(usedModel || "").startsWith("groq:")) {
+    if (String(usedModel || "").startsWith("claude:")) {
+      // Claude là API TRẢ PHÍ → báo chủ shop (30 phút/lần) để biết Gemini đang hỏng và bot đang tốn tiền Claude
+      console.warn("⚠ Câu trả lời này do AI DỰ PHÒNG Claude (trả phí) viết vì Gemini lỗi/hết hạn mức:", usedModel);
+      await reportError("ai_backup_claude", "Gemini lỗi/chậm → bot đang trả lời bằng Claude dự phòng (tốn tiền Claude)", {
+        "Các lỗi Gemini": aiErrors.join("\n"),
+        "Khách": senderId,
+        "Tin khách": customerMessage,
+      }, { gapMs: 30 * 60 * 1000 });
+    } else if (String(usedModel || "").startsWith("groq:")) {
       console.warn("⚠ Câu trả lời này do AI DỰ PHÒNG Groq viết (Gemini lỗi/hết hạn mức) → kiểm tra key Gemini ở nút 🔑:", usedModel);
       await reportError("ai_backup_groq", "Gemini lỗi/chậm → bot đang trả lời bằng Groq dự phòng", {
         "Các lỗi Gemini": aiErrors.join("\n"),
@@ -1258,7 +1268,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   if (!raw.trim()) {
-    await reportError("ai_no_answer", "AI KHÔNG trả lời được (cả Gemini lẫn Groq đều lỗi)", {
+    await reportError("ai_no_answer", "AI KHÔNG trả lời được (Gemini, Claude và Groq đều lỗi)", {
       "Các lỗi": aiErrors.join("\n"),
       "Khách": senderId,
       "Page": pageId,
@@ -1775,7 +1785,10 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const haveContact = !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim());
     const custAskCheck = mentionsOrderCheck(customerMessage) || /đơn đâu|đâu rồi/i.test(String(customerMessage || ""));
     const gaveContactNow = phoneNow || replaceDraft;
-    if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || gaveContactNow)) {
+    // Còn thiếu màu / size / chiều dài (chưa chốt) thì KHÔNG tự ghép tin báo đơn khi khách vừa gửi SĐT/địa chỉ — để AI tư vấn/hỏi nốt phần thiếu trước
+    const attrsOk = !attrMode || attributesComplete(attrNow);
+    if (!attrsOk && !hasBlock && haveContact && gaveContactNow && !saysCheck && !custAskCheck) console.log("Còn thiếu thuộc tính chưa chốt → không tự ghép tin báo đơn:", attrNow.list.filter((x) => x.state !== "chosen").map((x) => `${x.attr.name}:${x.state}`).join(", "));
+    if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || (gaveContactNow && attrsOk))) {
       const tone = ladderTone(messages);
       const sentTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
       const askedCheck = saysCheck || custAskCheck;
