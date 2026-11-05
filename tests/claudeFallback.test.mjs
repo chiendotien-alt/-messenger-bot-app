@@ -50,6 +50,8 @@ test("Gemini 503 hết → Claude trả lời, Groq KHÔNG được gọi", asyn
   assert.ok(r.errors.some((e) => e.includes("503")), "phải giữ lỗi Gemini để báo chủ shop");
   assert.match(bodies[0].system, /JSON/); // đã nhắc Claude chỉ trả JSON
   assert.equal(bodies[0].messages[0].role, "user");
+  assert.ok(!("temperature" in bodies[0]), "Claude mới từ chối tham số temperature (HTTP 400)");
+  assert.ok(!("top_p" in bodies[0]) && !("top_k" in bodies[0]));
 });
 
 test("Gemini + Claude đều lỗi → mới sang Groq (đúng thứ tự)", async () => {
