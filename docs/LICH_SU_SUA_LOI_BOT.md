@@ -381,3 +381,12 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
   2. Sản phẩm có bảng thuộc tính + khách vừa nói "thôi chị không mua nữa" → bồi vẫn nhắn, vì bước soạn từ bảng bỏ qua AI và `customerWantsLater` chỉ hiểu "để sau / tham khảo", không hiểu lời từ chối.
 - Không test được ở đây: câu SQL chọn khách đủ điều kiện bồi (`findNudgeCandidates`: thời gian im, 22 giờ, đơn thật, chủ shop đã nhắn tay, bot tắt...) và route webhook — cần database / Facebook thật.
 - Kết quả chạy toàn bộ khi đủ gói npm: 511 đạt, 9 lỗi cũ (nhóm test key trả phí Gemini, `tests/paidFallback.test.mjs`), 2 todo ở trên.
+
+## 27. Tin dài vẫn bị chờ gom (06/11/2026)
+
+- Nghi vấn chủ shop: cơ chế chờ gom tin đang gom cả tin dài. Chú thích trong code nói tin từ 5 chữ trở lên "không chờ thêm", nhưng luật "nhắn dồn" (`BURST_WAIT_MS`, 1,2 giây) không phân biệt dài/ngắn.
+- Nguyên nhân (đọc code `app/api/webhook/route.js`, khối "Khách cũ nhắn liền mấy tin ngắn"): tin chữ dài vẫn chờ 1,2 giây khi khách đã có từ 2 tin chưa được trả lời, hoặc bot vừa nhắn trong 10 giây. Sau khi chờ, nếu có tin mới hơn thì tin dài tự dừng. Nếu tin mới đó là tin ngắn (chờ 6 giây) thì tin dài bị kéo theo, trả lời trễ và gộp chung.
+- Cách sửa: hàm `burstWaitApplies` và `isLongMessage` (`lib/shortMessage.js`). Tin chữ từ `SHORT_MSG_WORDS` chữ trở lên, không kèm ảnh, không còn bị chờ 1,2 giây. Tin ngắn và tin kèm ảnh giữ luật cũ.
+- Test: `tests/burstWait.test.mjs` (5 test). Route webhook không có test tự động.
+- Chưa đổi (là chủ ý thiết kế, chờ chủ shop quyết định): khách mới chờ 12 giây (`FIRST_CONTACT_WAIT_MS`, tin dài cũng chờ); tin chỉ có SĐT hoặc chỉ có địa chỉ (thường dài) chờ tới 30 giây (`PAIR_WAIT_MS`); ảnh không kèm chữ chờ 15 giây.
+- Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng chờ cho tin dài; khách nhắn 1 câu dài ngay sau lượt bot vừa trả lời thì bot trả lời ngay.

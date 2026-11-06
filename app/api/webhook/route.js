@@ -3,7 +3,7 @@
 // Deploy lên Vercel cùng project Next.js hiện tại, URL webhook sẽ là:
 //   https://your-domain.com/api/webhook
 
-import { isShortMessage } from "@/lib/shortMessage";
+import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { createHmac, timingSafeEqual } from "crypto";
 import { waitUntil } from "@vercel/functions";
@@ -345,7 +345,8 @@ async function processWebhookBody(body, startedAt) {
               getPendingCustomerMessages(senderId).catch(() => []),
               getLastOutgoingAgeMs(senderId).catch(() => null),
             ]);
-            if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
+            // Tin chữ DÀI (>= SHORT_MSG_WORDS chữ) không chờ gom: trả lời ngay (xem burstWaitApplies)
+            if (burstWaitApplies({ text, hasImages: fbImages.length > 0, pendCount: pend.length, outAgeMs: outAge, burstRecentMs: BURST_RECENT_MS, maxWords: SHORT_MSG_WORDS })) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
           if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 15 giây cho khách nhắn thêm
           // Tin ngắn (< SHORT_MSG_WORDS chữ, không kèm ảnh): chờ 6s cho khách gõ tiếp, chỉ tin cuối của loạt trả lời cho cả loạt
