@@ -95,6 +95,14 @@ Biến môi trường (không bắt buộc):
 - `SITUATION_BUDGET_MS` — thời gian tối đa cho lớp 3 (mặc định 4500).
 
 
+## Gom tin nhắn ngắn của khách
+
+Khách hay nhắn từng mảnh ngắn ("sai s", "46k", "2c"). Với khách đã có cuộc trò chuyện, nếu tin ít hơn **5 chữ** (không kèm ảnh) thì bot chờ **6 giây** cho khách gõ tiếp; mỗi tin ngắn mới tính lại 6 giây từ đầu. Hết thời gian chờ, **chỉ tin cuối của loạt** đi tiếp và trả lời MỘT lần cho cả loạt. Tin dài từ 5 chữ trở lên, ảnh và nút bấm thì không chờ thêm.
+
+- Đổi thời gian chờ: biến `SHORT_MSG_WAIT_MS` (mili giây, mặc định 6000; đặt `0` để tắt).
+- Đổi ngưỡng số chữ: biến `SHORT_MSG_WORDS` (mặc định 5, tức tin 1–4 chữ bị coi là ngắn).
+- Mã nguồn: `lib/shortMessage.js` và phần "Khách cũ nhắn liền mấy tin ngắn" trong `app/api/webhook/route.js`.
+
 ## AI dự phòng: Gemini → Claude → Groq
 
 Thứ tự bot gọi AI cho mỗi tin nhắn:

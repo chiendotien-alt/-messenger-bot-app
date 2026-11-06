@@ -3,6 +3,7 @@
 // Deploy lên Vercel cùng project Next.js hiện tại, URL webhook sẽ là:
 //   https://your-domain.com/api/webhook
 
+import { isShortMessage } from "@/lib/shortMessage";
 import { createHmac, timingSafeEqual } from "crypto";
 import { put } from "@vercel/blob";
 import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor, lengthPhotoAsk } from "@/lib/products";
@@ -100,6 +101,11 @@ const REPLY_DEBOUNCE_MS = process.env.REPLY_DEBOUNCE_MS !== undefined ? Number(p
 const BURST_WAIT_MS = process.env.BURST_WAIT_MS !== undefined ? Number(process.env.BURST_WAIT_MS) : 1200;
 // Khách gửi ẢNH (không kèm chữ) để hỏi: chờ ngần này ms cho khách kịp nhắn thêm câu hỏi rồi mới trả lời. Đặt 0 để tắt.
 const IMAGE_WAIT_MS = process.env.IMAGE_WAIT_MS !== undefined ? Number(process.env.IMAGE_WAIT_MS) : 15000;
+// Khách ĐÃ CÓ cuộc trò chuyện nhắn tin NGẮN (ít hơn SHORT_MSG_WORDS chữ, vd "sai s", "46k", "2c"): chờ ngần này ms (6s) cho khách gõ tiếp
+// rồi trả lời MỘT lần cho cả loạt (mỗi tin ngắn mới của khách tính lại 6s từ đầu; chỉ tin cuối của loạt đi tiếp, các tin trước tự dừng).
+// Tin dài từ SHORT_MSG_WORDS chữ trở lên, ảnh, nút bấm (postback) thì không chờ thêm. Đặt SHORT_MSG_WAIT_MS=0 để tắt.
+const SHORT_MSG_WAIT_MS = process.env.SHORT_MSG_WAIT_MS !== undefined && process.env.SHORT_MSG_WAIT_MS !== "" ? Number(process.env.SHORT_MSG_WAIT_MS) : 6000;
+const SHORT_MSG_WORDS = process.env.SHORT_MSG_WORDS !== undefined && process.env.SHORT_MSG_WORDS !== "" ? Number(process.env.SHORT_MSG_WORDS) : 5;
 const BURST_RECENT_MS = process.env.BURST_RECENT_MS !== undefined ? Number(process.env.BURST_RECENT_MS) : 10000;
 // Luật CŨ (chỉ dùng khi "Thời gian hỏi lại thông tin" = 0 giây): không hỏi/xin lại điều đã hỏi trong N tin chữ gần nhất (mặc định 3). Đặt 0 để tắt.
 // Luật MỚI (mặc định): câu hỏi LẤY THÔNG TIN (màu, size, SĐT, địa chỉ...) chỉ được hỏi lại sau "Thời gian hỏi lại thông tin" giây (cài ở trang sản phẩm).
@@ -324,6 +330,11 @@ export async function POST(req) {
             if (pend.length >= 2 || (outAge !== null && outAge < BURST_RECENT_MS)) waitMs = Math.max(waitMs, BURST_WAIT_MS);
           }
           if (imageOnly && IMAGE_WAIT_MS > 0) waitMs = Math.max(waitMs, IMAGE_WAIT_MS); // ảnh không kèm chữ: chờ 15 giây cho khách nhắn thêm
+          // Tin ngắn (< SHORT_MSG_WORDS chữ, không kèm ảnh): chờ 6s cho khách gõ tiếp, chỉ tin cuối của loạt trả lời cho cả loạt
+          if (SHORT_MSG_WAIT_MS > 0 && text && !fbImages.length && isShortMessage(text, SHORT_MSG_WORDS)) {
+            if (SHORT_MSG_WAIT_MS > waitMs) console.log("Tin ngắn → chờ", Math.round(SHORT_MSG_WAIT_MS / 1000), "giây cho khách nhắn tiếp rồi trả lời 1 lần:", text);
+            waitMs = Math.max(waitMs, SHORT_MSG_WAIT_MS);
+          }
           // Khách mới đưa MỘT trong 2 (SĐT hoặc địa chỉ) → chờ ĐÚNG 30 giây kể từ lúc nhận tin cho khách gửi nốt, hết giờ mới hỏi phần còn thiếu
           if (PAIR_WAIT_MS > 0 && !imageOnly && (await contactHalfOnly(senderId, text))) {
             const holdMs = Math.max(0, PAIR_WAIT_MS - (Date.now() - startedAt));
