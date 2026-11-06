@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -351,3 +351,33 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/bodyMeasure.test.mjs` (7 test, có đúng câu trong ảnh). Toàn bộ: 455 test, 9 lỗi cũ (Gemini trả phí) như trước.
 - Giới hạn: con số trơn ("160", "53") chỉ hiểu khi shop vừa hỏi đúng chiều cao / cân nặng ngay trước đó.
 
+## 24. Bot không gom được tin ngắn: Facebook chỉ chuyển tin kế tiếp sau khi lượt trước xong (06/11/2026)
+
+- Hiện tượng (ảnh chat + nhật ký Vercel): khách nhắn liền `1m60`, `Nặng 50kg`, `Có vừa k`; bot trả lời riêng từng tin (còn hỏi cân nặng dù khách vừa nói). Nhật ký có dòng `Tin ngắn → chờ 6 giây...` và đúng 6,1 giây sau mới chạy tiếp, nên luật 6 giây CÓ chạy.
+- Nguyên nhân: webhook giữ kết nối với Facebook mở đến hết lượt (chờ 6 giây + soạn + gửi), chỉ trả 200 ở cuối. Giờ các tin đến Vercel: `1m60` lúc :15, `Nặng 50kg` lúc :30, `Có vừa k` lúc :44, mỗi tin đến ngay sau khi lượt trước xong, trong khi ảnh chat cho thấy khách gõ cả 3 tin trước khi bot nói xong câu đầu. Nên khi hết 6 giây, tin kế tiếp chưa vào database và bot trả lời riêng. (Đây là suy luận từ giờ trong nhật ký; Facebook không công bố rõ cách chuyển tin.)
+- Cách sửa (`app/api/webhook/route.js`): hàm POST kiểm tra chữ ký xong thì trả 200 NGAY; toàn bộ phần xử lý (hàm `processWebhookBody`: gom tin, soạn, gửi, nhắn bồi) chạy nền bằng `waitUntil` của gói `@vercel/functions` (thêm vào package.json). Vẫn tính trong `maxDuration` 60 giây. Đặt biến `WEBHOOK_BACKGROUND=0` trên Vercel để quay về cách cũ.
+- Các luật chờ khác (khách mới 12 giây, chờ đủ SĐT + địa chỉ 30 giây, ảnh 15 giây) cùng nằm trong lượt xử lý nên cũng chạy theo cách mới.
+- Cách kiểm tra sau khi sửa: nhật ký Vercel, ô tìm `Tin ngắn`: 3 tin gõ liền nhau phải hiện cách nhau vài giây (không còn 14 đến 15 giây) và chỉ tin cuối trả lời.
+- Test: route webhook không có test tự động (cần Facebook thật). Toàn bộ: 479 test, 9 lỗi cũ (Gemini trả phí) như trước.
+
+
+## 25. Bot xin SĐT dồn dập dù mỗi mục chỉ được hỏi 1 lần (06/11/2026)
+
+- Luật chủ shop muốn: mỗi mục (size, màu, chiều dài, SĐT, địa chỉ) hỏi MỘT lần, hỏi luôn lần đầu. Khách hỏi sang chuyện khác thì bot chỉ trả lời, không hỏi lại. Hỏi lại là việc của tin bồi sau "Thời gian hỏi lại".
+- Lỗi thấy trong chat thật: khách đã gửi địa chỉ, bot xin SĐT, rồi "xin thêm SĐT nữa". Khách chỉ trả lời "Vay 75cm di nhe" mà bot xin SĐT lần thứ 3 ngay lập tức.
+- Nguyên nhân: ngoại lệ "khách VỪA đưa một nửa cặp SĐT/địa chỉ thì được xin nốt nửa kia" kiểm tra bằng `verified.address` / `verified.phone`. Đó là thông tin AI trích đối chiếu với TOÀN BỘ lịch sử chat, nên khách đã đưa từ lượt trước thì lượt nào cũng đúng → chống hỏi lặp bị mở khóa (`partialPairTopics` → `unblockTopics`) và chốt chặn `missingContactAsk` cũng thêm câu xin.
+- Cách sửa: file mới `lib/contactGiven.js` (`addressInTexts`, `phoneInTexts`) chỉ xét tin khách VỪA nhắn ở lượt này (`currentTexts`). Địa chỉ AI trích chỉ tính khi các từ của nó có trong tin vừa nhắn. Dùng ở 2 chỗ trong `app/api/webhook/route.js`: `partialPairTopics` và lời gọi `missingContactAsk`. Ngoại lệ "khách gửi một nửa thì xin nốt nửa còn lại" vẫn giữ nhưng chỉ chạy đúng lượt khách gửi nửa đó.
+- Test: `tests/contactGiven.test.mjs` (6 test, gồm đúng đoạn chat trên). Toàn bộ xem mục 26. Route webhook không có test tự động nên cần kiểm tra thật.
+- Cách kiểm tra sau khi sửa: nhắn đủ địa chỉ, để bot xin SĐT, rồi chỉ trả lời chiều dài/màu → bot chỉ xác nhận lựa chọn, không xin SĐT lại; SĐT chỉ được hỏi lại bằng tin bồi sau thời gian cài đặt.
+- Chưa sửa (đã báo chủ shop, chờ quyết định): chốt chặn tin bồi chỉ nhận dấu "?" nên câu xin kết thúc bằng "ạ/nha" không bị chặn; tin bồi gửi lỗi vẫn bị đánh dấu đã gửi; tin bồi không có test.
+
+## 26. Thêm test cho tin bồi và luật "mỗi mục hỏi 1 lần" (06/11/2026)
+
+- `lib/nudge.js`: `composeNudge` giờ được export và nhận thêm tham số cuối `io` (hàm đọc tin nhắn / thông tin khách / tin bot đã gửi / tên khách / gọi Gemini). Chạy thật dùng bản mặc định nên hành vi không đổi; test truyền bản giả nên không cần database, không cần key.
+- `tests/nudge.test.mjs` (27 test): hàm nhỏ (`endsWithQuestion`, `readAskConfig`, giờ nghỉ đêm 23h-6h, cửa sổ 10 phút), soạn câu bồi không dùng AI (hỏi lại đúng mục shop vừa hỏi, chỉ 1 mục, đủ thông tin thì xin SĐT + địa chỉ, đã có SĐT thì không bồi hoặc chỉ xin địa chỉ, câu chốt của chủ shop, đồ vật không hỏi chiều cao cân nặng, giọng trống không), và kiểm tra câu AI soạn (không phải câu hỏi, hỏi gộp 2 loại, nói "lên đơn" quá sớm, gọi tên khách, trùng câu cũ, mở đầu "Em ạ", JSON lỗi, AI báo skip).
+- `tests/askOnce.test.mjs` (9 test): luật "mỗi mục hỏi 1 lần" qua `removeInfoAsks`, `recentAskedTopics`, `missingContactAsk`, và chạy lại đúng đoạn chat bot xin SĐT dồn dập (mục 25). Đã thử đổi lại về cách kiểm tra cũ (dùng `verified.address`) thì 4 test đỏ, tức test bắt được lỗi.
+- 2 test đánh dấu `todo` (chưa sửa, `npm test` vẫn xanh nhưng báo TODO):
+  1. Bảng thuộc tính xếp Màu trước mà shop vừa hỏi chiều cao cân nặng → bồi hỏi màu thay vì hỏi lại chiều cao cân nặng.
+  2. Sản phẩm có bảng thuộc tính + khách vừa nói "thôi chị không mua nữa" → bồi vẫn nhắn, vì bước soạn từ bảng bỏ qua AI và `customerWantsLater` chỉ hiểu "để sau / tham khảo", không hiểu lời từ chối.
+- Không test được ở đây: câu SQL chọn khách đủ điều kiện bồi (`findNudgeCandidates`: thời gian im, 22 giờ, đơn thật, chủ shop đã nhắn tay, bot tắt...) và route webhook — cần database / Facebook thật.
+- Kết quả chạy toàn bộ khi đủ gói npm: 511 đạt, 9 lỗi cũ (nhóm test key trả phí Gemini, `tests/paidFallback.test.mjs`), 2 todo ở trên.

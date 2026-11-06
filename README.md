@@ -102,6 +102,7 @@ Khách hay nhắn từng mảnh ngắn ("sai s", "46k", "2c"). Với khách đã
 - Đổi thời gian chờ: biến `SHORT_MSG_WAIT_MS` (mili giây, mặc định 6000; đặt `0` để tắt).
 - Đổi ngưỡng số chữ: biến `SHORT_MSG_WORDS` (mặc định 5, tức tin 1–4 chữ bị coi là ngắn).
 - Mã nguồn: `lib/shortMessage.js` và phần "Khách cũ nhắn liền mấy tin ngắn" trong `app/api/webhook/route.js`.
+- Webhook trả 200 cho Facebook NGAY rồi xử lý nền (`waitUntil`, gói `@vercel/functions`). Nhờ vậy Facebook chuyển các tin kế tiếp của khách ngay trong lúc bot đang chờ, và bot gom được. Đặt `WEBHOOK_BACKGROUND=0` trên Vercel để quay về cách cũ.
 
 ## AI dự phòng: Gemini → Claude → Groq
 

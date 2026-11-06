@@ -6,6 +6,7 @@
 import { isShortMessage } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { createHmac, timingSafeEqual } from "crypto";
+import { waitUntil } from "@vercel/functions";
 import { put } from "@vercel/blob";
 import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor, lengthPhotoAsk } from "@/lib/products";
 import { getSentImageUrls,
@@ -52,6 +53,7 @@ function mentionsOrderCheck(t) {
 }
 import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
+import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { cleanReplyList } from "@/lib/replyGuard";
@@ -80,6 +82,11 @@ const VERIFY_TOKEN = process.env.FB_VERIFY_TOKEN;
 // GOOGLE_API_KEY (biến môi trường) + các key thêm bằng nút 🔑 trên trang quản trị — xem lib/apiKeys.js
 // Vercel cho hàm chạy tối đa 60s (mặc định có thể chỉ 10-15s → dễ bị cắt giữa chừng khi AI chậm)
 export const maxDuration = 60;
+
+// Trả lời Facebook (200) NGAY khi nhận tin, việc chờ gom tin + soạn + gửi chạy NỀN (waitUntil) cho tới khi xong.
+// Lý do: nếu giữ kết nối mở suốt lúc chờ 6 giây + soạn tin, Facebook chỉ chuyển tin kế tiếp của khách sau khi lượt trước xong
+// → bot không bao giờ thấy tin mới trong lúc chờ nên không gom được. Đặt WEBHOOK_BACKGROUND=0 trên Vercel để quay về cách cũ.
+const WEBHOOK_BACKGROUND = process.env.WEBHOOK_BACKGROUND !== "0";
 
 // Model, key, cách nghỉ khi lỗi... nằm chung ở lib/gemini.js (đổi GEMINI_MODEL, GEMINI_FALLBACK_MODELS, GEMINI_TIMEOUT_MS ở Vercel nếu cần).
 const REPLY_BUDGET_MS = Number(process.env.REPLY_BUDGET_MS) || 45000; // tổng thời gian dành cho AI trong 1 tin nhắn
@@ -212,6 +219,16 @@ export async function POST(req) {
     return new Response("Not a page event", { status: 404 });
   }
 
+  const work = processWebhookBody(body, startedAt).catch((e) => console.error("Lỗi xử lý webhook:", e));
+  if (WEBHOOK_BACKGROUND) waitUntil(work); // trả 200 ngay, việc xử lý chạy tiếp nền (vẫn tính trong maxDuration)
+  else await work;
+
+  // Luôn trả 200 cho Facebook để nó không gửi lại (retry) sự kiện
+  return new Response("EVENT_RECEIVED", { status: 200 });
+}
+
+// Xử lý toàn bộ sự kiện của 1 lần Facebook gọi webhook (gom tin, soạn, gửi trả lời, nhắn bồi...)
+async function processWebhookBody(body, startedAt) {
   for (const entry of body.entry ?? []) {
     // entry.id = ID của Fanpage nhận tin → dùng đúng token của Page đó để trả lời
     const pageId = entry.id ? String(entry.id) : null;
@@ -598,8 +615,6 @@ export async function POST(req) {
     }
   }
 
-  // Luôn trả 200 cho Facebook để nó không gửi lại (retry) sự kiện
-  return new Response("EVENT_RECEIVED", { status: 200 });
 }
 
 // ---- Tin nhắn chủ Page tự gửi bằng điện thoại: lưu vào lịch sử để hiện trên web quản lý ----
@@ -832,7 +847,8 @@ function partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySi
   const cur = (currentTexts || []).join(" \n ");
   // SĐT + địa chỉ: tin này khách đưa SĐT mà chưa có địa chỉ, hoặc ngược lại
   const phoneNow = PHONE_TEXT_RE.test(cur.replace(/[\s.\-]/g, ""));
-  const addrNow = !!String(verified?.address || "").trim();
+  // Chỉ tính khi chính tin khách vừa nhắn có địa chỉ (verified.address là địa chỉ lấy từ cả lịch sử chat → lượt nào cũng đúng, làm bot hỏi lại SĐT dồn dập)
+  const addrNow = addressInTexts(currentTexts, verified?.address);
   const hasPhone = !!String(mergedInfo?.phone || "").trim() || phoneNow;
   const hasAddr = !!String(mergedInfo?.address || "").trim();
   if (phoneNow && !hasAddr) out.add("dia chi");
@@ -1833,8 +1849,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
-      gaveAddress: !!String(verified?.address || "").trim() || currentTexts.some((t) => looksLikeAddressStrict(t)), // luật CHẶT: câu này làm hệ thống tự gửi tin cho khách
-      gavePhone: phoneNow || !!String(verified?.phone || "").trim(),
+      gaveAddress: addressInTexts(currentTexts, verified?.address), // chỉ xét tin khách VỪA nhắn (không xét lịch sử) — câu này làm hệ thống tự gửi tin cho khách
+      gavePhone: phoneNow || phoneInTexts(currentTexts),
       havePhone: !!String(mergedInfo.phone || "").trim(),
       haveAddress: !!String(mergedInfo.address || "").trim(),
       kh: trChat.kh,
