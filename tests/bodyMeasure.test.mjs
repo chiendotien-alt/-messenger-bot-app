@@ -72,3 +72,25 @@ test("Lượt AI vừa tư vấn size/chiều dài vừa ghi đơn: giá trị t
   const r = readOrder({ attrs, status: st, aiRaw: ai, customerTexts: msgs.filter((m) => m.from === "customer").map((m) => m.text), shopTexts: msgs.filter((m) => m.from !== "customer").map((m) => m.text) });
   assert.equal(r.verdict, "agree");
 });
+
+test("Lỗi thật: 'M62 58kg eo 78 -80' → hiểu M62 = cao 1m62, KHÔNG hỏi lại chiều cao", () => {
+  const msg = "M62 58kg eo 78 -80";
+  assert.deepEqual(known([B("Váy có những size nào?"), ...ask, C(msg)]), { size: true, len: true });
+  assert.deepEqual(bodyInfoGiven([msg]), { height: true, weight: true });
+  assert.ok(HEIGHT_TEXT_RE.test("m62 58kg"));
+  assert.match(normalizeBodyText(msg), /1m62 58kg/);
+});
+
+test("Các kiểu viết tắt 'm62' kèm cân nặng đều nhận ra chiều cao", () => {
+  for (const x of ["M62 58kg", "m62 58kg", "m 62 58kg", "m62, 58kg", "m62/58kg", "M70 63kg", "m55 48kg"]) {
+    assert.deepEqual(bodyInfoGiven([x]), { height: true, weight: true }, x);
+    assert.deepEqual(known([...ask, C(x)]), { size: true, len: true }, x);
+  }
+  assert.equal(normalizeBodyText("m62 58"), "cao 1m62 58kg");
+});
+
+test("Không nhầm size M / mã hàng thành chiều cao", () => {
+  for (const x of ["size M 58kg", "lấy size M nặng 58kg", "mã M62", "M 58kg", "m40 58kg", "lấy 2 cái M62"]) {
+    assert.equal(bodyInfoGiven([x]).height, false, x);
+  }
+});

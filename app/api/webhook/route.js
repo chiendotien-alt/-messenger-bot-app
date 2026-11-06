@@ -4,6 +4,7 @@
 //   https://your-domain.com/api/webhook
 
 import { isShortMessage } from "@/lib/shortMessage";
+import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { createHmac, timingSafeEqual } from "crypto";
 import { put } from "@vercel/blob";
 import { getProducts, filterProductsForPage, formatProductsForPrompt, norm, normKey, matchProduct, openingImageList, catalogImageList, isCatalogQuestion, isBodySizedProduct, isApparelProduct, isModelPhotoQuestion, mentionsSpecificColor, lengthPhotoAsk } from "@/lib/products";
@@ -1320,6 +1321,20 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (fixedAttrs.length) {
       sumDetail = summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1);
       console.log("Đối chiếu tin AI: bổ sung lựa chọn khách mà bộ nhận diện bỏ sót:", fixedAttrs.map((f) => `${f.name}=${f.value}`).join(", "));
+    }
+    // ĐỐI CHIẾU SỐ ĐO: AI nhắc lại "chị cao 1m62 nặng 58kg" VÀ tin khách có đúng các con số đó, nhưng bộ nhận diện luật không hiểu cách khách viết
+    // (vd "M62 58kg") → ghi nhận khách ĐÃ đưa số đo (mục chiều dài/size suy ra từ số đo thành "đã đo") và bỏ câu xin lại chiều cao/cân nặng.
+    try {
+      const crossBody = crossCheckBody({ customerTexts: recentCust, replyTexts: messages });
+      const bodyFixed = applyCrossBody(attrNow, crossBody);
+      if (bodyFixed.length) console.log("Đối chiếu tin AI + tin khách: khách đã đưa", bodyFixed.join(", "), "mà bộ nhận diện bỏ sót → không hỏi lại");
+      const ded = dropKnownBodyAsks(messages, attrNow.body);
+      if (ded.dropped.length) {
+        console.log("Bỏ câu xin lại số đo khách đã đưa:", ded.dropped.join(" | "));
+        messages = ded.messages;
+      }
+    } catch (e) {
+      console.error("Lỗi đối chiếu số đo (bỏ qua):", e.message);
     }
   }
 
