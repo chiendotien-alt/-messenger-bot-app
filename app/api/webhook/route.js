@@ -52,6 +52,7 @@ function mentionsOrderCheck(t) {
   return ORDER_CHECK_RE.test(x);
 }
 import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { bodyFlagsFromInfo, bodyUpdateFromReply } from "@/lib/aiRecognized";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
@@ -1148,8 +1149,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const attrMode = attrs.length > 0;
   const attrCurrent = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter((t) => t.trim());
   const attrHistory = history.filter((m) => !(m.from === "customer" && attrCurrent.includes(String(m.text || ""))));
-  const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant) : null;
-  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
+  const attrExtra = { body: bodyFlagsFromInfo(customerInfo) }; // AI đã báo nhận số đo ở lượt trước (khách gõ kiểu lạ mà quy tắc bỏ sót)
+  const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant, attrExtra) : null;
+  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant, attrExtra) : null;
   const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow) : "";
   if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
 
@@ -1431,6 +1433,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     await mergeCustomerInfo(senderId, verified).catch((e) =>
       console.error("Không lưu được thông tin khách:", e.message)
     );
+  }
+
+  // AI báo đã nhận chiều cao / cân nặng của khách (kể cả kiểu gõ lạ mà quy tắc bỏ sót) → lưu để hỏi bồi và các lượt sau không hỏi lại
+  try {
+    const custTexts = [...(history || []).filter((m) => m.from === "customer").map((m) => m.text || ""), ...attrCurrent];
+    const bodyStr = bodyUpdateFromReply({ khachDaCho: parsed?.khach_da_cho, customerTexts: custTexts, savedInfo: customerInfo });
+    if (bodyStr) await mergeCustomerInfo(senderId, { body: bodyStr });
+  } catch (e) {
+    console.error("Không lưu được số đo AI đã nhận:", e.message);
   }
 
   // Sản phẩm có bảng thuộc tính: màu/size/chiều dài khách đã chọn do HỆ THỐNG ghép (đúng hơn chữ AI tự ghi) → lưu cho đơn hàng

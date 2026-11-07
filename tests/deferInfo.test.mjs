@@ -45,7 +45,7 @@ test("Chủ đề được hẹn: nói địa chỉ → địa chỉ; nói SĐT 
 
 test("Câu hẹn KHÔNG được lưu làm địa chỉ giao hàng (lỗi cũ: bị nhận là địa chỉ → bot xin thêm SĐT)", () => {
   const t = "Mai chị gửi địa chỉ cty nha y";
-  assert.equal(looksLikeAddressStrict(t), true); // luật cũ nhận nhầm câu này là địa chỉ
+  assert.equal(looksLikeAddressStrict(t), false); // luật cũ nhận nhầm là địa chỉ; nay đã nhận ra đây không phải địa chỉ khách đưa
   const d = defers(t);
   assert.equal(d.rest.some((x) => looksLikeAddressStrict(x)), false);
   assert.equal(pickAddressFromTexts(d.rest), "");
