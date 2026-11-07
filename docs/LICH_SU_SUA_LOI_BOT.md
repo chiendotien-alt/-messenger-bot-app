@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026; mục 29 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -405,3 +405,15 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/customerRewrite.test.mjs` (11 test, gồm đúng đoạn chat trong ảnh và các ca chặn AI bịa số), `tests/nudgeRewrite.test.mjs` (2 test, dùng io giả).
 - Giới hạn đã biết: (a) lượt hiện tại bot vẫn dựng "TRẠNG THÁI THUỘC TÍNH" cho AI từ tin thô, nên AI có thể vẫn viết câu hỏi thừa; câu đó bị bỏ sau khi có bản dịch, trừ khi nó là tin duy nhất (bot không được im lặng). (b) Kiểm tra chỉ chặn bịa SỐ; AI có thể viết thêm chữ khách không nói (vd tự thêm "size M") và hệ thống không phân biệt được, nên prompt cấm rõ điều này. (c) Khách mới nhắn lần đầu chưa có id tin trong database thì bản dịch chỉ dùng trong lượt đó, không lưu. (d) Route webhook không có test tự động; đã kiểm tra bằng đọc diff và chạy mô phỏng nhắn bồi.
 - Cách kiểm tra sau khi sửa: nhật ký Vercel có dòng `AI dịch lại chính tả khách: "5ok nha" → "nặng 50kg nha"` và `Thuộc tính (sau khi dịch lại chính tả)`. Khách gõ `M61` rồi `5ok` thì bot không còn hỏi lại cân nặng.
+
+## 29. Khách chỉ nói "Tp Cần Thơ" để hỏi ship → bot lại đi xin số điện thoại (07/11/2026)
+
+- Lỗi thật (ảnh chat): khách hỏi "Bao lâu nhận được bạn", bot đáp 3-4 ngày; khách nhắn tiếp "Tp Cần Thơ" (chỉ nói mình ở đâu để biết ship bao lâu). Bot trả lời xin chiều cao cân nặng, rồi hệ thống tự thêm câu "Em xin thêm số điện thoại nữa nha chị." dù khách chưa đưa địa chỉ nhận hàng nào.
+- Đã chạy thử trước khi sửa: `looksLikeAddress("Tp Cần Thơ")` và `looksLikeAddressStrict("Tp Cần Thơ")` đều trả `true`.
+- Nguyên nhân gốc: `tp` nằm trong danh sách từ khóa địa chỉ (`ADDR_KEYWORD_RE`, `lib/replyDedupe.js`). Chỉ cần có chữ "tp" (hoặc "tỉnh", "quận", "huyện") là tin bị coi là địa chỉ, nên chốt chặn "khách vừa đưa địa chỉ mà chưa có SĐT" (`lib/contactAsk.js`, gọi ở `app/api/webhook/route.js`) tự gửi câu xin SĐT.
+- Cách sửa: hàm mới `isLocationOnlyText` (`lib/replyDedupe.js`). Tin KHÔNG có từ khóa địa chỉ cụ thể (số nhà, ngõ, hẻm, đường, phố, phường, xã, thôn, xóm, khu, ấp, làng, tổ, địa chỉ...), không có chữ số, và (a) là câu hỏi ship/thời gian/phí, hoặc (b) chỉ gồm tên tỉnh/thành + từ đệm (tp, ở, mình ở, giao về, nha, ạ...) thì là nói NƠI Ở, không phải địa chỉ. Cả `looksLikeAddress` và `looksLikeAddressStrict` trả `false` cho các tin này, nên các chỗ dùng chung (xin SĐT tự động, lưu địa chỉ vào đơn `pickAddressFromTexts`, chờ nửa cặp `contactHalfOnly`, `addressInTexts`) đều hết nhầm.
+- Sửa kèm: `verifyCustomerInfo` (`route.js`) không lưu địa chỉ AI trích mà chỉ là tên tỉnh/thành (vd "Cần Thơ"), vì lưu thì bot tưởng đã có địa chỉ và về sau không xin địa chỉ thật.
+- Không đổi: địa chỉ thật vẫn nhận như cũ ("12 Nguyễn Trãi, phường Ninh Kiều, Cần Thơ", "Phường 5 tp Cần Thơ", "Số 5 ngõ 3 Cầu Giấy Hà Nội", "Thôn Tân Lập xã Phong Điền Cần Thơ"). Tin có phường/xã/đường kèm câu hỏi (vd "xã Phong Điền tp cần thơ ship lâu ko") vẫn bị coi là có địa chỉ.
+- Test: `tests/locationOnly.test.mjs` (4 test: 11 câu chỉ nói nơi ở, 5 địa chỉ thật, đúng ca trong ảnh, và địa chỉ thật vẫn xin SĐT).
+- Chạy toàn bộ: 474 đạt, 16 lỗi. 16 lỗi này có sẵn ở bản zip gốc trước khi sửa (nhóm test "AI đã nhận số đo / khach_da_cho" và nhóm key trả phí Gemini), danh sách giống hệt, không do mục này.
+- Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng "Khách mới đưa địa chỉ mà AI quên xin SĐT → hệ thống thêm câu xin" khi khách chỉ nhắn tên tỉnh/thành.

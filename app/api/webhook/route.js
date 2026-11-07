@@ -56,7 +56,7 @@ function mentionsOrderCheck(t) {
 import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
-import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, isLocationOnlyText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { cleanReplyList } from "@/lib/replyGuard";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
@@ -888,6 +888,8 @@ function verifyCustomerInfo(info, history, latestText) {
       if (d.length >= 9 && digits.includes(d.replace(/^84/, "0").replace(/^0/, ""))) out.phone = v;
       continue;
     }
+    // Khách chỉ nói nơi ở ("Tp Cần Thơ") để hỏi ship → chưa phải địa chỉ nhận hàng, không lưu (nếu lưu, bot tưởng đã đủ địa chỉ)
+    if (k === "address" && isLocationOnlyText(v)) continue;
     // Bỏ dấu câu ("4,", "TP.") và bỏ chữ đơn vị hành chính (phường, xã, tp, tỉnh...) vì AI hay viết đầy đủ còn khách viết tắt ("p", "tp")
     let tokens = norm(v).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
     if (k === "address") tokens = tokens.filter((tk) => !ADDRESS_UNIT_WORDS.has(tk));
