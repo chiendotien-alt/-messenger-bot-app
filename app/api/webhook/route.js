@@ -7,6 +7,7 @@ import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { ruleRows, pickRewrites, applyRewritesToTexts, rewriteTurnNote } from "@/lib/customerRewrite";
 import { orderByCustomerSequence } from "@/lib/replyOrder";
+import { classifyContactMessage, shouldReleaseHold, contactAiEnabled } from "@/lib/contactKind";
 import { createHmac, timingSafeEqual } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { put } from "@vercel/blob";
@@ -154,6 +155,29 @@ async function contactHalfOnly(senderId, text) {
     return !(havePhone && haveAddr);
   } catch (e) {
     console.error("Lỗi kiểm tra khách mới đưa 1 nửa SĐT/địa chỉ:", e.message);
+    return false;
+  }
+}
+// Luật chữ nói "khách mới đưa 1 nửa SĐT/địa chỉ" → nhờ AI nhẹ xem lại. AI CHỈ được hủy việc chờ (tin thật ra là câu hỏi về sản phẩm,
+// hoặc khách đã đưa đủ cả hai); AI lỗi / hết giờ / nói "đúng là 1 nửa" → vẫn chờ như cũ. Tắt bằng CONTACT_AI=off. Xem lib/contactKind.js.
+async function contactAiReleasesHold(senderId, text) {
+  try {
+    if (!contactAiEnabled()) return false;
+    const [keys, recent, pend] = await Promise.all([
+      getAllRawKeys(),
+      getRecentOutgoingTexts(senderId, 0, 3).catch(() => []),
+      getPendingCustomerMessages(senderId).catch(() => []),
+    ]);
+    const botAsk = (recent || []).find((t) => {
+      const a = askedTopics(t);
+      return a.has("so dien thoai") || a.has("dia chi");
+    }) || "";
+    const pendingTexts = (pend || []).map((m) => (typeof m === "string" ? m : m?.text || "")).filter(Boolean);
+    const kind = await classifyContactMessage({ text, pendingTexts, botAsk, keys });
+    console.log("AI phân loại tin liên hệ:", text, "→", kind || "(bỏ qua / lỗi → giữ chờ như cũ)");
+    return shouldReleaseHold(kind);
+  } catch (e) {
+    console.error("Lỗi AI phân loại tin liên hệ (giữ chờ như cũ):", e.message);
     return false;
   }
 }
@@ -360,9 +384,13 @@ async function processWebhookBody(body, startedAt) {
           }
           // Khách mới đưa MỘT trong 2 (SĐT hoặc địa chỉ) → chờ ĐÚNG 30 giây kể từ lúc nhận tin cho khách gửi nốt, hết giờ mới hỏi phần còn thiếu
           if (PAIR_WAIT_MS > 0 && !imageOnly && (await contactHalfOnly(senderId, text))) {
-            const holdMs = Math.max(0, PAIR_WAIT_MS - (Date.now() - startedAt));
-            console.log("Khách mới đưa 1 nửa SĐT/địa chỉ → chờ", Math.round(holdMs / 1000), "giây cho khách gửi nốt:", text);
-            waitMs = Math.max(waitMs, holdMs);
+            if (await contactAiReleasesHold(senderId, text)) {
+              console.log("AI: tin này không phải 1 nửa SĐT/địa chỉ → không chờ 30 giây, trả lời ngay:", text);
+            } else {
+              const holdMs = Math.max(0, PAIR_WAIT_MS - (Date.now() - startedAt)); // tính SAU khi AI xem xong → tổng thời gian chờ vẫn là 30 giây kể từ lúc nhận tin
+              console.log("Khách mới đưa 1 nửa SĐT/địa chỉ → chờ", Math.round(holdMs / 1000), "giây cho khách gửi nốt:", text);
+              waitMs = Math.max(waitMs, holdMs);
+            }
           }
           if (waitMs > 0) await sleep(waitMs);
           if (waitMs > 0 && await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false)) {
