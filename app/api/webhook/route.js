@@ -53,7 +53,7 @@ function mentionsOrderCheck(t) {
   if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
   return ORDER_CHECK_RE.test(x);
 }
-import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { softenPushyChoice, attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, isLocationOnlyText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
@@ -67,6 +67,7 @@ import { callGemini } from "@/lib/gemini";
 import { reportError, errText } from "@/lib/alert";
 import { missingContactAsk } from "@/lib/contactAsk";
 import { analyzeDefer, dropAsksForDeferred } from "@/lib/laterStop";
+import { analyzeHesitation, hesitateNote, dropPushyClose } from "@/lib/hesitate";
 import { readOrder, savedItemsStillValid } from "@/lib/orderItems";
 import { logReading, alertConflict, saveItems, getSavedItems } from "@/lib/orderReading";
 import { notifyBotOffMessage, markHandled, runUnansweredWatch } from "@/lib/unanswered";
@@ -1159,8 +1160,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const rewriteNote = rewriteTurnNote(rewriteTargets.map((t) => t.text));
   const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant) : null;
   const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
-  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow) : "";
-  if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
+  // Khách đang CÂN NHẮC / lo lắng chuyện khác ("để mình hỏi chồng đã", "lăn tăn chất lượng"...) → không ép chốt, không xin SĐT/địa chỉ
+  const hesitateNow = analyzeHesitation(attrCurrent);
+  if (hesitateNow.hesitating) console.log("Khách đang cân nhắc/lo lắng (" + hesitateNow.kind + "):", hesitateNow.quote);
+  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow, { hold: hesitateNow.hesitating }) : "";
+  if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}${x.undecided?.length ? "(đang phân vân: " + x.undecided.join("/") + ")" : ""}`).join(" | "));
 
   // BẢNG GIÁ MẶC CẢ: sản phẩm có bảng → HỆ THỐNG tính giá của lượt này (đồng ý / hạ nấc / giữ), bot chỉ nói đúng con số hệ thống đưa
   let ladderCtx = null;
@@ -1250,7 +1254,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const worryNote = isWorryText(worryProbe)
     ? "\n\nKHÁCH ĐANG LO LẮNG ở tin này (hệ thống đã nhận ra): CHỈ trấn an 1-2 câu, đúng điều khách lo, bằng thông tin THẬT trong nội dung/ghi chú sản phẩm (vd \"size L vừa đến 75kg nên chị yên tâm nha\"). KHÔNG hỏi thêm màu/size/chiều dài/SĐT/địa chỉ. KHÔNG khuyên khách đổi giá trị khách đã chọn (khách đã chọn chiều dài nào thì tôn trọng, đừng nhắc lại gợi ý cũ). Không có thông tin thật thì nói sẽ hỏi lại shop, không bịa."
     : "";
-  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + rewriteNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
+  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + hesitateNote(hesitateNow) + rewriteNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
   const finalPrompt = systemPrompt + promptNotes;
   const groqPrompt = groqBasePrompt + promptNotes;
 
@@ -1776,7 +1780,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const said = messages.join(" ");
     const lacking = due.filter((x) => !matchValues(x.attr, said).length);
     // Các mục khác đã đủ + chưa có SĐT → sau khi tư vấn xong phải xin SĐT + địa chỉ NGAY trong lượt này (không chờ khách nhắn tiếp)
-    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim() && !deferNow.defer;
+    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim() && !deferNow.defer && !hesitateNow.hesitating;
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
       const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt);
@@ -1882,7 +1886,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // CHỐT CHẶN: khách VỪA đưa đúng MỘT nửa của cặp (địa chỉ hoặc SĐT) mà AI quên xin nửa còn lại
   // (hay gặp: AI chỉ viết "dạ em nhận được thông tin rồi ạ" theo câu ví dụ trong luật chốt đơn) → hệ thống tự thêm câu xin phần còn thiếu.
   let contactAskAdded = false;
-  if (!forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length && !deferNow.defer) {
+  if (!forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length && !deferNow.defer && !hesitateNow.hesitating) {
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
@@ -1909,6 +1913,27 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, khi nào tiện mình gửi shop nhé ạ." : `Dạ vâng ạ, khi nào tiện ${trD.kh} gửi ${trD.tu} nhé ạ.`];
     }
     if (before.join("|") !== messages.join("|")) console.log("Khách hẹn gửi sau → bỏ câu xin thông tin:", before.join(" | "), "→", messages.join(" | "));
+  }
+  // Khách đang CÂN NHẮC / lo lắng: bỏ câu xin SĐT/địa chỉ và câu ép chốt/thúc giục của AI (giữ phần đáp + giải đáp)
+  if (hesitateNow.hesitating && !deferNow.defer && !forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length) {
+    const before = messages;
+    messages = dropAsksForDeferred(messages, new Set(["so dien thoai", "dia chi"]));
+    messages = dropPushyClose(messages).messages;
+    if (!messages.length) {
+      const trH = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, mình cứ thong thả cân nhắc, cần shop tư vấn thêm thì nhắn shop nhé ạ." : `Dạ vâng ạ, ${trH.kh} cứ thong thả cân nhắc, cần ${trH.tu} tư vấn thêm thì nhắn ${trH.tu} nhé ạ.`];
+    }
+    if (before.join("|") !== messages.join("|")) console.log("Khách đang cân nhắc → bỏ câu xin thông tin/ép chốt:", before.join(" | "), "→", messages.join(" | "));
+  }
+  // CHỐT CHẶN: khách đang PHÂN VÂN giữa các màu/size ("phân vân giữa màu kem và trắng") mà AI vẫn viết câu ép chọn
+  // ("chị lấy cả hai màu hoặc chọn một trong hai màu giúp em nha") → bỏ câu ép, giữ phần tư vấn.
+  if (attrMode && !forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length) {
+    const trU = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+    const soft = softenPushyChoice(messages, attrNow, { kh: trU.kh, tu: trU.tu, neutral: notesForbidPronouns(currentProduct?.notes) });
+    if (soft.changed) {
+      console.log("Khách đang phân vân → bỏ câu ép chọn của AI:", messages.join(" | "), "→", soft.messages.join(" | "));
+      messages = soft.messages;
+    }
   }
   return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: deferNow.defer || ladderSent || basicSent || forcedSummary || contactAskAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }

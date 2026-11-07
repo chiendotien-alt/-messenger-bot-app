@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026; mục 29 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026; mục 29, 30, 31 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -417,3 +417,52 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/locationOnly.test.mjs` (4 test: 11 câu chỉ nói nơi ở, 5 địa chỉ thật, đúng ca trong ảnh, và địa chỉ thật vẫn xin SĐT).
 - Chạy toàn bộ: 474 đạt, 16 lỗi. 16 lỗi này có sẵn ở bản zip gốc trước khi sửa (nhóm test "AI đã nhận số đo / khach_da_cho" và nhóm key trả phí Gemini), danh sách giống hệt, không do mục này.
 - Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng "Khách mới đưa địa chỉ mà AI quên xin SĐT → hệ thống thêm câu xin" khi khách chỉ nhắn tên tỉnh/thành.
+
+## 30. Khách "phân vân giữa màu kem và trắng" → bot ép "lấy cả hai hoặc chọn một trong hai" (07/11/2026)
+
+- Lỗi thật (ảnh chat): khách nhắn "Mình đang phân vân giữa màu kem và trắng". Bot tư vấn "kem và trắng đều dễ mặc" rồi viết "Chị lấy cả hai màu hoặc chọn một trong hai màu giúp em nha chị." Khách thấy bị ép.
+- Đã chạy thử đúng đoạn chat: hệ thống ghi `Màu: chosen [Trắng, Kem]` (hiểu khách đã chọn CẢ HAI màu), nên lời dặn AI là "các mục đã đủ → xin số điện thoại và địa chỉ". AI vừa phải xin SĐT vừa thấy khách chưa chốt nên viết ra câu ép nửa vời đó.
+- Nguyên nhân gốc: `attributeStatus` (`lib/attributes.js`) đọc mọi màu xuất hiện trong tin khách là "khách chọn", kể cả khi khách đang nói phân vân.
+- Cách sửa (3 lớp):
+  1. Nhận biết phân vân: tin có "phân vân / lưỡng lự / chưa biết chọn / do dự" (hoặc có từ nối "giữa / hay / hoặc" và có từ 2 giá trị trở lên) mà không có chữ chốt ("chốt", "lấy luôn", "đặt luôn", "lên đơn") thì mục đó giữ trạng thái `missing` kèm danh sách `undecided`, KHÔNG ghi vào đơn. Khách chọn rõ ở tin sau thì tự hết phân vân. `reconcileWithReply` và `applyItemsToStatus` không được tự điền mục đang phân vân.
+  2. Lời dặn AI (`needText`, `attributeTurnNote`): chỉ tư vấn nhẹ 1-2 câu, không hỏi "lấy cả hai hay chọn một", không hỏi lại "chọn được màu nào chưa", không xin SĐT/địa chỉ, kết bằng câu mở cho khách thong thả.
+  3. Chốt chặn bằng code (`softenPushyChoice`, gọi ở cuối `generateReply` trong `route.js`): nếu AI vẫn viết câu ép chọn thì bỏ đúng câu đó, giữ phần tư vấn; không còn gì thì thay bằng 1 câu mở nhẹ. Tin nhắn bồi (`buildAttrAsk`) cho mục đang phân vân cũng đổi thành câu nhẹ: "Chị đã chọn được giữa màu kem và trắng chưa ạ? Cần em tư vấn thêm thì chị cứ nhắn em nha."
+- Nhật ký Vercel: dòng "Thuộc tính" có thêm `(đang phân vân: Kem/Trắng)`; khi chốt chặn chạy có dòng "Khách đang phân vân → bỏ câu ép chọn của AI".
+- Các kiểu nói đã phủ (sau khi thử 19 câu): "phân vân giữa", "lưỡng lự", "lăn tăn", "do dự", "khó chọn", "chưa quyết (được)", "kem hay trắng", "kem hoặc trắng", "kem với trắng để mình suy nghĩ thêm / để mình xem", nhờ tư vấn ("kem và trắng, bạn thấy màu nào hợp mình", "nên lấy màu nào"), và chưa nêu màu nào ("chưa biết chọn màu nào" → coi là phân vân giữa tất cả màu, lời dặn AI nói chung chứ không liệt kê hết 8 màu). Với size/chiều dài (chọn theo số đo) thì AI được dặn chốt 1 giá trị theo số đo khách đã cho, không dùng câu tư vấn kiểu màu.
+- Cố ý KHÔNG đổi: "Lấy cả kem và trắng, mỗi màu 1 cái", "Chốt kem và trắng" (chọn cả hai thật); "Mình lấy kem, để mình hỏi chồng đã" và "lấy màu kem nhé, hơi phân vân về giá" (đã chọn rõ, phân vân chuyện khác); "Mình ưng cả kem lẫn trắng" (mơ hồ, vẫn ghi cả hai).
+- Test: `tests/undecided.test.mjs` (13 test, gồm đúng đoạn chat trong ảnh, các kiểu nói phân vân, khách chọn rõ vẫn ghi đúng, và câu hỏi màu bình thường không bị đụng).
+- Chạy toàn bộ: 487 đạt, 16 lỗi sẵn có từ bản zip gốc (giống hệt danh sách trước khi sửa).
+- Giới hạn đã biết: (a) luật theo từ khóa, kiểu viết lạ chưa biết có thể lọt. (b) Chất lượng câu tư vấn nhẹ phụ thuộc AI và thông tin sản phẩm chủ shop đã nhập; hệ thống cấm bịa. (c) Route webhook không có test tự động.
+
+## 31. Khách phân vân / cân nhắc CHUYỆN KHÁC (không phải màu/size): bot vẫn ép chốt, xin SĐT (07/11/2026)
+
+- Hỏi: sau mục 30, phân vân màu/size đã xử lý, còn các kiểu khác ("để mình hỏi chồng đã", "để mình xem đã", "lăn tăn", "hơi mắc, để cân nhắc", "không biết chất lượng có tốt không", "sợ mặc không vừa") thì sao?
+- Đã chạy thử 17 câu trước khi sửa: chỉ "để suy nghĩ thêm" và "lát nữa/để sau" làm bot ngừng nhắn bồi. "Hỏi chồng/mẹ", "để xem đã", "để coi lại", "lăn tăn", "còn phân vân", "chưa chắc", "hơi mắc để cân nhắc", "xem thêm shop khác" đều KHÔNG được nhận. Quan trọng hơn: khi các mục màu/size đã đủ mà khách nói "để mình suy nghĩ", lời dặn AI vẫn là "Các mục đã đủ → theo Bước 3: xin số điện thoại và địa chỉ nhận hàng" (ép chốt).
+- Cách sửa (file mới `lib/hesitate.js`, nối vào `lib/attributes.js`, `lib/laterStop.js`, `app/api/webhook/route.js`):
+  1. `analyzeHesitation` đọc các tin khách vừa nhắn, ra 2 loại: `defer` (để xem/coi/tính/suy nghĩ/cân nhắc, hỏi chồng/vợ/mẹ/người nhà, bàn với chồng, còn phân vân, lăn tăn, lưỡng lự, chưa chắc/chưa quyết, xem thêm shop khác) và `doubt` (không biết chất lượng có tốt không, sợ mặc không vừa, hơi mắc/đắt, nghi ngại, chưa tin). Không tính khi khách đã chốt rõ ("lấy luôn", "chốt", "lên đơn") hoặc đang đưa SĐT; "để mình xem ảnh" cũng không tính.
+  2. Lời dặn AI (`hesitateNote`): đáp ngắn thân thiện; với `doubt` thì giải đáp đúng nỗi lo bằng thông tin có thật của sản phẩm/chính sách (không bịa); KHÔNG ép chốt, KHÔNG hối, KHÔNG dọa hết hàng, KHÔNG xin SĐT/địa chỉ, kết bằng câu mở nhẹ nhàng.
+  3. `attributeTurnNote(product, status, { hold: true })`: khi khách đang cân nhắc thì đuôi lời dặn không còn bảo xin SĐT/địa chỉ hay hỏi chốt mục còn thiếu (riêng mục khách đã đưa số đo vẫn nói giá trị tư vấn).
+  4. Chốt chặn bằng code ở cuối `generateReply`: bỏ câu xin SĐT/địa chỉ (dùng lại `dropAsksForDeferred`) và câu ép chốt/thúc giục/dọa hết hàng (`dropPushyClose`) của AI; không còn gì thì thay bằng 1 câu "chị cứ thong thả cân nhắc, cần em tư vấn thêm thì nhắn em nhé ạ". Tắt luôn câu hệ thống tự thêm xin SĐT khi khách đang cân nhắc.
+  5. Tin nhắn bồi: loại `defer` được coi như "khách hẹn để sau" (`saidLater`) → bot KHÔNG nhắn bồi. Loại `doubt` (lo lắng) vẫn có thể được bồi vì khách đang chờ được giải đáp.
+- Nhật ký Vercel: dòng "Khách đang cân nhắc/lo lắng (defer|doubt): ..." và, khi chốt chặn chạy, "Khách đang cân nhắc → bỏ câu xin thông tin/ép chốt".
+- Test: `tests/hesitate.test.mjs` (7 test: 12 câu cân nhắc, 4 câu lo lắng, 9 câu KHÔNG được tính, bồi/không bồi, lời dặn AI, mục đã đủ không còn bảo xin SĐT, chốt chặn bỏ câu ép).
+- Chạy toàn bộ: 494 đạt, 16 lỗi sẵn có từ bản zip gốc (giống hệt danh sách trước khi sửa).
+- Giới hạn đã biết: (a) luật theo từ khóa, kiểu nói lạ/viết tắt có thể lọt. (b) "Chắc mình không mua nữa" (khách từ chối) vẫn đi theo nhóm phàn nàn cũ, chưa đổi. (c) Chất lượng câu giải đáp nỗi lo phụ thuộc thông tin sản phẩm chủ shop đã nhập. (d) Phần gắn vào webhook chưa có test tự động, mới thử bằng tình huống mô phỏng.
+
+## 32. Luật "khách đang cân nhắc" nhận nhầm khách bình thường và bỏ sót khách phân vân thật (07/11/2026)
+
+- Hỏi: tiếp mục 31, rà lại luật từ khóa `lib/hesitate.js` + chốt chặn "ép chọn màu" (`softenPushyChoice`) xem có sai không.
+- Đã chạy thử `analyzeHesitation` TRƯỚC khi sửa:
+  - **Nhận nhầm khách bình thường là đang phân vân** (bot khi đó không xin SĐT/địa chỉ, và không nhắn bồi): "Cho mình xem thêm ảnh màu kem", "Xem lại hình màu trắng giúp mình", "Mình muốn tham khảo váy này", "Để mình thử size M nha", "Mình xem lại rồi, lấy màu kem nha". Nặng hơn: **"Cho mình hỏi còn size M không"** cũng bị coi là phân vân (luật "hỏi + con" định bắt "hỏi con (cái)"), cùng "hỏi mã giảm giá", "để bạn tư vấn giúp mình", "xem lại đơn hàng", "xem lại giúp mình".
+  - **Bỏ sót khách phân vân thật**: "Chưa chốt đâu nha, để mình hỏi chồng" (luật "đã chốt" thấy chữ "chốt" nên bỏ qua cả câu), "Mình hỏi ý kiến chồng cái đã", "Đợi lương rồi mình mua", "Từ từ đã shop ơi", "Hàng có đúng như hình không, mình sợ lừa".
+- Cách sửa (`lib/hesitate.js`):
+  1. "để mình xem / coi / tham khảo" + đối tượng cụ thể (ảnh, hình, màu, size, giá, đơn, thử...) hoặc "rồi" → không tính là hẹn cân nhắc. "xem lại / tham khảo" đứng riêng chỉ tính khi hết câu hoặc đi kèm "nha / đã / sau / thêm"... ("xem thêm" thì bắt buộc có đuôi đó).
+  2. "để mình thử ..." bỏ khỏi luật. "để bạn tư vấn" không còn bị đọc là "để bàn".
+  3. "hỏi chồng / vợ / mẹ / bố..." bỏ "con" và "ma" khỏi danh sách người (trùng "hỏi còn", "hỏi mã"); thêm "hỏi ý kiến chồng", "hỏi con gái / con trai".
+  4. "chưa / không / đừng + chốt / lên đơn / lấy luôn" không còn tính là đã chốt. "chưa chốt", "chưa lên đơn", "chưa đặt hàng" được nhận là phân vân.
+  5. Thêm: "từ từ", "đợi lương / tết / tháng sau", "chưa có tiền", "thôi không mua / không mua nữa" (loại `defer`, nên cũng không bị nhắn bồi), và lo lắng "sợ bị lừa", "hàng có đúng như hình không" (loại `doubt`).
+- Chốt chặn "ép chọn màu" (`softenPushyChoice` trong `lib/attributes.js`): ngoài danh sách cụm cũ, thêm lớp THEO CẤU TRÚC: khi khách đang phân vân một mục, mọi câu HỎI hoặc câu đòi chọn / báo lại có nhắc đúng giá trị đang phân vân (kem, trắng) hoặc đúng tên mục (màu) đều bị bỏ. Trước đây 2 câu lọt: "Chị muốn lấy kem hay trắng ạ?" và "Chị lấy màu nào thì báo em nha." Vẫn giữ: câu tư vấn ("Kem và trắng đều dễ mặc ạ"), câu mở nhẹ ("chị cứ thong thả chọn, cần em tư vấn thì nhắn em nha"), câu xin chiều cao cân nặng để tư vấn size.
+- Liên quan nhắn bồi: `saidLater` (`lib/laterStop.js`) gọi `analyzeHesitation`, nên sửa `hesitate.js` cũng sửa luôn việc có nhắn bồi hay không (khách "xem thêm ảnh" vẫn được bồi; khách "chưa chốt, để hỏi chồng" thì không).
+- Test: `tests/hesitate.test.mjs` +5 test (13 câu bình thường không bị nhận nhầm, 11 câu phân vân thật, 3 câu lo lắng, "chưa chốt" vs chốt thật, nhắn bồi), `tests/undecided.test.mjs` +2 test (4 câu ép chọn lạ bị bỏ; 4 câu tư vấn / mở nhẹ / xin số đo được giữ).
+- Chạy toàn bộ: 464 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do sandbox thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test model dự phòng).
+- Giới hạn đã biết: (a) vẫn là luật từ khóa, kiểu viết tắt / sai chính tả lạ có thể lọt, cách chữa tiếp là cờ AI báo "khách đang cân nhắc" trong cùng lượt gọi (giống `khach_viet_lai`), lưu theo từng tin nhắn. (b) "Hơi mắc, nhưng mình vẫn lấy" vẫn bị tính là lo lắng (`doubt`): bot chỉ đáp nhẹ và hoãn xin SĐT 1 lượt. (c) Phần gắn vào webhook vẫn chưa có test tự động.
