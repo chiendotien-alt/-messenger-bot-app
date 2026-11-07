@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -390,3 +390,18 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/burstWait.test.mjs` (5 test). Route webhook không có test tự động.
 - Chưa đổi (là chủ ý thiết kế, chờ chủ shop quyết định): khách mới chờ 12 giây (`FIRST_CONTACT_WAIT_MS`, tin dài cũng chờ); tin chỉ có SĐT hoặc chỉ có địa chỉ (thường dài) chờ tới 30 giây (`PAIR_WAIT_MS`); ảnh không kèm chữ chờ 15 giây.
 - Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng chờ cho tin dài; khách nhắn 1 câu dài ngay sau lượt bot vừa trả lời thì bot trả lời ngay.
+
+## 28. Khách gõ lạ ("M61", "5ok") → bot hỏi lại số đo: thêm lớp "AI dịch lại chính tả" (07/11/2026)
+
+- Lỗi thật: shop hỏi chiều cao cân nặng, khách trả lời `M61` rồi `5ok nha` (1m61, 50kg). AI hiểu đúng và tư vấn "chị cao 1m61 nặng 50kg thì mặc size M dài 92cm", nhưng ngay sau đó bot nhắn thêm "Chị tầm bao cân ạ?".
+- Đã chạy thử các hàm cũ với đúng 2 tin này: `bodyInfoGiven(["M61","5ok nha"])` trả `height:false, weight:false`; đối chiếu tin AI (`crossCheckBody`) chỉ bắt được chiều cao vì "5ok" đọc ra số 5 chứ không phải 50.
+- Nguyên nhân gốc: các luật (nhận số đo, nhận thuộc tính, nhắn bồi, tạo đơn) chỉ biết những kiểu viết đã được dạy từng cái một. Câu hỏi thừa nhiều khả năng đến từ lượt NHẮN BỒI (`lib/nudge.js`), vì lượt này đọc lại tin khách THÔ từ database nên không bao giờ biết AI đã hiểu gì ở lượt trước. Đã mô phỏng lượt bồi với dữ liệu của ảnh: tin thô → "Chị nhắn em cân nặng giúp nha?".
+- Cách sửa (không vá thêm từng kiểu gõ):
+  1. AI trả thêm trường `khach_viet_lai` trong cùng JSON (không tốn thêm lượt gọi AI): từng tin MỚI của khách viết lại đúng chính tả / đúng dạng hệ thống hiểu ("cao 1m61", "50kg", "size L", đúng tên màu trong bảng thuộc tính). Prompt: `lib/botPrompt.js`; số tin cần viết lại được ghi ở cuối câu lệnh bằng `rewriteTurnNote`.
+  2. Hệ thống KIỂM TRA bản AI viết lại (`acceptRewrite`, `lib/customerRewrite.js`): mọi số phải có trong tin gốc (cho phép "1m" đứng trước số chiều cao, và chữ o gõ thay số 0), mọi số từ 2 chữ số của tin gốc (SĐT, cân nặng, số nhà) phải còn nguyên, không thêm quá 4 chữ. Sai thì bỏ bản đó, dùng tin thô như cũ.
+  3. Bản đã qua kiểm tra lưu vào cột mới `messages.text_norm` (`setMessageNorm`, `lib/conversations.js`; cột tự tạo ở `lib/db.js`). Cột `text` giữ nguyên chữ khách gõ nên chủ shop vẫn xem đúng tin gốc.
+  4. Trạng thái thuộc tính được tính lại bằng bản đúng chính tả ngay trong lượt (`app/api/webhook/route.js`, khối "AI DỊCH LẠI CHÍNH TẢ"), nên câu xin lại số đo bị bỏ (`dropKnownBodyAsks`). Từ lượt sau, `ruleRows` đưa bản dịch vào lịch sử cho luật thuộc tính, nhắn bồi (`lib/nudge.js`) và tạo đơn (`lib/autoOrder.js`).
+  5. Sửa kèm: `dropKnownBodyAsks` và `askedTopics` chưa nhận ra cách hỏi "tầm bao cân" / "bao cân" (`lib/bodyCross.js`, `lib/replyDedupe.js`).
+- Test: `tests/customerRewrite.test.mjs` (11 test, gồm đúng đoạn chat trong ảnh và các ca chặn AI bịa số), `tests/nudgeRewrite.test.mjs` (2 test, dùng io giả).
+- Giới hạn đã biết: (a) lượt hiện tại bot vẫn dựng "TRẠNG THÁI THUỘC TÍNH" cho AI từ tin thô, nên AI có thể vẫn viết câu hỏi thừa; câu đó bị bỏ sau khi có bản dịch, trừ khi nó là tin duy nhất (bot không được im lặng). (b) Kiểm tra chỉ chặn bịa SỐ; AI có thể viết thêm chữ khách không nói (vd tự thêm "size M") và hệ thống không phân biệt được, nên prompt cấm rõ điều này. (c) Khách mới nhắn lần đầu chưa có id tin trong database thì bản dịch chỉ dùng trong lượt đó, không lưu. (d) Route webhook không có test tự động; đã kiểm tra bằng đọc diff và chạy mô phỏng nhắn bồi.
+- Cách kiểm tra sau khi sửa: nhật ký Vercel có dòng `AI dịch lại chính tả khách: "5ok nha" → "nặng 50kg nha"` và `Thuộc tính (sau khi dịch lại chính tả)`. Khách gõ `M61` rồi `5ok` thì bot không còn hỏi lại cân nặng.

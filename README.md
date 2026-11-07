@@ -137,3 +137,13 @@ Lấy key tại https://console.groq.com/keys.
 Xem log để biết đang dùng AI nào: dòng `Bot trả lời (groq:...)` nghĩa là Groq đã thay Gemini.
 Ảnh khách gửi chỉ đọc được nếu model vision của Groq còn hoạt động; nếu không bot trả lời bằng chữ và bỏ qua ảnh.
 Mã nguồn: `lib/groq.js`. Model mặc định: `openai/gpt-oss-120b`, `openai/gpt-oss-20b`. Nếu Groq gỡ model, đặt `GROQ_MODELS` trên Vercel theo tên ở https://console.groq.com/docs/models (xem `.env.local.example`).
+
+## AI dịch lại chính tả tin khách
+
+Khách hay gõ lạ ("M61" = cao 1m61, "5ok" = 50kg, "zai l" = size L). AI hiểu được nhưng các luật của hệ thống thì không, nên bot từng hỏi lại điều khách đã nói.
+
+Cách hoạt động: khi trả lời, AI viết thêm trường `khach_viet_lai` = từng tin mới của khách viết lại đúng chính tả / đúng dạng hệ thống hiểu. Hệ thống kiểm tra (số phải có trong tin gốc, không mất SĐT / cân nặng / số nhà), lưu vào cột `messages.text_norm`, rồi mọi luật đọc bản đó. Chữ khách gõ (`messages.text`) giữ nguyên để chủ shop xem.
+
+- Mã nguồn: `lib/customerRewrite.js`; chỗ gắn vào: khối "AI DỊCH LẠI CHÍNH TẢ" trong `app/api/webhook/route.js`, `lib/nudge.js`, `lib/autoOrder.js`.
+- Không cần biến môi trường mới, không tốn thêm lượt gọi AI. Cột `text_norm` tự tạo khi chạy lần đầu.
+- Xem log Vercel: `AI dịch lại chính tả khách: "5ok nha" → "nặng 50kg nha"`.

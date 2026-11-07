@@ -5,6 +5,7 @@
 
 import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
+import { ruleRows, pickRewrites, applyRewritesToTexts, rewriteTurnNote } from "@/lib/customerRewrite";
 import { createHmac, timingSafeEqual } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { put } from "@vercel/blob";
@@ -25,6 +26,7 @@ import { getSentImageUrls,
   getLatestCustomerMessageId,
   getMaxOutgoingId,
   getPendingCustomerMessages,
+  setMessageNorm,
   getLastOpeningAgeMs,
   getRecentOutgoingWithAge,
   isInOpeningWindow,
@@ -52,10 +54,9 @@ function mentionsOrderCheck(t) {
   return ORDER_CHECK_RE.test(x);
 }
 import { attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
-import { bodyFlagsFromInfo, bodyUpdateFromReply } from "@/lib/aiRecognized";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
-import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
+import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { cleanReplyList } from "@/lib/replyGuard";
 import { acquireReplyLock, releaseReplyLock } from "@/lib/replyLock";
@@ -1148,10 +1149,14 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const attrs = productAttributes(currentProduct);
   const attrMode = attrs.length > 0;
   const attrCurrent = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter((t) => t.trim());
-  const attrHistory = history.filter((m) => !(m.from === "customer" && attrCurrent.includes(String(m.text || ""))));
-  const attrExtra = { body: bodyFlagsFromInfo(customerInfo) }; // AI đã báo nhận số đo ở lượt trước (khách gõ kiểu lạ mà quy tắc bỏ sót)
-  const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant, attrExtra) : null;
-  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant, attrExtra) : null;
+  // Tin khách ở các lượt trước đã được AI dịch lại đúng chính tả (messages.text_norm) → luật đọc bản đó (xem lib/customerRewrite.js)
+  const attrHistory = ruleRows(history.filter((m) => !(m.from === "customer" && attrCurrent.includes(String(m.text || "")))));
+  // Các tin MỚI của khách lượt này: dặn AI viết lại đúng chính tả (trường khach_viet_lai) — id để lưu lại bản đã dịch
+  const rewriteTargets = (pendingMsgs || []).map((m) => ({ id: m?.id ?? null, text: String(typeof m === "string" ? m : m?.text || "") })).filter((t) => t.text.trim());
+  if (!rewriteTargets.length && String(customerMessage || "").trim()) rewriteTargets.push({ id: null, text: String(customerMessage) });
+  const rewriteNote = rewriteTurnNote(rewriteTargets.map((t) => t.text));
+  const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant) : null;
+  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
   const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow) : "";
   if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
 
@@ -1243,7 +1248,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const worryNote = isWorryText(worryProbe)
     ? "\n\nKHÁCH ĐANG LO LẮNG ở tin này (hệ thống đã nhận ra): CHỈ trấn an 1-2 câu, đúng điều khách lo, bằng thông tin THẬT trong nội dung/ghi chú sản phẩm (vd \"size L vừa đến 75kg nên chị yên tâm nha\"). KHÔNG hỏi thêm màu/size/chiều dài/SĐT/địa chỉ. KHÔNG khuyên khách đổi giá trị khách đã chọn (khách đã chọn chiều dài nào thì tôn trọng, đừng nhắc lại gợi ý cũ). Không có thông tin thật thì nói sẽ hỏi lại shop, không bịa."
     : "";
-  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
+  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + rewriteNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
   const finalPrompt = systemPrompt + promptNotes;
   const groqPrompt = groqBasePrompt + promptNotes;
 
@@ -1331,11 +1336,38 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     if (joined.length <= 1900) messages = [joined];
   }
   const openingRequested = !!parsed?.use_opening_product;
+  // ---- AI DỊCH LẠI CHÍNH TẢ TIN KHÁCH → BÁO CHO HỆ THỐNG ----
+  // AI viết lại tin khách đúng chính tả / đúng dạng hệ thống hiểu ("M61" → "cao 1m61", "5ok" → "nặng 50kg"). Hệ thống kiểm tra (không cho bịa số),
+  // lưu vào messages.text_norm (nhắn bồi, tạo đơn... đọc từ đó) rồi tính lại trạng thái bằng bản đúng chính tả → không hỏi lại điều khách đã nói.
+  let attrCurrentRule = attrCurrent;
+  let rewrites = [];
+  try {
+    rewrites = pickRewrites(parsed, rewriteTargets);
+    if (rewrites.length) {
+      console.log("AI dịch lại chính tả khách:", rewrites.map((r) => `"${r.orig}" → "${r.norm}"`).join(" | "));
+      await Promise.all(rewrites.filter((r) => r.id).map((r) => setMessageNorm(r.id, r.norm).catch((e) => console.error("Lỗi lưu bản dịch chính tả (bỏ qua):", e.message))));
+      attrCurrentRule = applyRewritesToTexts(attrCurrent, rewrites, rewriteTargets);
+      if (attrMode && attrNow) {
+        Object.assign(attrNow, attributeStatus(attrs, attrHistory, attrCurrentRule, customerInfo?.variant));
+        console.log("---- Thuộc tính (sau khi dịch lại chính tả):", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
+      } else {
+        // Sản phẩm không có bảng thuộc tính: chỉ cần bỏ câu xin lại chiều cao / cân nặng khách đã đưa
+        const known = bodyInfoGiven([...ruleRows(history).filter((m) => m.from === "customer").slice(-6).map((m) => String(m.text || "")), ...attrCurrentRule]);
+        const ded = dropKnownBodyAsks(messages, known);
+        if (ded.dropped.length) {
+          console.log("Bỏ câu xin lại số đo khách đã đưa (theo bản dịch chính tả):", ded.dropped.join(" | "));
+          messages = ded.messages;
+        }
+      }
+    }
+  } catch (e) {
+    console.error("Lỗi dịch lại chính tả khách (bỏ qua):", e.message);
+  }
   // ĐỐI CHIẾU: AI đã nói giá trị khách chọn (vd "size L") mà bộ nhận diện còn thấy "missing" (khách gõ lạ như "zai l")
   // → ghi nhận vào trạng thái để khối đơn + đơn lưu không bị thiếu, và bot không hỏi lại cân nặng để chọn size.
   if (attrMode && attrNow) {
     const recentBot = (history || []).filter((m) => m.from !== "customer").slice(-3).map((m) => m.text || "");
-    const recentCust = [...attrHistory.filter((m) => m.from === "customer").slice(-4).map((m) => String(m.text || "")), ...attrCurrent];
+    const recentCust = [...attrHistory.filter((m) => m.from === "customer").slice(-4).map((m) => String(m.text || "")), ...attrCurrentRule];
     const fixedAttrs = reconcileWithReply(attrNow, { replyTexts: [...recentBot, ...messages], customerTexts: recentCust });
     if (fixedAttrs.length) {
       sumDetail = summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1);
@@ -1362,7 +1394,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let reading = null;
   if (attrMode && attrNow) {
     try {
-      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrent].reverse()];
+      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrentRule].reverse()];
       // Khách đã chốt danh sách món ở lượt trước và không nhắn gì đổi → vẫn dùng (AI lượt này thường không ghi lại)
       let statusChanged = false;
       let aiRaw = Array.isArray(parsed?.order_items) ? parsed.order_items : null;
@@ -1433,15 +1465,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     await mergeCustomerInfo(senderId, verified).catch((e) =>
       console.error("Không lưu được thông tin khách:", e.message)
     );
-  }
-
-  // AI báo đã nhận chiều cao / cân nặng của khách (kể cả kiểu gõ lạ mà quy tắc bỏ sót) → lưu để hỏi bồi và các lượt sau không hỏi lại
-  try {
-    const custTexts = [...(history || []).filter((m) => m.from === "customer").map((m) => m.text || ""), ...attrCurrent];
-    const bodyStr = bodyUpdateFromReply({ khachDaCho: parsed?.khach_da_cho, customerTexts: custTexts, savedInfo: customerInfo });
-    if (bodyStr) await mergeCustomerInfo(senderId, { body: bodyStr });
-  } catch (e) {
-    console.error("Không lưu được số đo AI đã nhận:", e.message);
   }
 
   // Sản phẩm có bảng thuộc tính: màu/size/chiều dài khách đã chọn do HỆ THỐNG ghép (đúng hơn chữ AI tự ghi) → lưu cho đơn hàng

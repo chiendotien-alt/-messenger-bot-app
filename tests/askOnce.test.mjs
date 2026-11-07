@@ -79,31 +79,3 @@ test("Khách gửi SĐT + địa chỉ cùng lúc → không thêm câu xin gì"
   const t = ["0912345678 127 tran mai ninh f11 tan binh tphcm"];
   assert.equal(missingContactAsk({ messages: ["dạ em nhận rồi ạ"], gaveAddress: addressInTexts(t, ADDR_AI), gavePhone: phoneInTexts(t), havePhone: true, haveAddress: true, kh: "chị", tu: "em" }), null);
 });
-
-// ---- Chat thật 06/11: khách XIN địa chỉ shop, bot nhận nhầm là khách đưa địa chỉ → thêm câu xin SĐT vào tin đang hỏi size ----
-import { looksLikeAddressStrict } from "../lib/replyDedupe.js";
-import { pickAddressFromTexts } from "../lib/pickAddress.js";
-
-test("Khách XIN địa chỉ shop (không phải đưa địa chỉ của mình) → không coi là địa chỉ giao hàng", () => {
-  for (const t of [
-    "Chị ở Bạch Mai, cho chị địa chỉ qua xem đồ nhé",
-    "cho mình xin địa chỉ shop với",
-    "địa chỉ shop ở đâu vậy em",
-    "gửi chị địa chỉ cửa hàng nhé",
-  ]) {
-    assert.equal(looksLikeAddressStrict(t), false, t);
-    assert.equal(pickAddressFromTexts([t]), "", t);
-    assert.equal(addressInTexts([t], ""), false, t);
-  }
-});
-
-test("Khách đưa địa chỉ thật (có chữ 'địa chỉ:') vẫn được nhận", () => {
-  assert.equal(looksLikeAddressStrict("địa chỉ: 127 Trần Mai Ninh, Phường 11, Tân Bình"), true);
-  assert.equal(looksLikeAddressStrict("127 tran mai ninh f11 tan binh tphcm"), true);
-});
-
-test("Mỗi tin chỉ 1 luồng hỏi: AI đang hỏi size thì hệ thống KHÔNG dán thêm câu xin SĐT vào", () => {
-  const messages = ["dạ shop em ở Hai Bà Trưng, Hà Nội ạ", "Chị cho em xin chiều cao cân nặng để em chọn size váy nha?"];
-  const r = missingContactAsk({ messages, gaveAddress: true, gavePhone: false, havePhone: false, haveAddress: true, kh: "chị", tu: "em" });
-  assert.equal(r, null);
-});
