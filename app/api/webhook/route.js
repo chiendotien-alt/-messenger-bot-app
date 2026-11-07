@@ -6,6 +6,7 @@
 import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { ruleRows, pickRewrites, applyRewritesToTexts, rewriteTurnNote } from "@/lib/customerRewrite";
+import { orderByCustomerSequence } from "@/lib/replyOrder";
 import { createHmac, timingSafeEqual } from "crypto";
 import { waitUntil } from "@vercel/functions";
 import { put } from "@vercel/blob";
@@ -440,7 +441,7 @@ async function processWebhookBody(body, startedAt) {
           messageId &&
           (await hasNewerDifferentCustomerMessage(senderId, messageId, text).catch(() => false))
         ) {
-          console.log("Khách nhắn thêm trong lúc bot soạn → bỏ câu trả lời cũ, chờ tin mới nhất:", text);
+          console.log("Khách nhắn thêm trong lúc bot soạn → bỏ câu trả lời cho tin:", text, "→ chờ gộp với tin mới hơn");
           if (reply.openingProductId) await releaseOpening(senderId, reply.openingProductId).catch(() => {});
           continue;
         }
@@ -1134,7 +1135,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         "\n\nKHÁCH VỪA NHẮN LIÊN TIẾP " + lines.length + " TIN (shop chưa trả lời tin nào):\n" +
         lines.map((l, i) => `${i + 1}. ${l}`).join("\n") +
         "\nHãy đọc HẾT các tin này rồi trả lời MỘT lần, gộp gọn: trả lời các câu khách hỏi, ghi nhận thông tin khách vừa đưa (SĐT, địa chỉ, tên...) " +
-        "và chỉ hỏi thêm đúng phần còn thiếu để lên đơn (tối đa 1 câu hỏi). Không trả lời từng tin một.";
+        "và chỉ hỏi thêm đúng phần còn thiếu để lên đơn (tối đa 1 câu hỏi). Không trả lời từng tin một. " +
+        "Sắp xếp các tin trả lời THEO ĐÚNG THỨ TỰ khách nhắn (tin nào khách nhắn trước thì trả lời trước, kể cả khi tin sau là câu hỏi).";
     }
   }
   // Khách nhắn thêm NGAY SAU tin bot vừa gửi (câu trước trả lời hơi sớm) → chỉ trả lời phần mới
@@ -1779,13 +1781,26 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const due = measuredItems(attrNow).filter((x) => x.attr.values.length);
     const said = messages.join(" ");
     const lacking = due.filter((x) => !matchValues(x.attr, said).length);
+    // Các tin khách lượt này theo đúng thứ tự khách nhắn (cũ → mới), ưu tiên bản AI đã sửa chính tả ("4ok" → "40kg")
+    const customerSeq = rewriteTargets
+      .map((t) => {
+        const r = rewrites.find((x) => (x.id && t.id && String(x.id) === String(t.id)) || x.orig === t.text);
+        return String(r?.norm || t.text || "").trim();
+      })
+      .filter(Boolean);
+    const keepCustomerOrder = (list) => {
+      const ordered = orderByCustomerSequence(list, customerSeq);
+      if (ordered !== list) console.log("Sắp lại tin trả lời theo thứ tự khách nhắn:", customerSeq.join(" | "));
+      return ordered;
+    };
+    messages = keepCustomerOrder(messages);
     // Các mục khác đã đủ + chưa có SĐT → sau khi tư vấn xong phải xin SĐT + địa chỉ NGAY trong lượt này (không chờ khách nhắn tiếp)
     const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim() && !deferNow.defer && !hesitateNow.hesitating;
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
-      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt);
+      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt, customerSeq);
       const redoText = redo.join(" ");
-      if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = redo;
+      if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = keepCustomerOrder(redo);
       else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
     }
     // CHỐT CHẶN: đã tư vấn xong giá trị cuối mà tin trả lời chưa xin SĐT/địa chỉ → tự thêm câu xin
@@ -1939,15 +1954,22 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
-async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages, askContact = false, groqPrompt = "") {
+async function retryForAdvice(systemPrompt, contents, deadline, apiKeys, hardDeadline, items, draftMessages, askContact = false, groqPrompt = "", customerTexts = []) {
   try {
+    const orderedTexts = (customerTexts || []).map((t) => String(t || "").trim()).filter(Boolean).slice(-8);
     const need = items
       .map((x) => `- ${x.attr.name}: chọn đúng 1 giá trị trong [${x.attr.values.join(" / ")}]; cách chọn của chủ shop: ${x.attr.how || "theo số đo khách đã nói"}`)
       .join("\n");
     const extra =
       "\n\nLƯU Ý BẮT BUỘC: khách đã đưa số đo nhưng tin trả lời nháp CHƯA nói giá trị của các mục sau:\n" + need +
       "\nTin nháp: " + JSON.stringify(draftMessages) +
-      "\nHãy viết lại 1-2 tin: vẫn trả lời câu vừa rồi của khách, NHƯNG phải nói rõ MỘT giá trị cụ thể cho mỗi mục trên, dựa đúng số đo khách đã nói " +
+      (orderedTexts.length >= 2
+        ? "\nCác tin khách vừa nhắn, THEO ĐÚNG THỨ TỰ (cũ → mới): " + JSON.stringify(orderedTexts) +
+          "\nBẮT BUỘC sắp xếp tin trả lời THEO ĐÚNG THỨ TỰ KHÁCH NÓI: thông tin / câu hỏi khách nhắn trước thì trả lời trước " +
+          "(vd khách nói cân nặng trước rồi mới hỏi chiều cao → nói size theo cân nặng TRƯỚC, rồi mới nói chiều dài váy theo chiều cao). " +
+          "Không đảo thứ tự, không dồn phần còn thiếu xuống cuối."
+        : "") +
+      "\nHãy viết lại 1-2 tin: vẫn trả lời các tin vừa rồi của khách, và phải nói rõ MỘT giá trị cụ thể cho mỗi mục trên, dựa đúng số đo khách đã nói " +
       '(vd "chị cao 1m48 thì chân váy dài 75cm là vừa đẹp ạ"). ' +
       (askContact
         ? 'Các mục khác khách đã chọn đủ → sau khi nói giá trị, tin CUỐI phải xin luôn số điện thoại và địa chỉ nhận hàng (1 câu ngắn, vd "chị cho em xin số điện thoại và địa chỉ nhận hàng để em lên đơn nha"), KHÔNG hỏi "chọn được mẫu ưng ý chưa". '
