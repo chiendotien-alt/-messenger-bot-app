@@ -1349,6 +1349,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   console.log("---- Khách hỏi:", customerMessage);
   console.log(`---- Bot trả lời (${usedModel || "không có model nào trả lời"}):`, raw || "(không có nội dung)");
+  // AI chính (Gemini hoặc Claude dự phòng) đã trả lời → tin cậy quyết định "chưa có địa chỉ" của AI; chỉ Groq / không có AI mới dùng luật đoán rộng
+  const aiIsTrusted = !!usedModel && !String(usedModel).startsWith("groq:");
 
   const parsed = parseModelJson(raw);
   if (parsed?.tinh_huong) console.log(`---- Tình huống AI tự ghi (nhãn luật: ${ruleLabel}):`, String(parsed.tinh_huong).slice(0, 300));
@@ -1532,7 +1534,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       const nowTexts = deferNow.defer
         ? deferNow.rest // đã bỏ câu hẹn gửi sau → không nhận "mai chị gửi địa chỉ cty nha" làm địa chỉ
         : [...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || "")), String(customerMessage || "")];
-      const addr = pickAddressFromTexts([...sinceAsk, ...nowTexts]);
+      const addr = pickAddressFromTexts([...sinceAsk, ...nowTexts], { requireClearSignal: aiIsTrusted });
       if (addr) {
         verified = { ...(verified || {}), address: addr };
         await mergeCustomerInfo(senderId, { address: addr }).catch((e) => console.error("Không lưu được địa chỉ tự lấy:", e.message));
@@ -1933,7 +1935,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
-      gaveAddress: addressInTexts(currentTexts, verified?.address), // chỉ xét tin khách VỪA nhắn (không xét lịch sử) — câu này làm hệ thống tự gửi tin cho khách
+      gaveAddress: addressInTexts(currentTexts, verified?.address, { requireClearSignal: aiIsTrusted }), // chỉ xét tin khách VỪA nhắn (không xét lịch sử) — câu này làm hệ thống tự gửi tin cho khách
       gavePhone: phoneNow || phoneInTexts(currentTexts),
       havePhone: !!String(mergedInfo.phone || "").trim(),
       haveAddress: !!String(mergedInfo.address || "").trim(),
