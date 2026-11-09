@@ -57,6 +57,7 @@ function mentionsOrderCheck(t) {
 }
 import { softenPushyChoice, attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
+import { aiSaysNotAddress } from "@/lib/addressNet";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, isLocationOnlyText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -1354,6 +1355,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   const parsed = parseModelJson(raw);
   if (parsed?.tinh_huong) console.log(`---- Tình huống AI tự ghi (nhãn luật: ${ruleLabel}):`, String(parsed.tinh_huong).slice(0, 300));
+  // AI ghi tình huống là hỏi giá/ship/chất vải/ảnh/phân vân (không nói khách đưa địa chỉ) → hệ thống không tự nhặt địa chỉ từ tin khách
+  const aiSaysNoAddress = aiSaysNotAddress(parsed?.tinh_huong);
 
   // Lấy danh sách tin từ JSON (chịu được vài kiểu trả về lệch chuẩn); không phải JSON thì coi cả đoạn là câu trả lời
   let list = [];
@@ -1523,7 +1526,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   // Lưới an toàn: khách đã gửi địa chỉ (shop vừa xin SĐT/địa chỉ) mà AI không điền → tự lấy từ tin khách, để bot không hỏi lại / hỏi thêm "số nhà, đường phố"
-  if (!String(customerInfo?.address || "").trim() && !String(verified?.address || "").trim()) {
+  if (!aiSaysNoAddress && !String(customerInfo?.address || "").trim() && !String(verified?.address || "").trim()) {
     const histArr = history || [];
     let askIdx = -1;
     histArr.forEach((m, k) => {
@@ -1935,7 +1938,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     const trChat = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const fix = missingContactAsk({
       messages,
-      gaveAddress: addressInTexts(currentTexts, verified?.address, { requireClearSignal: aiIsTrusted }), // chỉ xét tin khách VỪA nhắn (không xét lịch sử) — câu này làm hệ thống tự gửi tin cho khách
+      gaveAddress: addressInTexts(currentTexts, verified?.address, { requireClearSignal: aiIsTrusted, ruleOff: aiSaysNoAddress }), // chỉ xét tin khách VỪA nhắn (không xét lịch sử) — câu này làm hệ thống tự gửi tin cho khách
       gavePhone: phoneNow || phoneInTexts(currentTexts),
       havePhone: !!String(mergedInfo.phone || "").trim(),
       haveAddress: !!String(mergedInfo.address || "").trim(),
