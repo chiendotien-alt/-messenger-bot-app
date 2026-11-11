@@ -479,3 +479,24 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Chạy toàn bộ: 478 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do môi trường chạy thử thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test key trả phí Gemini).
 - Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng "Lỗi xử lý tin nhắn: ReferenceError ..." sau dòng "Bảng giá mặc cả"; bot trả lời lại khách bình thường.
 - Bài học: route webhook không có test tự động, và test bán theo vỉ chỉ chạy nhánh bán theo vỉ. Mỗi lần thêm nhánh mới cần test cả nhánh cũ (sản phẩm thường).
+
+## 34. Rà lại toàn bộ tính năng "Bán theo vỉ / hộp / gói" sau lỗi #33 (11/11/2026)
+
+- Hỏi: sau khi sửa lỗi #33, kiểm tra xem tính năng mới còn gây phát sinh gì cho bot không.
+- Đã kiểm tra, KHÔNG có vấn đề:
+  - Trang admin: ô "Bán theo vỉ" nạp lên form, nhân bản, bấm Lưu đều giữ đúng giá trị (`cleanForm` copy nguyên `...form`; sản phẩm lưu cả khối JSON).
+  - Sản phẩm không điền ô vỉ: `packConfig` trả null, mọi nhánh pack bỏ qua, kết quả giống cũ.
+  - Quét tự động toàn bộ 130 file (`route.js` không có test cũng được quét) tìm lỗi dùng biến trước khi khai báo / khai báo trùng bằng bộ biên dịch TypeScript: 0 lỗi. Công cụ này đã thử trên bản lỗi cũ và bắt đúng dòng `priceLadder.js:383` của lỗi #33. Mọi file không có JSX qua kiểm tra cú pháp bằng Node.
+  - Chạy 72 tổ hợp (sản phẩm thường / bán theo vỉ / số viên mơ hồ × mọi loại quyết định giá) qua `computePriceContext` + `priceTurnNote`: 0 lỗi.
+- Đã phát hiện và sửa 4 lỗi (chỉ ảnh hưởng sản phẩm đã điền ô bán theo vỉ; sản phẩm thường giữ nguyên từng chữ):
+  1. **Địa chỉ "Ba Vì" bị đọc thành 3 vỉ.** Bỏ dấu thì "vỉ / vì / vị / vĩ" đều thành "vi", nên "xã Ba Vì" → 3 vỉ (15 viên, 79k); "2 vì thấy rẻ", "hai vị khách", "Tam Vì" cũng bị. Sửa: `detectPackQty` (`lib/packQty.js`) nhận số lượng theo đúng dấu của đơn vị (hàm `light` giữ dấu). Số bằng chữ số ("2 vỉ", "2 vi", "10 viên", "20 vien") nhận cả có dấu lẫn gõ không dấu; số bằng chữ ("ba vỉ", "hai vỉ") chỉ nhận khi đơn vị có dấu đúng. Hệ quả chấp nhận: khách gõ không dấu hẳn và viết số bằng chữ ("lay ba vi") không được nhận, bot sẽ hỏi lại số lượng.
+  2. **Số viên không tròn vỉ ("7 viên", mỗi vỉ 5) vẫn bị hệ thống tự ghép tin chốt đơn "SL:1 vỉ, 39k"** khi khách đưa SĐT + địa chỉ, trái với cam kết "không tự chọn". Trước đây chỉ dặn AI hỏi lại trong lời nhắc, còn tin chốt đơn do hệ thống ghép không biết. Sửa: `buildSummaryText` (`lib/priceLadder.js`) trả rỗng khi `ctx.packAmbig` → mọi đường ghép/ép gửi tin chốt đơn trong webhook đều không gửi, giữ câu AI hỏi lại "1 vỉ (5 viên) hay 2 vỉ (10 viên) ạ?". Đơn lưu tự động / nút "Tạo đơn" gắn cờ `qty_ambiguous` (`lib/orderFacts.js`, `lib/autoOrder.js`), hiện dòng "⚠️ Cần xác minh" trong admin.
+  3. **Khách trả lời trơn "2", "vỉ 2", "hai" sau câu hỏi lại vẫn bị coi là mơ hồ** (sẽ làm bot kẹt hỏi mãi sau sửa #2). Sửa: `bareNumberReply` (`lib/packQty.js`) + `qtyHintFromTexts` chỉ dùng số trơn để gỡ mơ hồ khi số đó đúng là 1 trong 2 phương án (thấp/cao) của lần hỏi lại; số khác (vd "3") vẫn hỏi tiếp.
+  4. **Nhãn "cái" với sản phẩm bán theo vỉ**: câu thay thế của chốt chặn giá (khi bot lỡ báo giá dưới sàn) ghi "cho 2 cái", dòng ghi chú trang "Dạy bot" ghi "2 cái". Sửa thành "2 vỉ (10 viên)" (`guardPriceMessages`, `priceVerdictText`); sản phẩm thường vẫn "2 cái".
+- Không đổi (ghi lại để chủ shop quyết):
+  - Khách nói "lấy 2 cái" với sản phẩm bán theo vỉ → hiện hiểu là 2 vỉ (69k, 10 viên). Với pin, "2 cái" có thể là 2 viên. Chờ chủ shop chọn: giữ như cũ, hoặc coi "cái / chiếc / cục" là số viên (2 viên không tròn vỉ → bot hỏi lại).
+  - Chốt chặn giá (`guardPriceMessages`) cắt câu có số tiền trong khoảng 60%–100% giá thấp nhất của 1 vỉ (Pin: khoảng 15k–25k), nên câu nhắc "phí ship 20k" cũng bị cắt. Pin đang freeship nên ít gặp; nếu sau này tính ship cho Pin thì cần cho qua các câu nói về ship.
+  - Sản phẩm bán theo vỉ nhưng KHÔNG có bảng giá mặc cả: số viên không tròn vỉ chưa bị chặn ghép đơn (cờ ở trang admin vẫn có).
+- Test: `tests/packSafety.test.mjs` (9 test: địa chỉ Ba Vì và chữ vì/vị, các cách nói số vỉ thật không bị siết quá tay, tin vừa có số lượng vừa có địa chỉ, không ghép đơn khi mơ hồ, cờ `qty_ambiguous`, gỡ mơ hồ bằng câu trả lời ngắn, sản phẩm thường không đổi, nhãn đơn vị).
+- Chạy toàn bộ: 487 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do sandbox thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test key trả phí Gemini).
+- Cách kiểm tra sau khi sửa (Vercel): khách nhắn "cho 7 viên" rồi đưa SĐT + địa chỉ → bot hỏi "1 vỉ hay 2 vỉ", chưa có tin "Em lên đơn ạ"; khách đáp "2" / "2 vỉ" → tin chốt đơn ghi "SL:2 vỉ (10 viên)". Địa chỉ có "Ba Vì" không làm đổi số lượng.
