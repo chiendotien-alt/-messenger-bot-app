@@ -13,6 +13,9 @@ const EMPTY_FORM = {
   attributeGroups: [], // BỘ THUỘC TÍNH: [{ name, members: [tên thuộc tính], ask }]
   attributes: [], // BẢNG THUỘC TÍNH: [{ name, values, how }] vd Màu / Chiều dài / Size
   shipFee: "", // phí ship 1 đơn (đồng); để trống = không tính / freeship
+  unitName: "", // BÁN THEO GÓI: đơn vị bán (vỉ / hộp / gói) — để trống = bán theo cái như thường
+  unitSize: "", // số đơn vị lẻ trong 1 gói (vỉ 5 viên → 5)
+  subUnitName: "", // tên đơn vị lẻ (viên); để trống = "viên"
   priceLadder: [], // BẢNG GIÁ MẶC CẢ: [{ qty, list, steps, floor }] — hệ thống tự mặc cả đúng mức, bot không thấy giá sàn
   openingScript: "",
   openingExtras: [], // các tin phụ gửi tiếp sau câu mở đầu (nút +)
@@ -738,6 +741,9 @@ export default function AdminPage() {
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
       shipFee: String(p.shipFee ?? ""),
+      unitName: String(p.unitName ?? ""),
+      unitSize: String(p.unitSize ?? ""),
+      subUnitName: String(p.subUnitName ?? ""),
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: p.triggerQuestions || "",
@@ -803,6 +809,9 @@ export default function AdminPage() {
       attributeGroups: Array.isArray(p.attributeGroups) ? p.attributeGroups.map((g) => ({ name: g.name || "", members: Array.isArray(g.members) ? [...g.members] : [], ask: g.ask || "" })) : [],
       priceLadder: Array.isArray(p.priceLadder) ? p.priceLadder.map((r) => ({ qty: String(r.qty ?? ""), list: String(r.list ?? ""), steps: String(r.steps ?? ""), floor: String(r.floor ?? "") })) : [],
       shipFee: String(p.shipFee ?? ""),
+      unitName: String(p.unitName ?? ""),
+      unitSize: String(p.unitSize ?? ""),
+      subUnitName: String(p.subUnitName ?? ""),
       openingScript: p.openingScript || "",
       openingExtras: Array.isArray(p.openingExtras) ? p.openingExtras : [],
       triggerQuestions: "", // để trống: nếu trùng câu hỏi quảng cáo, bot sẽ nhầm sang sản phẩm cũ
@@ -1150,6 +1159,37 @@ export default function AdminPage() {
             onChange={(e) => setForm({ ...form, shipFee: e.target.value })}
             placeholder="Ví dụ: 30000 hoặc 30k"
           />
+        </Fold>
+        <Fold
+          title="Bán theo vỉ / hộp / gói (không bắt buộc)"
+          note={has(form.unitName) && has(form.unitSize) ? `1 ${form.unitName} = ${form.unitSize} ${form.subUnitName || "viên"}` : "chưa có"}
+          filled={has(form.unitName) && has(form.unitSize)}
+        >
+          <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>
+            Chỉ điền khi sản phẩm bán theo gói (vd pin: 1 vỉ có 5 viên). Bảng giá mặc cả ở trên nhập số lượng THEO ĐƠN VỊ BÁN (2 vỉ = 69k → nhập 2 và 69k).
+            Khách nói "cho 10 viên" thì bot tự hiểu là 2 vỉ, tính đúng giá và ghi tin báo đơn "SL:2 vỉ (10 viên)". Sản phẩm bán theo cái thì để trống.
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <input
+              style={{ ...inputStyle, flex: "1 1 120px", boxSizing: "border-box" }}
+              value={form.unitName}
+              onChange={(e) => setForm({ ...form, unitName: e.target.value })}
+              placeholder="Đơn vị bán: vỉ"
+            />
+            <input
+              style={{ ...inputStyle, flex: "1 1 120px", boxSizing: "border-box" }}
+              value={form.unitSize}
+              onChange={(e) => setForm({ ...form, unitSize: e.target.value })}
+              placeholder="Số viên mỗi vỉ: 5"
+              inputMode="numeric"
+            />
+            <input
+              style={{ ...inputStyle, flex: "1 1 120px", boxSizing: "border-box" }}
+              value={form.subUnitName}
+              onChange={(e) => setForm({ ...form, subUnitName: e.target.value })}
+              placeholder="Đơn vị lẻ: viên (mặc định)"
+            />
+          </div>
         </Fold>
         <Fold title="Lưu ý cho bot (không bắt buộc)" note={has(form.notes) ? "đã nhập" : "chưa có"} filled={has(form.notes)}>
           <div style={{ color: "#888", fontSize: 12, marginBottom: 6 }}>

@@ -58,6 +58,7 @@ function mentionsOrderCheck(t) {
 import { softenPushyChoice, attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { aiSaysNotAddress } from "@/lib/addressNet";
+import { buildAdviceConfirm } from "@/lib/adviceConfirm";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, isLocationOnlyText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
@@ -1218,7 +1219,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   // Số lượng khách tự nói ("lấy 2 cái") — dùng khi sản phẩm không có bảng giá mặc cả, để tin báo đơn không mặc định 1 cái
   const qtyHintNow =
-    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse())) ||
+    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()), currentProduct) ||
     qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]);
   let sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
@@ -1983,7 +1984,26 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       messages = soft.messages;
     }
   }
-  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: deferNow.defer || ladderSent || basicSent || forcedSummary || contactAskAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
+  // CHỐT CHẶN: khách đã đủ SĐT + địa chỉ, AI vừa tư vấn nốt chiều dài/size theo số đo nhưng không còn câu hỏi nào → thêm 1 câu xin chốt để đơn không đứng yên
+  let adviceConfirmAdded = false;
+  if (attrMode && !forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length && !deferNow.defer && !hesitateNow.hesitating) {
+    const trA = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+    const conf = buildAdviceConfirm({
+      status: attrNow,
+      messages,
+      haveContact: !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()),
+      kh: trA.kh,
+      tu: trA.tu,
+      neutral: notesForbidPronouns(currentProduct?.notes),
+      recentBotTexts: history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || ""),
+    });
+    if (conf) {
+      console.log("Khách đã đủ SĐT/địa chỉ, AI vừa tư vấn nốt mà không còn câu hỏi → thêm câu xin chốt:", conf);
+      messages = [...messages, conf];
+      adviceConfirmAdded = true;
+    }
+  }
+  return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: deferNow.defer || ladderSent || basicSent || forcedSummary || contactAskAdded || adviceConfirmAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }
 
 /** Nhờ AI viết lại tin trả lời, bắt buộc nói giá trị (chiều dài, size...) mà khách đã đưa đủ số đo nhưng tin nháp chưa nói. */
