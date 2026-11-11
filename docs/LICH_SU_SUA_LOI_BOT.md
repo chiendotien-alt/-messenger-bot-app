@@ -466,3 +466,16 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/hesitate.test.mjs` +5 test (13 câu bình thường không bị nhận nhầm, 11 câu phân vân thật, 3 câu lo lắng, "chưa chốt" vs chốt thật, nhắn bồi), `tests/undecided.test.mjs` +2 test (4 câu ép chọn lạ bị bỏ; 4 câu tư vấn / mở nhẹ / xin số đo được giữ).
 - Chạy toàn bộ: 464 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do sandbox thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test model dự phòng).
 - Giới hạn đã biết: (a) vẫn là luật từ khóa, kiểu viết tắt / sai chính tả lạ có thể lọt, cách chữa tiếp là cờ AI báo "khách đang cân nhắc" trong cùng lượt gọi (giống `khach_viet_lai`), lưu theo từng tin nhắn. (b) "Hơi mắc, nhưng mình vẫn lấy" vẫn bị tính là lo lắng (`doubt`): bot chỉ đáp nhẹ và hoãn xin SĐT 1 lượt. (c) Phần gắn vào webhook vẫn chưa có test tự động.
+
+## 33. Sau khi thêm ô "Bán theo vỉ / hộp / gói", bot không trả lời được: ReferenceError "Cannot access 'i' before initialization" (11/11/2026)
+
+- Lỗi thật (nhật ký Vercel, `/api/webhook`): mỗi tin khách của sản phẩm CÓ bảng giá mặc cả (chân váy) đều in dòng "Bảng giá mặc cả: {...}" rồi ngay sau đó "Lỗi xử lý tin nhắn: ReferenceError: Cannot access 'i' before initialization" → bot không gửi được câu trả lời nào. (Tên `i` là do Vercel nén code đổi tên biến; biến thật là `qLabel`.)
+- Đã tái hiện bằng cách chạy riêng từng bước sau dòng log đó: `attributeStatus`, `computePriceContext`, `customerQtyHint`, `qtyFromReplies`, `summaryDetail` đều chạy được; chỉ `priceTurnNote` (`lib/priceLadder.js`) văng đúng lỗi "Cannot access 'qLabel' before initialization".
+- Nguyên nhân gốc: lúc thêm tính năng bán theo vỉ, dòng khai báo `const qLabel = ctx.pack ? packLabel(q, ctx.pack) : \`${qLabel}\`` ở nhánh sản phẩm THƯỜNG lại dùng chính `qLabel` đang khai báo (đúng ra là `${q} cái`). Sản phẩm bán theo vỉ đi nhánh còn lại nên chạy bình thường, vì vậy các test bán theo vỉ vẫn đạt, nhưng MỌI sản phẩm thường có bảng giá đều hỏng.
+- Cách sửa (chỉ 1 dòng, `lib/priceLadder.js` trong `priceTurnNote`): nhánh sản phẩm thường dùng `${q} cái`. Nhánh bán theo vỉ không đổi ("2 vỉ (10 viên)").
+- Đã quét toàn bộ code tìm dòng `const/let X = ... X ...` cùng kiểu: không còn chỗ nào khác.
+- Không đổi: bảng giá, cách mặc cả, tin báo đơn, tính năng bán theo vỉ, các phần còn lại của bot.
+- Test: `tests/priceNote.test.mjs` (4 test: 5 tình huống giá của sản phẩm thường không văng lỗi, số lượng ghi "N cái", sản phẩm bán theo vỉ vẫn ghi "2 vỉ (10 viên)", sản phẩm không có bảng giá trả rỗng). Đã thử trên code cũ: 2 test đỏ đúng lỗi trên; sau khi sửa đều xanh.
+- Chạy toàn bộ: 478 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do môi trường chạy thử thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test key trả phí Gemini).
+- Cách kiểm tra sau khi sửa: nhật ký Vercel không còn dòng "Lỗi xử lý tin nhắn: ReferenceError ..." sau dòng "Bảng giá mặc cả"; bot trả lời lại khách bình thường.
+- Bài học: route webhook không có test tự động, và test bán theo vỉ chỉ chạy nhánh bán theo vỉ. Mỗi lần thêm nhánh mới cần test cả nhánh cũ (sản phẩm thường).
