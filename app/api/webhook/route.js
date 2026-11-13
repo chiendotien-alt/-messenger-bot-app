@@ -183,15 +183,15 @@ async function contactAiReleasesHold(senderId, text) {
     return false;
   }
 }
-// Tin thứ 2 trở đi (khi bot tách nhiều tin): mặc định giả gõ 1-2,5s tùy độ dài. Đặt SECOND_MSG_HOLD_MS (ms) để cố định.
+// Tin thứ 2 trở đi (khi bot tách nhiều tin): mặc định giả gõ đúng 1s, dài hay ngắn như nhau. Đặt SECOND_MSG_HOLD_MS (ms) để cố định.
 const SECOND_MSG_HOLD_MS = process.env.SECOND_MSG_HOLD_MS !== undefined ? Number(process.env.SECOND_MSG_HOLD_MS) : null;
-// Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau ~1s (câu ngắn) đến 4s (câu dài) — người thật không trả lời 3 dòng trong 1 giây. AI soạn lâu hơn thì gửi ngay khi soạn xong.
+// Tin đầu tiên: giả gõ từ lúc nhận tin của khách, gửi sau đúng 1s (dài hay ngắn như nhau) — người thật không trả lời 3 dòng trong 1 giây. AI soạn lâu hơn thì gửi ngay khi soạn xong.
 const TYPING_MIN_MS = process.env.TYPING_MIN_MS !== undefined ? Number(process.env.TYPING_MIN_MS) : 1000;
-const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 4000;
-const TYPING_PER_CHAR_MS = process.env.TYPING_PER_CHAR_MS !== undefined ? Number(process.env.TYPING_PER_CHAR_MS) : 30;
+const TYPING_MAX_MS = process.env.TYPING_MAX_MS !== undefined ? Number(process.env.TYPING_MAX_MS) : 1000;
+const TYPING_PER_CHAR_MS = process.env.TYPING_PER_CHAR_MS !== undefined ? Number(process.env.TYPING_PER_CHAR_MS) : 0;
 const humanJitter = () => 0.85 + Math.random() * 0.3; // lệch ±15% cho khỏi đều đều như máy
 const SECOND_MIN_MS = process.env.SECOND_MIN_MS !== undefined ? Number(process.env.SECOND_MIN_MS) : 1000; // tin thứ 2 trở đi: giữ tối thiểu
-const SECOND_MAX_MS = process.env.SECOND_MAX_MS !== undefined ? Number(process.env.SECOND_MAX_MS) : 2500; // tin thứ 2 trở đi: giữ tối đa
+const SECOND_MAX_MS = process.env.SECOND_MAX_MS !== undefined ? Number(process.env.SECOND_MAX_MS) : 1000; // tin thứ 2 trở đi: giữ tối đa
 const clampMs = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 // Khách nhắn thêm trong ngần này ms sau tin bot vừa gửi → dặn AI: câu trước trả lời hơi sớm, chỉ trả lời phần mới, không hỏi lại/lặp lại.
 const FOLLOWUP_AFTER_BOT_MS = process.env.FOLLOWUP_AFTER_BOT_MS !== undefined ? Number(process.env.FOLLOWUP_AFTER_BOT_MS) : 10000;
@@ -501,7 +501,7 @@ async function processWebhookBody(body, startedAt) {
             // Tin đầu: giả gõ 1-1,5s tính từ lúc bắt đầu "đang gõ" (AI soạn lâu rồi thì gửi ngay).
             // Tin thứ 2: giả soạn ~1s; trong lúc đó khách nhắn thêm → hủy tin này, trả lời tin mới.
             const typingMs = clampMs(Math.min(TYPING_MAX_MS, TYPING_MIN_MS + messages[i].length * TYPING_PER_CHAR_MS) * humanJitter(), TYPING_MIN_MS, TYPING_MAX_MS);
-            const holdMs = SECOND_MSG_HOLD_MS !== null ? SECOND_MSG_HOLD_MS : clampMs((SECOND_MIN_MS + messages[i].length * 15) * humanJitter(), SECOND_MIN_MS, SECOND_MAX_MS);
+            const holdMs = SECOND_MSG_HOLD_MS !== null ? SECOND_MSG_HOLD_MS : clampMs((SECOND_MIN_MS + messages[i].length * 0) * humanJitter(), SECOND_MIN_MS, SECOND_MAX_MS);
             const waitRaw = i > 0 ? holdMs : Math.max(0, typingMs - (Date.now() - typingStartedAt));
             const waitMs = Math.min(waitRaw, Math.max(0, startedAt + 52000 - Date.now())); // không để hàm Vercel (60s) bị cắt giữa chừng
             await sleep(waitMs);
