@@ -338,6 +338,10 @@ async function processWebhookBody(body, startedAt) {
           continue;
         }
 
+        // Bot đang bật → báo "đã xem" NGAY (trước các khoảng chờ gom tin 6-30s và trước hàng chục lượt hỏi dữ liệu),
+        // để khách thấy page đã đọc tin. Bot tắt thì không đánh dấu, để chủ shop tự đọc.
+        const seenEarlyP = fbAction(senderId, "mark_seen", pageToken);
+
         // Khách MỚI nhắn liền mấy tin: chờ một chút cho khách gõ xong, chỉ tin CUỐI CÙNG của loạt mới đi tiếp
         // (các tin trước tự dừng) → bot chỉ trả lời 1 lần duy nhất.
         const imageOnly = fbImages.length > 0 && !text;
@@ -441,7 +445,7 @@ async function processWebhookBody(body, startedAt) {
         // (không chờ Facebook trả lời — gửi song song với lúc AI soạn, chờ xong ở ngay sau đó)
         let typingStartedAt = Date.now();
         const typingP = Promise.all([
-          fbAction(senderId, "mark_seen", pageToken),
+          seenEarlyP, // "đã xem" đã gửi từ sớm ở trên
           fbAction(senderId, "typing_on", pageToken),
         ]);
 
