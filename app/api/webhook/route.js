@@ -1,5 +1,3 @@
-import { phoneChange, resolveAddress, cleanConsultation, finishConsultation, substantiveOpening } from "@/lib/customerTurn";
-import { bodyFlagsFromInfo, bodyUpdateFromReply } from "@/lib/aiRecognized";
 // app/api/webhook/route.js
 // Next.js App Router API route — endpoint webhook cho Facebook Messenger.
 // Deploy lên Vercel cùng project Next.js hiện tại, URL webhook sẽ là:
@@ -57,11 +55,12 @@ function mentionsOrderCheck(t) {
   if (/kiểm tra (hàng|sản phẩm|trước|thoải mái)/i.test(x) && !/(đơn|thông tin|địa chỉ|sđt)[^.!?\n]{0,25}(kiểm tra|xem lại)|(kiểm tra|xem lại)[^.!?\n]{0,25}(đơn|thông tin|địa chỉ|sđt)/i.test(x)) return false;
   return ORDER_CHECK_RE.test(x);
 }
-import { softenPushyChoice, attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, minimumOrderQty, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
+import { softenPushyChoice, attributesComplete, applyItemsToStatus, productAttributes, attributeStatus, attributeTurnNote, composeVariant, progressedBy, topicsToUnblock, measuredItems, matchValues, reconcileWithReply, nextAttrToAsk, colorCount, summaryDetail, confirmItems, buildConfirmAsk, sanitizeVariant } from "@/lib/attributes";
 import { pickAddressFromTexts } from "@/lib/pickAddress";
 import { aiSaysNotAddress } from "@/lib/addressNet";
 import { buildAdviceConfirm } from "@/lib/adviceConfirm";
 import { addressInTexts, phoneInTexts } from "@/lib/contactGiven";
+import { customerTouchesInfo as touchesInfo } from "@/lib/knownInfo";
 import { fixGluedSize, fixUnitWords, removeRepeatedAsks, removeInfoAsks, recentAskedTopics, softenRepeatedInfoAsks, askedTopics, notesForbidPronouns, pronounsFrom, isWorryText, bodyInfoGiven, looksLikeAddress, looksLikeAddressStrict, isLocationOnlyText, HEIGHT_TEXT_RE as HEIGHT_RE, WEIGHT_TEXT_RE as WEIGHT_RE } from "@/lib/replyDedupe";
 import { readAskConfig, maybeRunNudge } from "@/lib/nudge";
 import { cleanReplyList } from "@/lib/replyGuard";
@@ -82,7 +81,7 @@ import { buildSystemPrompt, buildCompactSystemPrompt } from "@/lib/botPrompt";
 import { tidyAddress, tidyName } from "@/lib/textTidy";
 import { listOrders, isUnconfirmedAuto } from "@/lib/orders";
 import { syncAutoOrder } from "@/lib/autoOrder";
-import { latestOrderQty } from "@/lib/orderFacts";
+import { customerQtyHint, qtyFromReplies } from "@/lib/orderFacts";
 import { buildOrderContext, parseDeliveryDays } from "@/lib/orderContext";
 import { getTrainingForPrompt } from "@/lib/training";
 import { detectSituation, shouldClassify, classifySituation, situationNote } from "@/lib/situation";
@@ -307,11 +306,10 @@ async function processWebhookBody(body, startedAt) {
         );
         // Chạy SONG SONG (trước đây chờ lần lượt từng việc): hồ sơ khách, lưu SĐT, đọc cài đặt, kiểm tra bot của Page
         // Khách để lại số điện thoại → ghi nhớ ngay (không tốn AI)
-        const change = phoneChange(text);
-        phoneInMsg = change.phone;
+        phoneInMsg = extractPhone(text);
         const [, , settings, pageBotOn, convBotOff] = await Promise.all([
           ensureProfile(senderId, pageToken).catch((e) => console.error("Lỗi hồ sơ khách:", e.message)),
-          phoneInMsg ? mergeCustomerInfo(senderId, { phone: phoneInMsg }, { clear: ["phonePending"] }).catch(() => {}) : change.pending ? mergeCustomerInfo(senderId, {phonePending: "yes"}).catch(() => {}) : null,
+          phoneInMsg ? mergeCustomerInfo(senderId, { phone: phoneInMsg }).catch(() => {}) : null,
           getSettings(),
           isPageBotEnabled(pageId),
           isConversationBotOff(senderId).catch(() => false),
@@ -371,7 +369,7 @@ async function processWebhookBody(body, startedAt) {
         // Tin này do khách gõ TRƯỚC khi câu mở đầu gửi xong (+ chốt an toàn) → thuộc loạt tin đầu, không trả lời riêng.
         // So theo GIỜ KHÁCH GÕ (event.timestamp), không phải giờ webhook đến — Facebook hay gửi webhook trễ vài giây,
         // nên "Xin màu", "Có size k" có thể đến sau khi mở đầu đã gửi dù khách gõ từ trước.
-        if (!substantiveOpening(text) && OPENING_BURST_MS > 0 && (await isInOpeningWindow(senderId, messageId, OPENING_BURST_MS).catch(() => false))) {
+        if (OPENING_BURST_MS > 0 && (await isInOpeningWindow(senderId, messageId, OPENING_BURST_MS).catch(() => false))) {
           console.log("Tin khách gõ trong loạt tin đầu, bỏ qua:", text);
           continue;
         }
@@ -912,18 +910,29 @@ function partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySi
   return out;
 }
 
+const ADDRESS_UNIT_WORDS = new Set("phuong xa quan huyen tinh tp tx tt thon".split(" "));
+
 function verifyCustomerInfo(info, history, latestText) {
   const customerTexts = (history || []).filter((m) => m.from === "customer").map((m) => m.text || "");
   customerTexts.push(latestText || "");
   const blob = norm(customerTexts.join(" \n "));
   const blobClean = blob.replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ");
   const blobWords = new Set(blobClean.split(" ").filter(Boolean));
-
+  const digits = customerTexts.join(" ").replace(/\D/g, "");
   const out = {};
-  for (const k of ["name", "variant"]) {
+  for (const k of ["name", "phone", "address", "variant"]) {
     const v = typeof info[k] === "string" ? info[k].trim() : "";
     if (!v) continue;
-    const tokens = norm(v).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+    if (k === "phone") {
+      const d = v.replace(/\D/g, "");
+      if (d.length >= 9 && digits.includes(d.replace(/^84/, "0").replace(/^0/, ""))) out.phone = v;
+      continue;
+    }
+    // Khách chỉ nói nơi ở ("Tp Cần Thơ") để hỏi ship → chưa phải địa chỉ nhận hàng, không lưu (nếu lưu, bot tưởng đã đủ địa chỉ)
+    if (k === "address" && isLocationOnlyText(v)) continue;
+    // Bỏ dấu câu ("4,", "TP.") và bỏ chữ đơn vị hành chính (phường, xã, tp, tỉnh...) vì AI hay viết đầy đủ còn khách viết tắt ("p", "tp")
+    let tokens = norm(v).replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
+    if (k === "address") tokens = tokens.filter((tk) => !ADDRESS_UNIT_WORDS.has(tk));
     if (!tokens.length) continue;
     const hit = tokens.filter((tk) => blobWords.has(tk) || (tk.length >= 3 && blobClean.includes(tk))).length;
     if (hit / tokens.length >= 0.6) out[k] = v;
@@ -988,7 +997,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Đọc sản phẩm + lịch sử chat SONG SONG
   const [allProducts, historyRes] = await Promise.all([
     getProducts(),
-    getRecentMessages(senderId, 22).then(
+    getRecentMessages(senderId, 22, OPENING_BURST_MS).then(
       (h) => ({ ok: true, h }),
       (e) => ({ ok: false, e })
     ),
@@ -997,7 +1006,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   let history = [];
   try {
-    // Đọc cả tin đầu để giữ lựa chọn và thông tin nhận hàng.
+    // Bộ nhớ 22 tin gần nhất, nhưng bỏ các tin khách gõ trong loạt tin đầu (chỉ để kích hoạt ảnh + câu mở đầu)
     if (!historyRes.ok) throw historyRes.e;
     history = historyRes.h;
     // Lịch sử bắt đầu bằng tin của bot (câu mở đầu) → thêm 1 dòng giữ chỗ để AI biết bot đã gửi mở đầu rồi
@@ -1010,11 +1019,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   // Suy ra sản phẩm khách đang hỏi: từ câu quảng cáo/tên sản phẩm trong tin nhắn → nhớ lại cho các tin sau
   let match = matchProduct(customerMessage, products);
-  let substantive = substantiveOpening(customerMessage);
   if (firstContact) {
     // Khách mới nhắn nhiều tin: tìm sản phẩm trong CẢ loạt tin (câu quảng cáo có sẵn ưu tiên nhất)
     const pending = await getPendingCustomerMessages(senderId).catch(() => []);
-    substantive ||= pending.some(m => substantiveOpening(m.text));
     for (const m of pending) {
       const mm = m.text ? matchProduct(m.text, products) : null;
       if (mm && (!match || (mm.exact && !match.exact))) match = mm;
@@ -1033,7 +1040,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
 
   // Khách MỚI (dù nhắn 1 hay nhiều tin, nội dung gì cũng được): chỉ gửi ảnh mẫu + câu mở đầu của sản phẩm.
   // Những gì khách hỏi thêm sẽ được trả lời ở lần khách nhắn tiếp theo.
-  if (firstContact && !substantive) {
+  if (firstContact) {
     let target = match?.product || currentProduct;
     let usedDefault = false;
     if (!target && FIRST_CONTACT_DEFAULT_OPENING) {
@@ -1053,7 +1060,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
 
   // Đường tắt (không cần gọi AI): khách bấm câu hỏi quảng cáo có sẵn, hoặc hỏi giá → câu mở đầu + ảnh mẫu
-  if (!substantive && !customerImages.length && !adminHandled) {
+  if (!customerImages.length && !adminHandled) {
     const isPreset = !!match?.exact;
     const target = isPreset
       ? match.product
@@ -1085,7 +1092,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     getCustomerName(senderId).catch(() => null),
     getCustomerInfo(senderId).catch(() => ({})),
     // Các tin khách chưa được trả lời (khách nhắn liên tiếp) — dùng cho cả việc tìm tình huống giống + gom trả lời 1 lần
-    getPendingCustomerMessages(senderId).catch(() => []),
+    firstContact ? [] : getPendingCustomerMessages(senderId).catch(() => []),
     firstContact ? null : getLastOutgoingAgeMs(senderId).catch(() => null),
     askGapMs > 0 && !firstContact ? getRecentOutgoingWithAge(senderId, 15).catch(() => []) : [],
     getAllRawKeys(),
@@ -1184,23 +1191,24 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // ---- BẢNG THUỘC TÍNH của sản phẩm (Màu / Chiều dài / Size...): hệ thống TỰ đối chiếu cuộc chat xem khách đã chọn mục nào, còn thiếu mục nào ----
   const attrs = productAttributes(currentProduct);
   const attrMode = attrs.length > 0;
-  const attrCurrent = pendingMsgs.map(m => String(m.text || "")).filter(t => t.trim());
-  if (customerMessage && attrCurrent.at(-1) !== customerMessage) attrCurrent.push(customerMessage);
-  const pendingIds = new Set(pendingMsgs.map(m => m.id));
-  const bodyOptions = { body: bodyFlagsFromInfo(customerInfo) };
+  const attrCurrent = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter((t) => t.trim());
   // Tin khách ở các lượt trước đã được AI dịch lại đúng chính tả (messages.text_norm) → luật đọc bản đó (xem lib/customerRewrite.js)
-  const attrHistory = ruleRows(history.filter((m) => !(m.from === "customer" && pendingIds.has(m.id))));
+  const attrHistory = ruleRows(history.filter((m) => !(m.from === "customer" && attrCurrent.includes(String(m.text || "")))));
   // Các tin MỚI của khách lượt này: dặn AI viết lại đúng chính tả (trường khach_viet_lai) — id để lưu lại bản đã dịch
   const rewriteTargets = (pendingMsgs || []).map((m) => ({ id: m?.id ?? null, text: String(typeof m === "string" ? m : m?.text || "") })).filter((t) => t.text.trim());
   if (!rewriteTargets.length && String(customerMessage || "").trim()) rewriteTargets.push({ id: null, text: String(customerMessage) });
   const rewriteNote = rewriteTurnNote(rewriteTargets.map((t) => t.text));
-  const qtyHintNow = latestOrderQty([...attrHistory, ...attrCurrent.map(text => ({from:"customer", text}))], currentProduct);
   const attrBefore = attrMode ? attributeStatus(attrs, attrHistory, [], customerInfo?.variant) : null;
-  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant, bodyOptions) : null;
+  const attrNow = attrMode ? attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant) : null;
   // Khách đang CÂN NHẮC / lo lắng chuyện khác ("để mình hỏi chồng đã", "lăn tăn chất lượng"...) → không ép chốt, không xin SĐT/địa chỉ
   const hesitateNow = analyzeHesitation(attrCurrent);
   if (hesitateNow.hesitating) console.log("Khách đang cân nhắc/lo lắng (" + hesitateNow.kind + "):", hesitateNow.quote);
-  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow, { hold: hesitateNow.hesitating }) : "";
+  // Khách ĐÃ có đủ SĐT + địa chỉ (đã lưu từ trước hoặc vừa gõ trong tin này) → dặn AI KHÔNG xin lại
+  const haveContactNow = !!(
+    (String(customerInfo?.phone || "").trim() || phoneInTexts(attrCurrent)) &&
+    (String(customerInfo?.address || "").trim() || addressInTexts(attrCurrent, ""))
+  );
+  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow, { hold: hesitateNow.hesitating, haveContact: haveContactNow }) : "";
   if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}${x.undecided?.length ? "(đang phân vân: " + x.undecided.join("/") + ")" : ""}`).join(" | "));
 
   // BẢNG GIÁ MẶC CẢ: sản phẩm có bảng → HỆ THỐNG tính giá của lượt này (đồng ý / hạ nấc / giữ), bot chỉ nói đúng con số hệ thống đưa
@@ -1213,8 +1221,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         customerNow: attrCurrent,
         customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
         lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
-        confirmedQty: qtyHintNow,
-        minQty: attrMode ? minimumOrderQty(attrNow, qtyHintNow) : 0,
+        minQty: Math.max(attrMode ? colorCount(attrNow) : 0, qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]) || 0),
       });
     } catch (e) {
       console.error("Lỗi tính bảng giá mặc cả:", e.message);
@@ -1224,6 +1231,9 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const priceNote = ladderCtx ? priceTurnNote(ladderCtx) : "";
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   // Số lượng khách tự nói ("lấy 2 cái") — dùng khi sản phẩm không có bảng giá mặc cả, để tin báo đơn không mặc định 1 cái
+  const qtyHintNow =
+    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()), currentProduct) ||
+    qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]);
   let sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
   const custTextNewest = () =>
@@ -1385,12 +1395,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // AI viết lại tin khách đúng chính tả / đúng dạng hệ thống hiểu ("M61" → "cao 1m61", "5ok" → "nặng 50kg"). Hệ thống kiểm tra (không cho bịa số),
   // lưu vào messages.text_norm (nhắn bồi, tạo đơn... đọc từ đó) rồi tính lại trạng thái bằng bản đúng chính tả → không hỏi lại điều khách đã nói.
   let attrCurrentRule = attrCurrent;
-  const bodyUpdate = bodyUpdateFromReply({ khachDaCho: parsed?.khach_da_cho, customerTexts: attrCurrent, savedInfo: customerInfo });
-  if (bodyUpdate) {
-    await mergeCustomerInfo(senderId, {body: bodyUpdate});
-    bodyOptions.body = bodyFlagsFromInfo({body:bodyUpdate});
-    if (attrMode) Object.assign(attrNow, attributeStatus(attrs, attrHistory, attrCurrent, customerInfo?.variant, bodyOptions));
-  }
   let rewrites = [];
   try {
     rewrites = pickRewrites(parsed, rewriteTargets);
@@ -1399,7 +1403,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       await Promise.all(rewrites.filter((r) => r.id).map((r) => setMessageNorm(r.id, r.norm).catch((e) => console.error("Lỗi lưu bản dịch chính tả (bỏ qua):", e.message))));
       attrCurrentRule = applyRewritesToTexts(attrCurrent, rewrites, rewriteTargets);
       if (attrMode && attrNow) {
-        Object.assign(attrNow, attributeStatus(attrs, attrHistory, attrCurrentRule, customerInfo?.variant, bodyOptions));
+        Object.assign(attrNow, attributeStatus(attrs, attrHistory, attrCurrentRule, customerInfo?.variant));
         console.log("---- Thuộc tính (sau khi dịch lại chính tả):", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}`).join(" | "));
       } else {
         // Sản phẩm không có bảng thuộc tính: chỉ cần bỏ câu xin lại chiều cao / cân nặng khách đã đưa
@@ -1445,7 +1449,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let reading = null;
   if (attrMode && attrNow) {
     try {
-      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...attrCurrentRule];
+      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrentRule].reverse()];
       // Khách đã chốt danh sách món ở lượt trước và không nhắn gì đổi → vẫn dùng (AI lượt này thường không ghi lại)
       let statusChanged = false;
       let aiRaw = Array.isArray(parsed?.order_items) ? parsed.order_items : null;
@@ -1475,7 +1479,6 @@ async function generateReply(senderId, customerMessage, customerImages, settings
               customerNow: attrCurrent,
               customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
               lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
-              confirmedQty: qtyHintNow,
               minQty: colorCount(attrNow),
             });
           } catch (e) {
@@ -1487,7 +1490,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         console.log(`Đọc đơn [${reading.verdict}]`, reading.notes.join("; "));
       }
       // Lưu danh sách món (nhiều món) để các lượt sau + đơn lưu dùng đúng; đổi sang 1 món thì xóa
-      if (attrNow.itemsRaw?.length >= 2) await saveItems(senderId, attrs, attrNow.itemsRaw, attrCurrent.at(-1) || customerMessage);
+      if (attrNow.itemsRaw?.length >= 2) await saveItems(senderId, attrs, attrNow.itemsRaw, attrCurrent[0] || customerMessage);
       else if (reading.verdict === "agree" || reading.verdict === "ai_filled" || reading.verdict === "conflict") await saveItems(senderId, attrs, null, "");
       // Nhật ký + báo chủ shop khi mâu thuẫn
       if (reading.verdict !== "none") {
@@ -1505,16 +1508,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   if (deferNow.defer) console.log("Khách hẹn gửi sau → không xin thông tin:", [...deferNow.topics].join(", "), "|", String(customerMessage || "").slice(0, 80));
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
   let verified = null;
-  const reported = parsed?.customer_info || {};
-  const address = resolveAddress(attrCurrent, String(reported.address || ""));
-  if (address || parsed?.customer_info) {
-    verified = verifyCustomerInfo(reported, history, customerMessage);
-    if (address) verified.address = address;
-    else delete verified.address;
+  if (parsed?.customer_info && typeof parsed.customer_info === "object") {
+    verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
     // Câu hẹn gửi sau không phải địa chỉ: bỏ địa chỉ AI tự điền nếu phần còn lại của tin không có địa chỉ thật
     if (deferNow.defer && deferNow.topics.has("dia chi") && !deferNow.rest.some((t) => looksLikeAddressStrict(t))) {
       delete verified.address;
-      if (parsed) parsed.customer_info = { ...reported, address: "" };
+      parsed.customer_info = { ...parsed.customer_info, address: "" };
     }
     // Sản phẩm có bảng thuộc tính: màu/size/chiều dài do HỆ THỐNG ghép từ lựa chọn đã xác nhận, KHÔNG nhận chữ AI tự ghi (AI từng ghi cả chiều dài không có như 70cm)
     if (attrMode) delete verified.variant;
@@ -1533,7 +1532,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       await mergeCustomerInfo(senderId, { variant: composed }, { clear: ["variant"] }).catch((e) => console.error("Không lưu được lựa chọn của khách:", e.message));
     } else if (!composed && savedVariant) {
       // Chưa có lựa chọn nào được xác nhận mà trong thông tin đã lưu vẫn còn giá trị lạ → chỉ giữ phần hợp lệ
-      const clean = attrNow.refusals?.length ? "" : sanitizeVariant(attrs, savedVariant);
+      const clean = sanitizeVariant(attrs, savedVariant);
       if (clean !== savedVariant) {
         await mergeCustomerInfo(senderId, clean ? { variant: clean } : {}, { clear: ["variant"] }).catch((e) => console.error("Không làm sạch được lựa chọn đã lưu:", e.message));
         verified = { ...(verified || {}), variant: clean };
@@ -1567,17 +1566,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   const mergedInfo = { ...(customerInfo || {}), ...Object.fromEntries(Object.entries(verified || {}).filter(([, v]) => String(v || "").trim())) };
   // Khách VỪA gửi SĐT/địa chỉ ở lượt này → chuỗi chốt đơn thay hẳn câu nháp của AI
-  const changeNow = phoneChange(customerMessage);
-  if (customerInfo?.phonePending || (changeNow.partial && !String(mergedInfo.phone || "").replace(/^\+?84/, "0").startsWith(changeNow.partial))) {
-    if (!customerInfo?.phonePending) await mergeCustomerInfo(senderId, {phonePending:"yes"});
-    return { messages:["Mình gửi shop số điện thoại nhận hàng đầy đủ nhé ạ?"], images:[], skipAskClean:true };
-  }
   const replaceDraft = !!(verified && (String(verified.phone || "").trim() || String(verified.address || "").trim()));
-  const currentTexts = attrCurrent;
+  const currentTexts = [String(customerMessage || ""), ...(pendingMsgs || []).map((m) => (typeof m === "string" ? m : m?.text || ""))].filter(Boolean);
   // Có bảng thuộc tính: cặp chiều cao + cân nặng chỉ áp dụng khi mục "cặp" CHƯA chọn (khách đã nói "sz L" thì không hỏi nữa)
   const bodySizedNow = attrMode ? attrNow.list.some((x) => x.attr.kind === "pair" && x.state === "missing") : isBodySizedProduct(currentProduct);
   // Thông tin shop ĐÃ CÓ (SĐT, địa chỉ, tên) → câu bot xin lại đúng thông tin đó bị bỏ. Trừ khi khách đang nói về chính thông tin đó/đổi thông tin.
-  const knownTopics = [
+  // Khách đang ĐƯA SĐT/địa chỉ (có số/địa chỉ thật trong tin) thì không phải đang đổi thông tin → vẫn bỏ câu xin lại (xem lib/knownInfo.js)
+  const customerTouchesInfo = touchesInfo(currentTexts, { givingContact: phoneInTexts(currentTexts) || addressInTexts(currentTexts, verified?.address) });
+  const knownTopics = customerTouchesInfo
+    ? []
+    : [
         String(mergedInfo.phone || "").trim() && "so dien thoai",
         String(mergedInfo.address || "").trim() && "dia chi",
         // Đã có SĐT + địa chỉ thì không xin họ tên (đơn không cần), trừ khi chủ shop ghi rõ trong "Thông tin shop" là cần tên người nhận
@@ -1600,17 +1598,12 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const botAskedInfo = /địa chỉ|số điện thoại|sđt|so dien thoai|dia chi/i.test(String(lastBotText));
   const mustReplyOrderInfo = phoneNow && botAskedInfo;
   // Bảng giá: đã đủ SĐT + địa chỉ (và chọn đủ phân loại) → HỆ THỐNG ghép tin tóm tắt đơn đúng giá, bot không tự viết lại
-  const piecesTotal = sumDetail?.colors?.length > 1 ? sumDetail.colors.reduce((n,c) => n + c.qty, 0) : 0;
-  if (piecesTotal && qtyHintNow && piecesTotal !== qtyHintNow) {
-    return {messages:[`Mình muốn lấy tổng ${qtyHintNow} cái hay ${piecesTotal} cái theo các màu đã chọn ạ?`], images:[], skipAskClean:true};
-  }
-  const orderReady = Boolean(mergedInfo.phone && mergedInfo.address) &&
-    (attrMode ? attributesComplete(attrNow) : !productNeedsVariant(currentProduct) || Boolean(mergedInfo.variant));
-  const basicReady = !ladderCtx?.dealTotal && (botAskedInfo || attrMode) && orderReady;
   let ladderReady = false;
   let ladderSummary = "";
   if (ladderCtx) {
-    ladderReady = orderReady;
+    ladderReady =
+      !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()) &&
+      (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
     if (ladderReady) {
       const tone = ladderTone(messages);
       const t = buildSummaryText({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: tone.kh, tu: tone.tu, detail: sumDetail, hintQty: qtyHintNow });
@@ -1618,13 +1611,13 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     }
   }
   const orderInfoReply = () => {
-    const hasAddr = !!mergedInfo.address;
+    const hasAddr = !!(customerInfo?.address || parsed?.customer_info?.address);
     const neutral = notesForbidPronouns(currentProduct?.notes);
-    if (!hasAddr) return neutral ? "Shop xin địa chỉ nhận hàng nữa ạ?" : "Dạ mình cho shop xin địa chỉ nhận hàng nữa nhé ạ?";
-    return neutral ? "Shop đã nhận được thông tin, sẽ lên đơn và báo lại ạ." : "Dạ shop đã nhận được thông tin, sẽ lên đơn và báo lại mình nhé ạ.";
+    if (!hasAddr) return neutral ? "Shop xin địa chỉ nhận hàng nữa ạ?" : "Dạ mình cho shop xin địa chỉ nhận hàng nữa nhé?";
+    return neutral ? "Shop đã nhận được thông tin, sẽ lên đơn và báo lại ạ." : "Dạ shop đã nhận được thông tin, sẽ lên đơn và báo lại mình nhé.";
   };
   // AI thấy tin khách chỉ lặp lại/xác nhận thông tin shop vừa chốt → không trả lời thêm (tránh "dạ em ghi nhận màu đen" lần nữa)
-  if (!basicReady && !mustReplyOrderInfo && !ladderSummary && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
+  if (!mustReplyOrderInfo && !ladderSummary && parsed?.no_reply === true && !messages.length && !parsed?.send_images && !parsed?.use_opening_product) {
     console.log("AI quyết định không trả lời (tin khách chỉ lặp lại thông tin đã chốt):", customerMessage);
     return { skip: true, deliberate: true };
   }
@@ -1641,7 +1634,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
 
   // Model muốn dùng câu mở đầu quảng cáo (khách hỏi tương tự "giá bao nhiêu")
-  if (parsed?.use_opening_product && !substantive) {
+  if (parsed?.use_opening_product) {
     const p = products.find((x) => String(x.id) === String(parsed.use_opening_product));
     if (!adminHandled && p && (p.openingScript || "").trim() && !openingAlreadySent(history, p)) return openingReply(p);
   }
@@ -1849,29 +1842,44 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       return ordered;
     };
     messages = keepCustomerOrder(messages);
-    // Chờ khách chọn theo tư vấn trước khi xin liên hệ.
+    // Các mục khác đã đủ + chưa có SĐT → sau khi tư vấn xong phải xin SĐT + địa chỉ NGAY trong lượt này (không chờ khách nhắn tiếp)
+    const askContact = !nextAttrToAsk(attrNow) && !String(mergedInfo?.phone || "").trim() && !deferNow.defer && !hesitateNow.hesitating;
     if (lacking.length) {
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
-      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, false, groqPrompt, customerSeq);
+      const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt, customerSeq);
       const redoText = redo.join(" ");
       if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = keepCustomerOrder(redo);
       else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
+    }
+    // CHỐT CHẶN: đã tư vấn xong giá trị cuối mà tin trả lời chưa xin SĐT/địa chỉ → tự thêm câu xin
+    if (askContact && due.length && messages.length) {
+      const asked = askedTopics(messages.join(" "));
+      if (!asked.has("so dien thoai") && !asked.has("dia chi")) {
+        const pr = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+        const neutralNow = notesForbidPronouns(currentProduct?.notes);
+        const ask = neutralNow
+          ? "Shop xin số điện thoại và địa chỉ nhận hàng để lên đơn nha."
+          : `${pr.kh.charAt(0).toUpperCase() + pr.kh.slice(1)} cho ${pr.tu} xin số điện thoại và địa chỉ nhận hàng để ${pr.tu} lên đơn nha?`;
+        console.log("Đã tư vấn xong nhưng chưa xin SĐT/địa chỉ → thêm câu xin:", ask);
+        if (messages.length >= 2) messages = [...messages.slice(0, -1), `${String(messages[messages.length - 1]).replace(/\s+$/, "")} ${ask}`];
+        else messages = [...messages, ask];
+      }
     }
   }
 
   if (ladderCtx && ladderSummary && !messages.length && !images.length) {
     const tone = ladderTone([]);
     const fin = finalizePriceReply({ product: currentProduct, ctx: ladderCtx, messages: [], info: mergedInfo, ready: true, sentBefore: ladderOutgoing.map((m) => m.text), kh: tone.kh, tu: tone.tu , detail: sumDetail, deliveryDays: dDays, replaceDraft, hintQty: qtyHintNow })
-    return { messages: fin.messages, systemOrder: true, images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
+    return { messages: fin.messages, images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
-  if (!basicReady && !messages.length && !images.length && mustReplyOrderInfo) {
+  if (!messages.length && !images.length && mustReplyOrderInfo) {
     return { messages: [orderInfoReply()], images: [], imageItems: [], imageNote: "", hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: true, unblockTopics };
   }
-  if (!messages.length && !basicReady) {
+  if (!messages.length) {
     // Model chỉ yêu cầu gửi ảnh mà quên viết câu dẫn → tự thêm 1 câu ngắn
     if (images.length) {
       // Sản phẩm có "Lưu ý của chủ shop" → câu dẫn không xưng hô anh/chị để không lệch với lưu ý
-      messages = [String(currentProduct?.notes || "").trim() ? "Shop gửi ảnh để xem thử nhé ạ." : "Dạ shop gửi mình xem ảnh nhé ạ."];
+      messages = [String(currentProduct?.notes || "").trim() ? "Shop gửi ảnh để xem thử nhé." : "Dạ shop gửi mình xem ảnh nhé."];
     }
     else {
       // Trường hợp hay gặp: khách hỏi kiểu "giảm k", model đặt use_opening_product + messages rỗng,
@@ -1889,16 +1897,21 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   // Sản phẩm KHÔNG có bảng giá mặc cả (hoặc chưa tính được giá): khách vừa gửi nốt SĐT/địa chỉ → HỆ THỐNG tự gửi tóm tắt đơn (không tin vào việc AI tự tóm tắt)
   let basicSent = false;
-  if (basicReady && !images.length) {
-    const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
-    const botTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
-    const orderB = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true, detail: sumDetail, sentBefore: botTexts, deliveryDays: dDays, hintQty: qtyHintNow });
-    // Đơn chỉ khác chút xíu, khách không đưa SĐT/địa chỉ mới và AI đã có câu trả lời thật → giữ câu của AI, không chèn tin mẫu "cập nhật đơn"
-    const keepAiReplyB = !!(orderB && orderB.ackOnly && !replaceDraft && (messages || []).length);
-    if (orderB && !keepAiReplyB && !summarySentBefore(orderB.block, botTexts)) {
-      console.log("Đủ thông tin đơn → hệ thống gửi chuỗi chốt đơn (không có bảng giá).");
-      messages = orderB.specChanged && !replaceDraft && (messages || []).length ? [messages[0], ...orderB.messages] : orderB.messages;
-      basicSent = true;
+  if (!ladderCtx?.dealTotal && botAskedInfo && !images.length) {
+    const readyBasic =
+      !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()) &&
+      (attrMode ? attrNow.list.every((x) => x.state === "chosen") : !productNeedsVariant(currentProduct) || !!String(mergedInfo.variant || "").trim());
+    if (readyBasic) {
+      const toneB = pronounsFrom((history || []).filter((m) => m.from !== "customer").slice(-8).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
+      const botTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
+      const orderB = buildOrderMessages({ product: currentProduct, ctx: ladderCtx, info: mergedInfo, kh: toneB.kh, tu: toneB.tu, noPrice: true, detail: sumDetail, sentBefore: botTexts, deliveryDays: dDays, hintQty: qtyHintNow });
+      // Đơn chỉ khác chút xíu, khách không đưa SĐT/địa chỉ mới và AI đã có câu trả lời thật → giữ câu của AI, không chèn tin mẫu "cập nhật đơn"
+      const keepAiReplyB = !!(orderB && orderB.ackOnly && !replaceDraft && (messages || []).length);
+      if (orderB && !keepAiReplyB && !summarySentBefore(orderB.block, botTexts)) {
+        console.log("Đủ thông tin đơn → hệ thống gửi chuỗi chốt đơn (không có bảng giá).");
+        messages = orderB.specChanged && !replaceDraft && (messages || []).length ? [messages[0], ...orderB.messages] : orderB.messages;
+        basicSent = true;
+      }
     }
   }
   let ladderSent = false;
@@ -1921,7 +1934,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     // Còn thiếu màu / size / chiều dài (chưa chốt) thì KHÔNG tự ghép tin báo đơn khi khách vừa gửi SĐT/địa chỉ — để AI tư vấn/hỏi nốt phần thiếu trước
     const attrsOk = !attrMode || attributesComplete(attrNow);
     if (!attrsOk && !hasBlock && haveContact && gaveContactNow && !saysCheck && !custAskCheck) console.log("Còn thiếu thuộc tính chưa chốt → không tự ghép tin báo đơn:", attrNow.list.filter((x) => x.state !== "chosen").map((x) => `${x.attr.name}:${x.state}`).join(", "));
-    if (attrsOk && haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || gaveContactNow)) {
+    if (haveContact && !hasBlock && !images.length && (saysCheck || custAskCheck || (gaveContactNow && attrsOk))) {
       const tone = ladderTone(messages);
       const sentTexts = (history || []).filter((m) => m.from !== "customer").map((m) => m.text || "");
       const askedCheck = saysCheck || custAskCheck;
@@ -1960,7 +1973,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     messages = dropAsksForDeferred(messages, deferNow.topics);
     if (!messages.length) {
       const trD = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
-      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, khi nào tiện mình gửi shop nhé ạ." : `Dạ vâng ạ, khi nào tiện ${trD.kh} gửi ${trD.tu} nhé ạ.`];
+      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, khi nào tiện mình gửi shop nhé." : `Dạ vâng ạ, khi nào tiện ${trD.kh} gửi ${trD.tu} nhé.`];
     }
     if (before.join("|") !== messages.join("|")) console.log("Khách hẹn gửi sau → bỏ câu xin thông tin:", before.join(" | "), "→", messages.join(" | "));
   }
@@ -1971,7 +1984,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     messages = dropPushyClose(messages).messages;
     if (!messages.length) {
       const trH = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
-      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, mình cứ thong thả cân nhắc, cần shop tư vấn thêm thì nhắn shop nhé ạ." : `Dạ vâng ạ, ${trH.kh} cứ thong thả cân nhắc, cần ${trH.tu} tư vấn thêm thì nhắn ${trH.tu} nhé ạ.`];
+      messages = [notesForbidPronouns(currentProduct?.notes) ? "Dạ vâng ạ, mình cứ thong thả cân nhắc, cần shop tư vấn thêm thì nhắn shop nhé." : `Dạ vâng ạ, ${trH.kh} cứ thong thả cân nhắc, cần ${trH.tu} tư vấn thêm thì nhắn ${trH.tu} nhé.`];
     }
     if (before.join("|") !== messages.join("|")) console.log("Khách đang cân nhắc → bỏ câu xin thông tin/ép chốt:", before.join(" | "), "→", messages.join(" | "));
   }
@@ -1987,44 +2000,23 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   }
   // CHỐT CHẶN: khách đã đủ SĐT + địa chỉ, AI vừa tư vấn nốt chiều dài/size theo số đo nhưng không còn câu hỏi nào → thêm 1 câu xin chốt để đơn không đứng yên
   let adviceConfirmAdded = false;
-  if (!forcedSummary && !ladderSent && !basicSent) {
-    messages = cleanConsultation(messages, mergedInfo);
-    if (attrMode && !attributesComplete(attrNow)) {
-      messages = messages.map(m => removeInfoAsks(m, new Set(["so dien thoai","dia chi"]))).filter(m => m && !looksLikeOrderBlock(m));
-    }
-  }
-  if (attrMode && !forcedSummary && !ladderSent && !basicSent && !images.length && !deferNow.defer && !hesitateNow.hesitating) {
-    const trA = ladderTone(messages);
+  if (attrMode && !forcedSummary && !ladderSent && !basicSent && !images.length && (messages || []).length && !deferNow.defer && !hesitateNow.hesitating) {
+    const trA = pronounsFrom(history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || "").reverse().join("\n"), custTextNewest());
     const conf = buildAdviceConfirm({
       status: attrNow,
       messages,
-      haveContact: Boolean(mergedInfo.phone && mergedInfo.address),
-      confirmBeforeContact: true,
+      haveContact: !!(String(mergedInfo.phone || "").trim() && String(mergedInfo.address || "").trim()),
       kh: trA.kh,
       tu: trA.tu,
       neutral: notesForbidPronouns(currentProduct?.notes),
       recentBotTexts: history.filter((m) => m.from !== "customer").slice(-6).map((m) => m.text || ""),
     });
-    if (conf && !/[?]|\b(?:bao lau|bao nhieu|co .+ khong|may ngay)\b/.test(norm(customerMessage))) {
+    if (conf) {
       console.log("Khách đã đủ SĐT/địa chỉ, AI vừa tư vấn nốt mà không còn câu hỏi → thêm câu xin chốt:", conf);
       messages = [...messages, conf];
       adviceConfirmAdded = true;
     }
   }
-  if (!forcedSummary && !ladderSent && !basicSent && !deferNow.defer && !hesitateNow.hesitating && !images.length) {
-    const proposed = attrNow?.list.filter(x => x.state === "proposed") || [];
-    if (changeNow.partial && mergedInfo.phone && proposed.length) {
-      messages = [`Shop đã có số điện thoại nhận hàng của mình rồi ạ. Mình lấy ${proposed.map(x => x.attr.name.toLowerCase() + " " + x.picked.join(" / ")).join(" và ")} nhé ạ?`];
-    } else if (attrMode && attributesComplete(attrNow) && !messages.some(m => askedTopics(m).size) && (!mergedInfo.phone || !mergedInfo.address)) {
-      const wanted = [!mergedInfo.phone && "số điện thoại", !mergedInfo.address && "địa chỉ nhận hàng"].filter(Boolean).join(" và ");
-      if (!messages.some(m => m.includes("?")) && !customerMessage.includes("?")) messages.push(`Mình cho shop xin ${wanted} nhé ạ?`);
-    }
-  }
-  if (!forcedSummary && !ladderSent && !basicSent) {
-    const tone = ladderTone(messages);
-    messages = finishConsultation(messages, customerMessage, {apparel: isApparelProduct(currentProduct), kh:tone.kh, tu:tone.tu});
-  }
-  if (!messages.length && !images.length) messages = ["Dạ shop đã ghi nhận thông tin của mình ạ."];
   return { messages, images, imageItems, imageNote, hasNotes: notesForbidPronouns(currentProduct?.notes), skipAskClean: deferNow.defer || ladderSent || basicSent || forcedSummary || contactAskAdded || adviceConfirmAdded || !!(parsed?.customer_info && (String(parsed.customer_info.phone || "").trim() || String(parsed.customer_info.address || "").trim())), unblockTopics, knownTopics, systemOrder: ladderSent || basicSent || forcedSummary };
 }
 

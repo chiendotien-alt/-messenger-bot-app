@@ -1,7 +1,7 @@
 # Lịch sử sửa lỗi: bot lên đơn thiếu size (messenger-bot-app)
 
 > Tài liệu để giao cho AI/dev khác đọc nhanh, khỏi phải đọc lại toàn bộ cuộc trò chuyện.
-> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026; mục 29, 30, 31 ngày 07/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
+> Ngày ghi: 27/10/2026 (cập nhật thêm mục 10, 11 và 12 cùng ngày; mục 13 thêm ngày 28/10/2026; mục 14 ngày 31/10/2026; mục 15 ngày 01/11/2026; mục 16 ngày 02/11/2026; mục 17 ngày 02/11/2026; mục 18 ngày 02/11/2026; mục 19 ngày 02/11/2026; mục 20 ngày 03/11/2026; mục 21 ngày 03/11/2026; mục 22 ngày 04/11/2026; mục 23 ngày 04/11/2026; mục 24 ngày 06/11/2026; mục 28 ngày 07/11/2026; mục 29, 30, 31 ngày 07/11/2026; mục 35, 36 ngày 23/11/2026). Bản zip tương ứng: bản zip dự án đầy đủ (file này nằm trong `docs/`).
 
 ## 1. Bối cảnh dự án
 
@@ -500,3 +500,28 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/packSafety.test.mjs` (9 test: địa chỉ Ba Vì và chữ vì/vị, các cách nói số vỉ thật không bị siết quá tay, tin vừa có số lượng vừa có địa chỉ, không ghép đơn khi mơ hồ, cờ `qty_ambiguous`, gỡ mơ hồ bằng câu trả lời ngắn, sản phẩm thường không đổi, nhãn đơn vị).
 - Chạy toàn bộ: 487 đạt, 16 lỗi sẵn có từ bản zip gốc (cùng danh sách trước khi sửa; do sandbox thiếu thư viện `@neondatabase/serverless`, `@vercel/blob` và vài test key trả phí Gemini).
 - Cách kiểm tra sau khi sửa (Vercel): khách nhắn "cho 7 viên" rồi đưa SĐT + địa chỉ → bot hỏi "1 vỉ hay 2 vỉ", chưa có tin "Em lên đơn ạ"; khách đáp "2" / "2 vỉ" → tin chốt đơn ghi "SL:2 vỉ (10 viên)". Địa chỉ có "Ba Vì" không làm đổi số lượng.
+
+## 35. Khách đã đưa đủ SĐT + địa chỉ mà bot vẫn xin lại SĐT + địa chỉ (23/11/2026)
+
+- Chat thật: khách nhắn 1 tin có đủ màu, cân nặng, chiều cao, SĐT và địa chỉ (`Màu trắng nặng 55ki cao 1m 55 sđt 0919944458 tỉnh vĩnh long...`). Bot trả 3 tin: (1) tư vấn size L, dài 85cm; (2) **"Chị cho em xin số điện thoại và địa chỉ nhận hàng để em lên đơn ạ." (thừa)**; (3) "Vậy em lên đơn size L và chiều dài váy 85cm cho chị nha?". Tin (2) làm khách gõ lại "sdt 091994".
+- Nguyên nhân (2 lớp):
+  1. `attributeTurnNote` (`lib/attributes.js`) dặn AI vô điều kiện: khách vừa đưa số đo và các mục khác đã đủ thì "gửi THÊM 1 tin xin SĐT và địa chỉ", không kiểm tra khách đã đưa chưa. Gemini làm đúng lời dặn.
+  2. Bộ lọc "bỏ câu xin lại thông tin đã có" (`knownTopics` trong `route.js`) bị TẮT vì biến `customerTouchesInfo` coi tin có chữ "sđt" / "địa chỉ" là khách đang đổi thông tin. Ở đây khách đang ĐƯA thông tin. Tin (2) kết thúc bằng "ạ." (không có "?") nên `buildAdviceConfirm` cũng không coi nó là câu hỏi và vẫn thêm tin (3).
+- Đã sửa:
+  - `lib/attributes.js`: `attributeTurnNote` nhận thêm `opts.haveContact`. Khách đã có đủ SĐT + địa chỉ thì dặn AI "KHÔNG xin lại", chưa có thì giữ lời dặn cũ.
+  - `app/api/webhook/route.js`: tính `haveContactNow` (đã lưu từ trước hoặc vừa gõ trong tin này, dùng `phoneInTexts` / `addressInTexts`) và truyền vào `attributeTurnNote`.
+  - `lib/knownInfo.js` (file mới): `customerTouchesInfo(texts, { givingContact })`. Có từ đổi/sửa (đổi, mới, khác, sai, nhầm, sửa, thay) thì vẫn tắt bộ lọc như cũ. Chỉ nhắc chữ "sđt/địa chỉ" mà KHÔNG kèm SĐT/địa chỉ thật (vd "địa chỉ shop ở đâu") thì vẫn tắt. Nhắc chữ KÈM SĐT/địa chỉ thật (đang đưa thông tin) thì KHÔNG tắt. `route.js` dùng hàm này thay cho regex cũ.
+- Test: `tests/noReAskContact.test.mjs` (8 test): tin thật của khách, ca đổi/hỏi thông tin vẫn tắt bộ lọc, câu xin lại trong log bị bỏ, lời dặn AI theo `haveContact`, kết quả cuối còn 2 tin.
+
+## 36. Bot hay kết câu "nhé ạ", "nha ạ" nghe không giống người chat (23/11/2026)
+
+- Nguyên nhân:
+  1. Prompt (`lib/botPrompt.js`) tự khuyên "muốn lịch sự thì dùng nhé ạ", và có câu mẫu "dạ vâng ạ, khi nào tiện chị gửi em nhé ạ"; `lib/nudge.js` cũng có mẫu "cho mình nhé ạ?". Gemini bắt chước.
+  2. Bộ sửa chữ `fixUnitWords` (`lib/replyDedupe.js`) chỉ bỏ "nha ạ", cố ý giữ "nhé ạ".
+  3. Các câu cứng do code tự viết (hẹn gửi sau, khách cân nhắc, đã nhận thông tin, gửi ảnh, xin địa chỉ, xin chốt đơn) kết bằng "nhé ạ" / "nha ạ".
+- Đã sửa:
+  - `lib/botPrompt.js`: luật mới "TUYỆT ĐỐI không viết nha ạ / nhé ạ / nhe ạ; cuối câu chỉ dùng nha hoặc nhé; muốn lịch sự thì dùng dạ ở đầu câu hoặc ạ đứng riêng". Sửa luôn các câu mẫu. Dòng luật ở bước xin chiều cao cân nặng cũng cấm cả "nha ạ".
+  - `lib/replyDedupe.js` (`fixUnitWords`, chạy lúc gửi tin cho mọi đường gửi của bot): "nha / nhá / nhé / nhe + ạ" thành chỉ còn "nha / nhé...". "Dạ vâng ạ", "em nhận được rồi ạ", "nha, chị ạ" giữ nguyên.
+  - Câu cứng trong `route.js`, `lib/nudge.js`, `lib/adviceConfirm.js`, `lib/attributes.js`, `lib/contactAsk.js`, `lib/laterStop.js` (chú thích): bỏ chữ "ạ" thừa. Test `contactAsk.test.mjs` cập nhật theo.
+- Không đổi: tin cũ trong lịch sử chat có "nhé ạ" vẫn được nhận diện bình thường (các test dùng "nhé ạ" làm dữ liệu vào vẫn đạt).
+- Chạy toàn bộ: 495 đạt, 16 lỗi sẵn có (cùng danh sách trước khi sửa, do sandbox thiếu thư viện và các lỗi nền từ trước). Không có lỗi mới.
