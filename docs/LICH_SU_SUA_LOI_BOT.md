@@ -525,3 +525,42 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
   - Câu cứng trong `route.js`, `lib/nudge.js`, `lib/adviceConfirm.js`, `lib/attributes.js`, `lib/contactAsk.js`, `lib/laterStop.js` (chú thích): bỏ chữ "ạ" thừa. Test `contactAsk.test.mjs` cập nhật theo.
 - Không đổi: tin cũ trong lịch sử chat có "nhé ạ" vẫn được nhận diện bình thường (các test dùng "nhé ạ" làm dữ liệu vào vẫn đạt).
 - Chạy toàn bộ: 495 đạt, 16 lỗi sẵn có (cùng danh sách trước khi sửa, do sandbox thiếu thư viện và các lỗi nền từ trước). Không có lỗi mới.
+
+## 37. Khách 59kg mà bot tư vấn size 2XL (25/11/2026)
+
+- Hiện tượng (sản phẩm "Chân váy 3 tầng"): khách nhắn "Cao 145 nặng 59", bot trả lời "mặc size 2XL, dài 75cm". Bảng của chủ shop ghi L: 54–60kg, 2XL: 68–75kg nên đúng phải là size L. Khách cãi "chị chưa nặng tới 60 mà" bot mới đổi sang L.
+- Nguyên nhân: không có đoạn code nào đổi cân nặng thành size. Cả dòng chữ "S: 37-46kg M:47–53kg L: 54–60kg ..." được đưa cho AI tự so số, mà AI chạy nhanh (log "suy nghĩ 0") nên so nhầm. Code chỉ kiểm tra size AI nói có nằm trong danh sách (S, M, L, XL, 2XL) hay không, không kiểm tra có hợp cân nặng không.
+- Đã sửa:
+  - `lib/sizeByWeight.js` (file mới): đọc các khoảng kg trong ô "Cách chọn" (`weightRanges`), lấy cân nặng khách nói gần nhất (`weightFromMessages`, đọc được "nặng 59", "59kg", "53" trả lời trơn), tính size đúng (`sizeForWeight`).
+  - `app/api/webhook/route.js`: trước khi gọi AI dặn thẳng "khách nặng 59kg → Size = L" (`sizeAdviceNote`); sau khi AI trả lời, nếu AI nói MỘT size khác bảng thì tự đổi lại thành size đúng trước khi gửi (`fixSizeByWeight`, chạy cả sau lần AI viết lại).
+  - `lib/botPrompt.js`: thêm luật "size phải là size có khoảng kg chứa cân nặng khách" (bản chính + bản gọn cho Groq).
+- Không sửa khi: khách tự nói size ("XL là đc"), khách hỏi về một size ("2xL 68kg có rộng không"), tin liệt kê nhiều size ("có size S, M, L, XL, 2XL"), cân nặng vượt bảng (trên 75kg), khách nói 2 con số cân nặng khác nhau, ô "Cách chọn" không ghi khoảng kg (bot chạy như cũ).
+- Cách ghi bảng để hệ thống đọc được: mỗi size một khoảng, dạng `L: 54–60kg` (dấu gạch `-`, `–`, `—` hoặc `~` đều được).
+- Test: `tests/sizeByWeight.test.mjs` (11 test), gồm đúng ca 1m45 59kg.
+
+## 38. Khách nói "đẹp thì mua thêm màu trắng" bot ghi luôn màu trắng vào đơn (25/11/2026)
+
+- Hiện tượng: khách lấy váy đen, rồi nhắn "Về mặt (mặc) đẹp thì mua thêm cái màu trắng" và "Nhận về mặt đẹp mới mua thêm màu trắng". Bot hiểu là đã mua, ghi màu Đen + Trắng, báo đơn 2 váy 360k. Khách phải nhắn "Chỉ lấy 1 cái màu đen thôi", chủ shop sửa tay còn 195k.
+- Nguyên nhân: code đã có luật nhận khách do dự (`hesitate.js`) và hẹn nhắn sau (`laterStop.js`) nhưng chưa có luật nào nhận "mua thêm CÓ ĐIỀU KIỆN" (đẹp thì mua, nhận về ưng mới mua). Cả bộ đọc màu lẫn AI thấy "mua thêm màu trắng" nên coi là đã chọn.
+- Đã sửa:
+  - `lib/laterBuy.js` (file mới): `splitLaterBuy` / `dropLaterBuy` bỏ đúng cái vế mua thêm có điều kiện ra khỏi chữ mà luật đọc đơn nhìn thấy (4 dạng: "đẹp/ưng/vừa... thì/mới mua thêm", "nhận về... mới mua", "lần sau mua thêm", "nếu... mua thêm"). Vế khác trong cùng tin vẫn đọc ("Lấy màu đen, đẹp thì mua thêm màu trắng" → chỉ còn "Lấy màu đen,").
+  - Gắn vào `lib/attributes.js` (`attributeStatus`), `lib/orderFacts.js` (`deriveOrderFacts`: tin báo đơn và đơn lưu), và `app/api/webhook/route.js` (đọc đơn của AI: màu trắng AI ghi thêm bị loại vì "khách không nhắc"; đọc số lượng).
+  - `route.js` + `lib/botPrompt.js`: dặn AI không ghi món đó vào đơn, không tính 2 cái, chỉ đáp nhẹ "dạ vâng, chị nhận hàng ưng thì nhắn em lên thêm đơn nha" (`laterBuyTurnNote`).
+- Không coi là mua thêm có điều kiện: "lấy thêm cái trắng nữa", "cho chị mua thêm 1 cái trắng" (mua thêm thật), điều kiện về giá ("bớt thì mua thêm", "miễn ship thì lấy thêm" → do bảng giá mặc cả lo), "váy đẹp thì lấy màu đen" (không có chữ thêm/tiếp/nữa).
+- Test: `tests/laterBuy.test.mjs` (8 test), gồm đúng 2 tin thật của khách và đơn lưu.
+- Chạy toàn bộ: 542 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc: test key trả phí Gemini, khach_da_cho, 1 test "nối câu xin"). Không có lỗi mới. `next build` thành công.
+
+## 39. Khách nhắn "Gửi bản màu" bot không gửi ảnh, chủ shop phải gửi tay (25/11/2026)
+
+- Hiện tượng: khách nhắn "Gửi bản màu" (gõ thiếu g, đúng là "bảng màu"). Bot trả lời chữ "Dạ em gửi chị xem bảng màu váy bên shop nhé" nhưng KHÔNG có ảnh; chủ shop phải gửi 2 ảnh bằng tay (log: dòng "Echo từ chủ Page ... attachments: 2").
+- Log: AI đã hiểu đúng ("khách xin xem bảng màu, shop gửi ảnh tổng hợp màu", `send_catalog: true`) nhưng ngay sau đó có dòng "Chặn gửi ảnh: khách không xin xem ảnh: Gửi bản màu".
+- Nguyên nhân (2 lớp):
+  1. Bộ chặn ảnh trong `route.js` (`unaskedImages` / `blockImages`) chỉ cho gửi khi khách có chữ ảnh/hình/xem/video hoặc `isCatalogQuestion` (lib/products.js) nhận ra câu xin bảng màu. `isCatalogQuestion` nhận "bảng màu", "xem màu", "gửi màu" nhưng KHÔNG nhận "bản màu" → coi là khách không xin ảnh → bỏ luôn quyết định gửi ảnh của AI.
+  2. Khi chặn ảnh, code không bỏ câu bot vừa hứa "em gửi chị xem bảng màu" → khách thấy hứa suông.
+- Đã sửa:
+  - `lib/products.js` (`isCatalogQuestion`): nhận thêm "bản màu", "bản mầu", "bnag/bagn màu".
+  - `lib/imageAsk.js` (file mới): `catalogAskByAi` — AI đã đặt `send_catalog = true` VÀ tin khách có nhắc màu/mẫu kèm chữ gửi/xem/xin/cho thì KHÔNG chặn (kể cả khi khách gõ sai kiểu khác); tin đang có SĐT/địa chỉ (chốt đơn) thì không áp dụng. `dropImagePromises` — ảnh vẫn bị chặn mà tin có câu hứa gửi ảnh/bảng màu thì bỏ câu đó, giữ phần còn lại (rỗng thì còn "Dạ vâng ạ.").
+  - `app/api/webhook/route.js`: dùng 2 hàm trên ngay trong đoạn chặn ảnh (`catalogByAi`, và khối "Ảnh bị CHẶN ... bỏ câu hứa suông"). Các trường hợp riêng cũ (khách tự gửi ảnh, xin ảnh người mẫu, ảnh đã gửi rồi) giữ nguyên.
+- Test: `tests/imageAsk.test.mjs` (4 test), gồm đúng câu "Gửi bản màu".
+- Chạy toàn bộ: 546 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc), không có lỗi mới. `next build` thành công.
+

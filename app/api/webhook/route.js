@@ -5,6 +5,9 @@
 
 import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
+import { dropLaterBuy, laterBuyTurnNote } from "@/lib/laterBuy";
+import { catalogAskByAi, dropImagePromises } from "@/lib/imageAsk";
+import { sizeAdviceFor, sizeAdviceNote, fixSizeInMessages } from "@/lib/sizeByWeight";
 import { ruleRows, pickRewrites, applyRewritesToTexts, rewriteTurnNote } from "@/lib/customerRewrite";
 import { orderByCustomerSequence } from "@/lib/replyOrder";
 import { classifyContactMessage, shouldReleaseHold, contactAiEnabled } from "@/lib/contactKind";
@@ -1208,7 +1211,22 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     (String(customerInfo?.phone || "").trim() || phoneInTexts(attrCurrent)) &&
     (String(customerInfo?.address || "").trim() || addressInTexts(attrCurrent, ""))
   );
-  const attrNote = attrMode ? attributeTurnNote(currentProduct, attrNow, { hold: hesitateNow.hesitating, haveContact: haveContactNow }) : "";
+  // SIZE THEO CÂN NẶNG: hệ thống tự tính từ bảng của chủ shop (vd 59kg → L) và dặn thẳng AI, không để AI tự so số (lib/sizeByWeight.js)
+  const sizeMsgs = (texts) => [...attrHistory, ...(texts || []).map((t) => ({ from: "customer", text: String(t || "") }))];
+  let sizeNote = "";
+  if (attrMode) {
+    try {
+      const adv = sizeAdviceFor(attrs, attrNow, sizeMsgs(attrCurrent), attrCurrent);
+      sizeNote = sizeAdviceNote(adv);
+      if (adv.length) console.log("---- Size theo bảng cân nặng:", adv.map((x) => `${x.kg}kg → ${x.attr.name}=${x.label}`).join(" | "));
+    } catch (e) {
+      console.error("Lỗi tính size theo cân nặng (bỏ qua):", e.message);
+    }
+  }
+  // KHÁCH NÓI "đẹp thì mua thêm màu trắng" / "nhận về ưng mới mua thêm" = chưa đặt, không ghi vào đơn (lib/laterBuy.js)
+  const laterBuyNote = laterBuyTurnNote(attrCurrent);
+  if (laterBuyNote) console.log("Khách nói mua thêm CÓ ĐIỀU KIỆN / để sau → không ghi vào đơn:", attrCurrent.map((t) => dropLaterBuy(t) === String(t) ? "" : String(t)).filter(Boolean).join(" | "));
+  const attrNote = (attrMode ? attributeTurnNote(currentProduct, attrNow, { hold: hesitateNow.hesitating, haveContact: haveContactNow }) : "") + sizeNote + laterBuyNote;
   if (attrMode) console.log("---- Thuộc tính:", attrNow.list.map((x) => `${x.attr.name}=${x.state}${x.picked.length ? "(" + x.picked.join("+") + ")" : ""}${x.undecided?.length ? "(đang phân vân: " + x.undecided.join("/") + ")" : ""}`).join(" | "));
 
   // BẢNG GIÁ MẶC CẢ: sản phẩm có bảng → HỆ THỐNG tính giá của lượt này (đồng ý / hạ nấc / giữ), bot chỉ nói đúng con số hệ thống đưa
@@ -1221,7 +1239,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
         customerNow: attrCurrent,
         customerRecent: attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse(),
         lastShopText: (ladderOutgoing[ladderOutgoing.length - 1] || {}).text || "",
-        minQty: Math.max(attrMode ? colorCount(attrNow) : 0, qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]) || 0),
+        minQty: Math.max(attrMode ? colorCount(attrNow) : 0, qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: dropLaterBuy(String(t || "")) }))]) || 0),
       });
     } catch (e) {
       console.error("Lỗi tính bảng giá mặc cả:", e.message);
@@ -1232,8 +1250,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const dDays = parseDeliveryDays(settings?.botPrompt); // thời gian giao hàng chủ shop ghi trong "Thông tin shop" (vd 3-4 ngày)
   // Số lượng khách tự nói ("lấy 2 cái") — dùng khi sản phẩm không có bảng giá mặc cả, để tin báo đơn không mặc định 1 cái
   const qtyHintNow =
-    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()), currentProduct) ||
-    qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: String(t || "") }))]);
+    customerQtyHint([...attrCurrent].reverse().concat(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")).reverse()).map((t) => dropLaterBuy(t)), currentProduct) ||
+    qtyFromReplies([...attrHistory, ...[...attrCurrent].reverse().map((t) => ({ from: "customer", text: dropLaterBuy(String(t || "")) }))]);
   let sumDetail = attrMode ? summaryDetail(attrNow, ladderCtx?.qty || qtyHintNow || 1) : null; // chi tiết ghép tin tóm tắt (size, chiều dài, từng màu x số lượng)
   // Các tin của KHÁCH (mới nhất trước) để đọc xem khách tự xưng "chị" hay "anh"
   const custTextNewest = () =>
@@ -1418,6 +1436,23 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   } catch (e) {
     console.error("Lỗi dịch lại chính tả khách (bỏ qua):", e.message);
   }
+  // SỬA SIZE THEO BẢNG CÂN NẶNG: AI lỡ nói size khác bảng (vd khách 59kg mà AI nói 2XL, bảng ghi L 54–60kg) → hệ thống đổi lại đúng size trước khi gửi khách.
+  // Khách tự nói size (vd "XL là đc") thì theo khách, không sửa (lib/sizeByWeight.js).
+  const fixSizeByWeight = (msgs) => {
+    if (!attrMode || !attrNow || !Array.isArray(msgs) || !msgs.length) return msgs;
+    try {
+      const adv = sizeAdviceFor(attrs, attrNow, sizeMsgs(attrCurrentRule), attrCurrentRule);
+      const fx = fixSizeInMessages(msgs, adv);
+      if (fx.changes.length) {
+        console.log("Sửa size AI nói sai theo bảng cân nặng:", fx.changes.map((c) => `${c.from} → ${c.to}`).join(", "), "(khách " + adv.map((x) => x.kg + "kg").join("/") + ")");
+        return fx.messages;
+      }
+    } catch (e) {
+      console.error("Lỗi sửa size theo cân nặng (bỏ qua):", e.message);
+    }
+    return msgs;
+  };
+  messages = fixSizeByWeight(messages);
   // ĐỐI CHIẾU: AI đã nói giá trị khách chọn (vd "size L") mà bộ nhận diện còn thấy "missing" (khách gõ lạ như "zai l")
   // → ghi nhận vào trạng thái để khối đơn + đơn lưu không bị thiếu, và bot không hỏi lại cân nặng để chọn size.
   if (attrMode && attrNow) {
@@ -1449,7 +1484,8 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   let reading = null;
   if (attrMode && attrNow) {
     try {
-      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrentRule].reverse()];
+      // bỏ vế "mua thêm có điều kiện" (lib/laterBuy.js) để AI ghi màu đó vào đơn thì bị loại ("khách không hề nhắc")
+      const custTexts = [...attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), ...[...attrCurrentRule].reverse()].map((t) => dropLaterBuy(t)).filter((t) => String(t).trim());
       // Khách đã chốt danh sách món ở lượt trước và không nhắn gì đổi → vẫn dùng (AI lượt này thường không ghi lại)
       let statusChanged = false;
       let aiRaw = Array.isArray(parsed?.order_items) ? parsed.order_items : null;
@@ -1664,8 +1700,11 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Khách TỰ GỬI ảnh: chỉ cho bot gửi ảnh lại khi khách HỎI về ảnh ("có mẫu này không", "giống cái này", "giá bao nhiêu", dấu ?).
   // Ảnh trơn / "lấy màu này" (khách chụp màn hình ảnh của shop để chỉ màu mình chọn) → KHÔNG gửi lại ảnh, chỉ xác nhận bằng chữ.
   const customerAsksAboutImage = /\?|giong|tuong tu|y chang|gia\b|bao nhieu|(?<![a-z])(?:co|con)(?![a-z])[^.!?]{0,30}(?<![a-z])(?:khong|ko|k|hong|ha)(?![a-z])/.test(normKey(allCurrent));
-  const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !adminHandled && (!customerImages.length || !customerAsksAboutImage);
-  const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText)) || unaskedImages || (modelPhotoAsk && !hasRealPhotos);
+  // AI đã nhận ra khách xin xem bảng màu (send_catalog) và khách có nhắc màu/mẫu + chữ gửi/xem → tin AI, kể cả khi khách gõ sai chính tả ("gửi bản màu") — lib/imageAsk.js
+  const catalogByAi = catalogAskByAi({ sendCatalog: parsed?.send_catalog, text: allCurrent, hasPhone: phoneInMsg });
+  if (catalogByAi) console.log("AI nhận ra khách xin xem bảng màu (khách gõ lạ) → không chặn ảnh:", msgText.slice(0, 80));
+  const unaskedImages = !photoWord && !isCatalogQuestion(allCurrent) && !catalogByAi && !adminHandled && (!customerImages.length || !customerAsksAboutImage);
+  const blockImages = (orderInfoNow && !askedForPhotos && !isCatalogQuestion(msgText) && !catalogByAi) || unaskedImages || (modelPhotoAsk && !hasRealPhotos);
   if (blockImages) {
     if (parsed?.send_images || strayImages || parsed?.send_catalog) console.log("Chặn gửi ảnh: khách không xin xem ảnh:", msgText.slice(0, 80));
     req = null;
@@ -1778,6 +1817,15 @@ async function generateReply(senderId, customerMessage, customerImages, settings
     console.log("Khách gửi ảnh mà không xin xem ảnh → không gửi ảnh lại:", messages.join(" | "));
   }
 
+  // Ảnh bị CHẶN (khách không xin ảnh) mà tin trả lời vẫn hứa "em gửi chị xem ảnh / bảng màu..." → bỏ câu hứa suông (các trường hợp riêng bên dưới/trên tự xử lý)
+  if (blockImages && !images.length && messages.length && !(unaskedImages && customerImages.length) && !(modelPhotoAsk && !hasRealPhotos) && !(repeatInfo && repeatInfo.allDropped)) {
+    const dp = dropImagePromises(messages);
+    if (dp.dropped.length) {
+      messages = dp.messages.length ? dp.messages : ["Dạ vâng ạ."];
+      console.log("Ảnh bị chặn → bỏ câu hứa gửi ảnh:", dp.dropped.join(" | "));
+    }
+  }
+
   // Khách xin ảnh người mẫu mặc mà shop CHƯA có → không gửi ảnh màu, bỏ câu hứa "gửi ảnh", nói thật là chưa có ảnh bạn mẫu
   if (modelPhotoAsk && !hasRealPhotos && !images.length) {
     const neutralNow = notesForbidPronouns(currentProduct?.notes);
@@ -1848,7 +1896,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
       console.log("Chưa tư vấn giá trị cho:", lacking.map((x) => x.attr.name).join(", "), "→ nhờ AI viết lại");
       const redo = await retryForAdvice(finalPrompt, contents, deadline, apiKeys, hardDeadline, lacking, messages, askContact, groqPrompt, customerSeq);
       const redoText = redo.join(" ");
-      if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = keepCustomerOrder(redo);
+      if (redo.length && lacking.every((x) => matchValues(x.attr, redoText).length)) messages = fixSizeByWeight(keepCustomerOrder(redo));
       else console.warn("Viết lại vẫn chưa có giá trị cần tư vấn → giữ tin cũ.");
     }
     // CHỐT CHẶN: đã tư vấn xong giá trị cuối mà tin trả lời chưa xin SĐT/địa chỉ → tự thêm câu xin
