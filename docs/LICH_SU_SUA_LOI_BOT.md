@@ -564,3 +564,12 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Test: `tests/imageAsk.test.mjs` (4 test), gồm đúng câu "Gửi bản màu".
 - Chạy toàn bộ: 546 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc), không có lỗi mới. `next build` thành công.
 
+## 40. Khách hỏi vòng bụng, bồi hỏi "chọn giúp em màu và chiều dài váy" thay vì xin chiều cao cân nặng (26/11/2026)
+
+- Hiện tượng (khách Di Dung): khách hỏi "Vòng bụng 104cm mặc vừa không shop", bot trả lời đúng (1 tin, không hỏi gì thêm). Khoảng 2 phút sau có thêm tin "Chị chọn giúp em màu và chiều dài váy chị muốn lấy ạ?" trong khi khách CHƯA đưa chiều cao cân nặng (phải xin chiều cao cân nặng trước, màu sau).
+- Nguyên nhân: tin thứ hai là tin nhắn BỒI (log webhook lúc 14:01 chỉ có 1 tin trả lời; câu này không có trong cài đặt chủ shop). Trong `lib/nudge.js`, câu hỏi soạn sẵn đúng mục thiếu (`buildAttrAsk`) chỉ chạy khi các tin gần nhất của shop có câu hỏi về thuộc tính ("thuoc tinh" nằm trong `pending`). Khi các tin gần nhất của shop không có câu hỏi nào, bồi rơi sang nhánh "câu chốt": dùng câu chủ shop cài sẵn (nếu có) hoặc nhờ AI viết 1 câu chốt. Nhánh đó không xem bảng thuộc tính nên AI tự viết "màu và chiều dài váy", bỏ qua bước xin chiều cao cân nặng.
+- Đã sửa (`lib/nudge.js`): có bảng thuộc tính và còn mục chưa chốt (size / chiều dài / màu) thì bồi luôn soạn câu hỏi đúng mục thiếu theo thứ tự của chủ shop (bộ "kích thước" → "Chị cho em xin chiều cao cân nặng để em chọn váy nha?"; thiếu mỗi màu → hỏi màu), KHÔNG nhờ AI và KHÔNG dùng câu chốt cài sẵn. Đủ mục mà chưa có SĐT thì vẫn xin SĐT + địa chỉ như cũ.
+- Test: `tests/nudgeAttrAsk.test.mjs` (4 test), gồm đúng ca vòng bụng 104cm.
+- Chưa sửa (chủ shop dặn tạm bỏ): khách dùng chữ "M" thay "mình" bị đọc thành size M; "3xl" bị đọc thành XL; bot xin SĐT khi còn thiếu màu.
+- Chạy toàn bộ: 550 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc), không có lỗi mới.
+
