@@ -573,3 +573,27 @@ Giới hạn còn lại: (a) khách chọn màu bằng chữ trơn "đen" ngay t
 - Chưa sửa (chủ shop dặn tạm bỏ): khách dùng chữ "M" thay "mình" bị đọc thành size M; "3xl" bị đọc thành XL; bot xin SĐT khi còn thiếu màu.
 - Chạy toàn bộ: 550 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc), không có lỗi mới.
 
+## 41. Khách gửi ĐỊA CHỈ + SĐT bằng ảnh chụp: bot đọc được nhưng không lưu số, không tự tạo đơn (26/11/2026)
+
+- Hiện tượng (khách Hue Hue): shop xin SĐT + địa chỉ, khách gửi 1 ảnh chụp ghi chú "Số 163 Đg phạm khắc vinh, P Nam Cường, Tp Yên Bái, Dt 0818686370". Bot trả lời "dạ em nhận được thông tin rồi ạ" (log cho thấy AI đã đọc đúng địa chỉ trong ảnh) nhưng hồ sơ khách KHÔNG có số điện thoại (không hiện "có SĐT" ở danh sách khách), bot không tự tạo đơn nháp; chủ shop phải bấm "Tạo đơn" và gõ tay SĐT + địa chỉ.
+- Nguyên nhân (2 chỗ):
+  1. `verifyCustomerInfo` (route.js) chỉ nhận SĐT/địa chỉ AI điền nếu chúng có trong CHỮ khách nhắn (chống AI bịa). Tin chỉ có ảnh thì chữ rỗng → SĐT và địa chỉ AI đọc từ ảnh bị bỏ.
+  2. Tự tạo đơn (`syncAutoOrder`) chỉ chạy khi tin khách có chữ SĐT (`extractPhone(text)`), nên ảnh chụp SĐT không kích hoạt.
+- Đã sửa:
+  - `lib/imageContact.js` (file mới): `acceptImageContact` — khi lượt này khách có gửi ảnh VÀ trong vài tin shop gần nhất có xin SĐT/địa chỉ/thông tin nhận hàng, thì nhận SĐT (đúng 10 số di động 03/05/07/08/09, chấp nhận +84/84) và địa chỉ (có số nhà, hoặc ít nhất 2 từ chỉ đường/phường/quận; chỉ tên tỉnh/thành thì không) mà AI đọc từ ảnh.
+  - `app/api/webhook/route.js`: `verifyCustomerInfo` nhận thêm `imageEvidence` (khách có gửi ảnh); sau khi trả lời xong, nếu tin khách chỉ có ảnh thì lấy SĐT vừa lưu trong hồ sơ để gọi `syncAutoOrder` → tự tạo đơn nháp như khi khách gõ số.
+- Không nhận từ ảnh khi shop chưa xin SĐT/địa chỉ (tránh AI đọc nhầm số trên ảnh hàng, ảnh feedback), số sai dạng (số bàn 02..., 11 số, thiếu số), hoặc địa chỉ chỉ là tên tỉnh/thành.
+- Test: `tests/imageContact.test.mjs` (5 test), gồm đúng ảnh "Số 163 Đg phạm khắc vinh ... 0818686370".
+- Chạy toàn bộ: 555 đạt, 17 lỗi sẵn có (cùng danh sách ở bản gốc), không có lỗi mới. `next build` thành công.
+
+## 42. Khách hỏi đi hỏi lại cùng một mối lo (phí ship/hoàn hàng, chất vải): bot mỗi lần giải thích một kiểu (27/11/2026)
+
+- Hiện tượng: khách hỏi về chất vải ("Vãi mềm ko zậy", "vãi ko xinh", "Thô") và phí ship khi hoàn hàng ("C trả lại mất lòng nha", "Trả zề ko trả ship đâu đó", "Ko đc mấy 30k ship"). Bot trả lời 3 lần cho mỗi chủ đề, mỗi lần một câu khác ("hoàn hàng thoải mái", "hỗ trợ phí ship hoàn", "bên em hỗ trợ phí ship hoàn hàng") → khách không yên tâm (nghe như chỉ hỗ trợ một phần), còn bực thêm. Chủ shop muốn: từ lần thứ 2, 3... bot đáp thẳng theo lời khách + nội dung sản phẩm, vd "Dạ vâng, bên em hoàn toàn miễn phí ship, chị không mất tiền gì hết ạ".
+- Nguyên nhân: (1) `lib/botPrompt.js` dặn "khách hỏi lại điều đã trả lời: trả lời lại ngắn bằng cách nói khác" → mỗi lần AI đổi cách nói thay vì khẳng định; (2) dặn "không nhắc lại nguyên lời khách" nên AI không nói thẳng "không mất 30k"; (3) hệ thống không đếm khách nhắc lại lần thứ mấy.
+- Đã sửa:
+  - `lib/repeatConcern.js` (file mới): đếm số tin khách (16 tin gần nhất) nói về cùng 1 chủ đề: ship/hoàn hàng/đổi trả, chất vải/chất liệu, size vừa không, hàng thật/giống hình. Từ lần thứ 2 trả về lời dặn cho AI (`repeatConcernNote`): KHÔNG giải thích lại, chỉ 1 tin ngắn (~25 từ), không hỏi thêm màu/size/SĐT, không giục chốt. Chủ đề khách ĐÒI điều shop đồng ý được (ship/hoàn hàng) → đáp "Dạ vâng, ...", được dùng lại chữ của khách, chỉ khẳng định "miễn phí hoàn toàn" khi Nội dung sản phẩm ghi đúng vậy. Chủ đề khách CHÊ/NGHI NGỜ (vải, size, hàng thật) → KHÔNG đáp "vâng", bác lại bằng 1-2 đặc điểm thật trong Nội dung.
+  - `app/api/webhook/route.js`: tính `repeatNote` mỗi lượt và ghép vào `promptNotes` (log: "Khách nhắc lại mối lo: ...").
+  - `lib/botPrompt.js`: sửa 3 dòng lời dặn (lần đầu hỏi lại thì nói cách khác; từ lần 2 thì khẳng định thẳng; được dùng lại chữ khách khi nhắc lại mối lo).
+- Dùng chung cho mọi sản phẩm: bot chỉ dặn CÁCH trả lời, nội dung lấy từ Nội dung / Lưu ý của chính sản phẩm khách đang hỏi; sản phẩm chưa ghi chính sách thì bot không hứa thêm.
+- Test: `tests/repeatConcern.test.mjs` (5 test), gồm đúng đoạn chat vải và ship của khách (đếm 1→2→3→4).
+

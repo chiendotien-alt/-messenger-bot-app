@@ -7,6 +7,8 @@ import { isShortMessage, burstWaitApplies } from "@/lib/shortMessage";
 import { crossCheckBody, applyCrossBody, dropKnownBodyAsks } from "@/lib/bodyCross";
 import { dropLaterBuy, laterBuyTurnNote } from "@/lib/laterBuy";
 import { catalogAskByAi, dropImagePromises } from "@/lib/imageAsk";
+import { acceptImageContact } from "@/lib/imageContact";
+import { repeatedConcerns, repeatConcernNote } from "@/lib/repeatConcern";
 import { sizeAdviceFor, sizeAdviceNote, fixSizeInMessages } from "@/lib/sizeByWeight";
 import { ruleRows, pickRewrites, applyRewritesToTexts, rewriteTurnNote } from "@/lib/customerRewrite";
 import { orderByCustomerSequence } from "@/lib/replyOrder";
@@ -637,7 +639,12 @@ async function processWebhookBody(body, startedAt) {
         // Sau khi đã nhả khóa (khách nhắn tiếp không bị chờ): hoàn tất việc tự tạo đơn, rồi điền thêm địa chỉ/sản phẩm cho đơn đó
         if (orderP) await orderP;
         if (wantOrderSync && settingsNow) {
-          await syncAutoOrder(senderId, { pageId, phone: phoneInMsg, settings: settingsNow, ai: true, budgetMs: 52000 - (Date.now() - startedAt) }).catch((e) => {
+          // Khách gửi SĐT bằng ẢNH CHỤP (tin không có chữ SĐT): lấy số bot vừa đọc từ ảnh và đã lưu vào hồ sơ khách để vẫn tự tạo đơn nháp
+          let phoneForOrder = phoneInMsg;
+          if (!phoneForOrder && Array.isArray(fbImages) && fbImages.length) {
+            phoneForOrder = (await getCustomerInfo(senderId).catch(() => ({})))?.phone || "";
+          }
+          await syncAutoOrder(senderId, { pageId, phone: phoneForOrder || phoneInMsg, settings: settingsNow, ai: true, budgetMs: 52000 - (Date.now() - startedAt) }).catch((e) => {
             console.error("Lỗi cập nhật đơn tự tạo:", e.message);
             return reportError("auto_order_update_failed", "Lỗi cập nhật đơn tự tạo (điền địa chỉ/sản phẩm)", { "Khách": senderId, "Page": pageId, "Lỗi": errText(e) });
           });
@@ -915,7 +922,7 @@ function partialPairTopics({ history, currentTexts, mergedInfo, verified, bodySi
 
 const ADDRESS_UNIT_WORDS = new Set("phuong xa quan huyen tinh tp tx tt thon".split(" "));
 
-function verifyCustomerInfo(info, history, latestText) {
+function verifyCustomerInfo(info, history, latestText, { imageEvidence = false } = {}) {
   const customerTexts = (history || []).filter((m) => m.from === "customer").map((m) => m.text || "");
   customerTexts.push(latestText || "");
   const blob = norm(customerTexts.join(" \n "));
@@ -939,6 +946,12 @@ function verifyCustomerInfo(info, history, latestText) {
     if (!tokens.length) continue;
     const hit = tokens.filter((tk) => blobWords.has(tk) || (tk.length >= 3 && blobClean.includes(tk))).length;
     if (hit / tokens.length >= 0.6) out[k] = v;
+  }
+  // Khách gửi ẢNH CHỤP có SĐT/địa chỉ (shop vừa xin): AI đọc từ ảnh, chữ khách nhắn không có → nhận nếu đúng dạng SĐT/địa chỉ (lib/imageContact.js)
+  if (imageEvidence) {
+    const fromImg = acceptImageContact(info, history);
+    if (!out.phone && fromImg.phone) out.phone = fromImg.phone;
+    if (!out.address && fromImg.address && !isLocationOnlyText(fromImg.address)) out.address = fromImg.address;
   }
   return out;
 }
@@ -1317,7 +1330,16 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   const worryNote = isWorryText(worryProbe)
     ? "\n\nKHÁCH ĐANG LO LẮNG ở tin này (hệ thống đã nhận ra): CHỈ trấn an 1-2 câu, đúng điều khách lo, bằng thông tin THẬT trong nội dung/ghi chú sản phẩm (vd \"size L vừa đến 75kg nên chị yên tâm nha\"). KHÔNG hỏi thêm màu/size/chiều dài/SĐT/địa chỉ. KHÔNG khuyên khách đổi giá trị khách đã chọn (khách đã chọn chiều dài nào thì tôn trọng, đừng nhắc lại gợi ý cũ). Không có thông tin thật thì nói sẽ hỏi lại shop, không bịa."
     : "";
-  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + hesitateNote(hesitateNow) + rewriteNote + worryNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
+  // KHÁCH NHẮC LẠI CÙNG MỘT MỐI LO (ship/hoàn hàng, chất vải, size vừa không, hàng thật): từ lần thứ 2 dặn AI đáp 1 câu ngắn, khẳng định thẳng, không giải thích lại (lib/repeatConcern.js)
+  let repeatNote = "";
+  try {
+    const rc = repeatedConcerns(attrHistory.filter((m) => m.from === "customer").map((m) => String(m.text || "")), attrCurrent);
+    repeatNote = repeatConcernNote(rc);
+    if (rc.length) console.log("Khách nhắc lại mối lo:", rc.map((c) => `${c.name} (lần ${c.count})`).join(" | "));
+  } catch (e) {
+    console.error("Lỗi đếm mối lo khách nhắc lại (bỏ qua):", e.message);
+  }
+  const promptNotes = situationNote(situation) + burstNote + followupNote + askNote + reaskNote + attrNote + hesitateNote(hesitateNow) + rewriteNote + worryNote + repeatNote + modelPhotoNote + ownerPriceNote(ownerPrices) + priceNote;
   const finalPrompt = systemPrompt + promptNotes;
   const groqPrompt = groqBasePrompt + promptNotes;
 
@@ -1545,7 +1567,7 @@ async function generateReply(senderId, customerMessage, customerImages, settings
   // Ghi nhớ thông tin khách vừa nói (tên, SĐT, địa chỉ, màu/size) — lần sau bot không hỏi lại
   let verified = null;
   if (parsed?.customer_info && typeof parsed.customer_info === "object") {
-    verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage);
+    verified = verifyCustomerInfo(parsed.customer_info, history, customerMessage, { imageEvidence: customerImages.length > 0 });
     // Câu hẹn gửi sau không phải địa chỉ: bỏ địa chỉ AI tự điền nếu phần còn lại của tin không có địa chỉ thật
     if (deferNow.defer && deferNow.topics.has("dia chi") && !deferNow.rest.some((t) => looksLikeAddressStrict(t))) {
       delete verified.address;
